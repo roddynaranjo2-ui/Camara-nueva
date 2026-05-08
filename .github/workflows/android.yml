@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -22,14 +23,15 @@ jobs:
         cache: gradle
 
     - name: Instalar NDK y CMake
+      uses: android-actions/setup-android@v3
+
+    - name: Instalar versión específica de NDK
       run: |
-        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+        echo "y" | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
 
     - name: Dar permisos de ejecución a Gradlew
       run: chmod +x gradlew
-
-    - name: Generar Gradle Wrapper
-      run: gradle wrapper --gradle-version 8.1.1
 
     - name: Compilar APK con Gradle
       run: ./gradlew assembleDebug
