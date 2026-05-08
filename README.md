@@ -1,2 +1,0 @@
-# Camara-nueva
-Primera versión 
