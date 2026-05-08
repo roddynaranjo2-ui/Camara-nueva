@@ -32,7 +32,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Aquí usamos el tema oscuro por defecto para que resalte el efecto vidrio
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 CameraScreen(cameraViewModel)
             }
@@ -47,8 +46,8 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
     val view = LocalView.current
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        
-        // 1. Espacio para el Preview
+
+        // 1. Preview de cámara
         CameraPreview(
             viewModel = viewModel,
             modifier = Modifier
@@ -56,9 +55,9 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { /* Lógica TAP_TO_FOCUS */ },
-                        onLongPress = { 
+                        onLongPress = {
                             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                            viewModel.toggleFocusLock() 
+                            viewModel.toggleFocusLock()
                         }
                     )
                 }
@@ -66,28 +65,40 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
 
         // 2. Indicador de AF_LOCK
         if (isFocusLocked) {
-            Text("AF LOCKED", color = Color.Yellow, modifier = Modifier.align(Alignment.Center))
+            Text(
+                text = "AF LOCKED",
+                color = Color.Yellow,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
 
-        // 3. Selector de Lentes (Lado derecho)
+        // 3. Selector de Lentes
         LensSelector(
             currentLens = lens,
-            onLensSelect = { 
+            onLensSelect = {
                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                viewModel.switchLens(it) 
+                viewModel.switchLens(it)
             },
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 16.dp)
         )
 
-        // 4. Botonera Inferior con Efecto Vidrio (Glassmorphism)
-        BottomControls(view, modifier = Modifier.align(Alignment.BottomCenter))
+        // 4. Botonera Inferior
+        BottomControls(
+            view = view,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 
 @Composable
 fun BottomControls(view: View, modifier: Modifier = Modifier) {
     var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (isPressed) 0.9f else 1f)
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.9f else 1f,
+        label = "shutter_scale"
+    )
 
     Row(
         modifier = modifier
@@ -98,10 +109,15 @@ fun BottomControls(view: View, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Preview última foto (Circulito a la izquierda)
-        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color.Gray))
-        
-        // Botón Obturador (Shutter)
+        // Preview última foto
+        Box(
+            modifier = Modifier
+                .size(50.dp)
+                .clip(CircleShape)
+                .background(Color.Gray)
+        )
+
+        // Botón Obturador
         Box(
             modifier = Modifier
                 .size(72.dp)
@@ -114,15 +130,20 @@ fun BottomControls(view: View, modifier: Modifier = Modifier) {
                         onPress = {
                             isPressed = true
                             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                            // tryAwaitRelease() // Eliminado porque no existe en este contexto
+                            tryAwaitRelease()
                             isPressed = false
                         }
                     )
                 }
         )
 
-        // Botón cambio de cámara (Frontal/Trasera)
-        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color.DarkGray))
+        // Botón cambio de cámara
+        Box(
+            modifier = Modifier
+                .size(50.dp)
+                .clip(CircleShape)
+                .background(Color.DarkGray)
+        )
     }
 }
 
@@ -142,7 +163,6 @@ fun LensSelector(currentLens: String, onLensSelect: (String) -> Unit, modifier: 
     }
 }
 
-// El Modificador Maestro para el efecto Burbuja/Vidrio
 fun Modifier.glassmorphismEffect(): Modifier = this
     .clip(RoundedCornerShape(32.dp))
     .background(Color.White.copy(alpha = 0.15f))
