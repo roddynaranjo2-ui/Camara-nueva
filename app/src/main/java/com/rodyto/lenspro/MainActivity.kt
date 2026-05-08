@@ -77,7 +77,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             currentLens = lens,
             onLensSelect = {
                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                viewModel.switchLens(it)
+                viewModel.switchLens(view.context, it)
             },
             modifier = Modifier
                 .align(Alignment.CenterEnd)
