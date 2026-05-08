@@ -19,20 +19,20 @@ class CameraControlViewModel : ViewModel() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
-    // Estados de la interfaz
     private val _currentLens = MutableStateFlow("1x")
     val currentLens = _currentLens.asStateFlow()
 
     private val _focusLocked = MutableStateFlow(false)
     val focusLocked = _focusLocked.asStateFlow()
 
+    // Surface activo guardado para poder reutilizarlo al cambiar de lente
+    private var activeSurface: Surface? = null
+
     init {
-        // Carga la librería nativa de C++
         System.loadLibrary("rodytolenspro")
         startBackgroundThread()
     }
 
-    // Enlace JNI con el código C++ (NDK) para obtener IDs físicos
     private external fun getPhysicalCameraIdsNative(): Array<String>?
 
     private fun startBackgroundThread() {
@@ -42,18 +42,17 @@ class CameraControlViewModel : ViewModel() {
 
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lensLabel: String) {
-        closeCamera() // Resetear antes de cambiar de sensor físico
+        closeCamera()
+        activeSurface = surface
         _currentLens.value = lensLabel
         cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-        // Invocamos al NDK para saltar la abstracción lógica y buscar el hardware real
         val physicalIds = getPhysicalCameraIdsNative()
-        
-        // Mapeo de IDs físicos basado en los sensores del S21 FE (Snapdragon)
+
         val targetId = when (lensLabel) {
-            "0.5x" -> physicalIds?.getOrNull(2) ?: "2" // Ultra Gran Angular
-            "3x" -> physicalIds?.getOrNull(1) ?: "3"   // Teleobjetivo 3x óptico
-            else -> physicalIds?.getOrNull(0) ?: "0"   // Sensor Principal
+            "0.5x" -> physicalIds?.getOrNull(2) ?: "2"
+            "3x"   -> physicalIds?.getOrNull(1) ?: "3"
+            else   -> physicalIds?.getOrNull(0) ?: "0"
         }
 
         try {
@@ -80,22 +79,28 @@ class CameraControlViewModel : ViewModel() {
         val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         previewRequestBuilder?.addTarget(surface)
 
-        cameraDevice?.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                captureSession = session
-                previewRequestBuilder?.let {
-                    session.setRepeatingRequest(it.build(), null, backgroundHandler)
+        cameraDevice?.createCaptureSession(
+            listOf(surface),
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    captureSession = session
+                    previewRequestBuilder?.let {
+                        session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                    }
                 }
-            }
 
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-                Log.e("RodytoLensPro", "Fallo en la configuración de la sesión de captura")
-            }
-        }, backgroundHandler)
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    Log.e("RodytoLensPro", "Fallo en la configuración de la sesión de captura")
+                }
+            },
+            backgroundHandler
+        )
     }
 
-    fun switchLens(lens: String) {
-        _currentLens.value = lens
+    // Ahora switchLens sí reinicia la sesión con el nuevo sensor físico
+    fun switchLens(context: Context, lens: String) {
+        val surface = activeSurface ?: return
+        startCameraSession(context, surface, lens)
     }
 
     fun toggleFocusLock() {
