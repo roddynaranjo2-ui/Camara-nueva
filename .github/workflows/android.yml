@@ -28,6 +28,9 @@ jobs:
     - name: Dar permisos de ejecución a Gradlew
       run: chmod +x gradlew
 
+    - name: Generar Gradle Wrapper
+      run: gradle wrapper --gradle-version 8.1.1
+
     - name: Compilar APK con Gradle
       run: ./gradlew assembleDebug
 
