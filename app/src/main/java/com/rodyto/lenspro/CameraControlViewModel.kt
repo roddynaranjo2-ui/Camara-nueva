@@ -33,7 +33,7 @@ class CameraControlViewModel : ViewModel() {
     }
 
     // Enlace JNI con el código C++ (NDK) para obtener IDs físicos
-    private external fun getPhysicalCameraIdsNative(): Array<String>
+    private external fun getPhysicalCameraIdsNative(): Array<String>?
 
     private fun startBackgroundThread() {
         backgroundThread = HandlerThread("CameraBackground").also { it.start() }
@@ -51,9 +51,9 @@ class CameraControlViewModel : ViewModel() {
         
         // Mapeo de IDs físicos basado en los sensores del S21 FE (Snapdragon)
         val targetId = when (lensLabel) {
-            "0.5x" -> physicalIds.getOrNull(2) ?: "2" // Ultra Gran Angular
-            "3x" -> physicalIds.getOrNull(1) ?: "3"   // Teleobjetivo 3x óptico
-            else -> physicalIds.getOrNull(0) ?: "0"   // Sensor Principal
+            "0.5x" -> physicalIds?.getOrNull(2) ?: "2" // Ultra Gran Angular
+            "3x" -> physicalIds?.getOrNull(1) ?: "3"   // Teleobjetivo 3x óptico
+            else -> physicalIds?.getOrNull(0) ?: "0"   // Sensor Principal
         }
 
         try {

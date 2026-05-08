@@ -48,8 +48,9 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // 1. Espacio para el Preview (Se conectará con CameraPreview.kt luego)
-        Box(
+        // 1. Espacio para el Preview
+        CameraPreview(
+            viewModel = viewModel,
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
@@ -113,7 +114,7 @@ fun BottomControls(view: View, modifier: Modifier = Modifier) {
                         onPress = {
                             isPressed = true
                             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                            tryAwaitRelease()
+                            // tryAwaitRelease() // Eliminado porque no existe en este contexto
                             isPressed = false
                         }
                     )
