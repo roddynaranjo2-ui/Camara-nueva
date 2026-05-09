@@ -1,10 +1,14 @@
 package com.rodyto.lenspro
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -18,13 +22,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
     private val cameraViewModel: CameraControlViewModel by viewModels()
@@ -33,7 +39,57 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                CameraScreen(cameraViewModel)
+                CameraPermissionWrapper(cameraViewModel)
+            }
+        }
+    }
+}
+
+@Composable
+fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var hasPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasPermission = granted
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasPermission) {
+            launcher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    if (hasPermission) {
+        CameraScreen(viewModel)
+    } else {
+        // Pantalla de aviso si el usuario deniega el permiso
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "Se necesita permiso de cámara para usar esta app.",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(24.dp)
+                )
+                Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
+                    Text("Conceder permiso")
+                }
             }
         }
     }
@@ -163,8 +219,8 @@ fun LensSelector(currentLens: String, onLensSelect: (String) -> Unit, modifier: 
     }
 }
 
+// Glassmorphism compatible con Android 8+ (sin .blur())
 fun Modifier.glassmorphismEffect(): Modifier = this
     .clip(RoundedCornerShape(32.dp))
-    .background(Color.White.copy(alpha = 0.15f))
-    .blur(radius = 16.dp)
-    .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(32.dp))
+    .background(Color.White.copy(alpha = 0.18f))
+    .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(32.dp))
