@@ -3,6 +3,7 @@ package com.rodyto.lenspro
 import android.Manifest
 import android.content.pm.PackageManager
 import android.media.MediaActionSound
+import android.os.Build
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -24,7 +25,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -53,44 +53,50 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
-    var hasPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        )
+    
+    val requiredPermissions = mutableListOf(
+        Manifest.permission.CAMERA,
+        Manifest.permission.RECORD_AUDIO
+    ).apply {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.READ_MEDIA_IMAGES)
+            add(Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
+
+    var hasPermissions by remember {
+        mutableStateOf(requiredPermissions.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        })
     }
 
     val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasPermission = granted
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        hasPermissions = permissions.values.all { it }
     }
 
     LaunchedEffect(Unit) {
-        if (!hasPermission) launcher.launch(Manifest.permission.CAMERA)
+        if (!hasPermissions) launcher.launch(requiredPermissions.toTypedArray())
     }
 
-    if (hasPermission) {
+    if (hasPermissions) {
         CameraScreen(viewModel)
     } else {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
-            contentAlignment = Alignment.Center
-        ) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Se necesita permiso de cámara para usar esta app.",
+                    text = "Se necesitan permisos para usar la app.",
                     color = Color.White,
                     fontSize = 16.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(24.dp)
                 )
-                Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
-                    Text("Conceder permiso")
+                Button(onClick = { launcher.launch(requiredPermissions.toTypedArray()) }) {
+                    Text("Conceder permisos")
                 }
             }
         }
@@ -101,19 +107,21 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 fun CameraScreen(viewModel: CameraControlViewModel) {
     val lens by viewModel.currentLens.collectAsState()
     val mode by viewModel.cameraMode.collectAsState()
+    val isFront by viewModel.isFrontCamera.collectAsState()
     val isFocusLocked by viewModel.focusLocked.collectAsState()
     val view = LocalView.current
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
 
-        // 1. Preview de cámara
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         CameraPreview(
             viewModel = viewModel,
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onTap = {
+                        onTap = { offset ->
+                            focusPoint = offset
                             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         },
                         onLongPress = {
@@ -124,13 +132,22 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 }
         )
 
-        // 2. Indicador AE/AF LOCK
+        focusPoint?.let {
+            val metrics = LocalContext.current.resources.displayMetrics
+            Box(
+                modifier = Modifier
+                    .offset(x = (it.x / metrics.density).dp - 30.dp, 
+                            y = (it.y / metrics.density).dp - 30.dp)
+                    .size(60.dp)
+                    .border(2.dp, Color.Yellow)
+            )
+        }
+
         if (isFocusLocked) {
             Text(
                 text = "AE/AF LOCK",
                 color = Color(0xFFFFD700),
                 fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 48.dp)
@@ -139,36 +156,30 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             )
         }
 
-        // 3. Selector de Lentes (lado derecho)
-        LensSelector(
-            currentLens = lens,
-            onLensSelect = {
-                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                viewModel.switchLens(view.context, it)
-            },
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 16.dp)
-        )
+        if (!isFront) {
+            LensSelector(
+                currentLens = lens,
+                onLensSelect = {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    viewModel.switchLens(view.context, it)
+                },
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)
+            )
+        }
 
-        // 4. Controles inferiores
         Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Selector de Modo: FOTO / VIDEO / PRO
             Row(
                 modifier = Modifier.padding(bottom = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(28.dp)
             ) {
-                listOf("FOTO", "VIDEO", "PRO").forEach { m ->
+                listOf("FOTO", "VIDEO").forEach { m ->
                     Text(
                         text = m,
                         color = if (mode == m) Color(0xFFFFD700) else Color.White,
                         fontWeight = if (mode == m) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 13.sp,
                         modifier = Modifier.clickable {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             viewModel.setCameraMode(m)
@@ -176,12 +187,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                     )
                 }
             }
-
-            BottomControls(
-                view = view,
-                viewModel = viewModel,
-                mode = mode
-            )
+            BottomControls(view = view, viewModel = viewModel, mode = mode)
         }
     }
 }
@@ -189,42 +195,28 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
 @Composable
 fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) {
     var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.85f else 1f,
-        label = "shutter_scale"
-    )
-    val buttonColor by animateColorAsState(
-        targetValue = if (mode == "VIDEO") Color.Red else Color.White,
-        label = "shutter_color"
-    )
+    val scale by animateFloatAsState(targetValue = if (isPressed) 0.85f else 1f, label = "scale")
+    val buttonColor by animateColorAsState(targetValue = if (mode == "VIDEO") Color.Red else Color.White, label = "color")
 
-    val sound = remember {
-        MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) }
-    }
+    val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
-    DisposableEffect(Unit) {
-        onDispose { sound.release() }
-    }
+    DisposableEffect(Unit) { onDispose { sound.release() } }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp)
-            .glassmorphismEffect()
+            .clip(RoundedCornerShape(40.dp))
+            .background(Color(0x66000000))
+            .border(0.5.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(40.dp))
             .padding(horizontal = 24.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Miniatura última foto (simulada)
         Box(
-            modifier = Modifier
-                .size(50.dp)
-                .clip(CircleShape)
-                .background(Color.DarkGray)
-                .border(1.dp, Color.White, CircleShape)
+            modifier = Modifier.size(50.dp).clip(CircleShape).background(Color.DarkGray).border(1.dp, Color.White, CircleShape)
         )
 
-        // Botón Obturador
         Box(
             modifier = Modifier
                 .size(76.dp)
@@ -237,12 +229,10 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
                         onPress = {
                             isPressed = true
                             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-
                             if (mode == "FOTO") {
                                 sound.play(MediaActionSound.SHUTTER_CLICK)
                                 viewModel.capturePhoto()
                             }
-
                             tryAwaitRelease()
                             isPressed = false
                         }
@@ -250,53 +240,40 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
                 }
         )
 
-        // Botón switch cámara frontal/trasera
         Box(
             modifier = Modifier
                 .size(50.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.2f)),
+                .background(Color.White.copy(alpha = 0.2f))
+                .clickable { viewModel.toggleFrontCamera(view.context) },
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "↺",
-                color = Color.White,
-                fontSize = 24.sp
-            )
+            Text(text = "↺", color = Color.White, fontSize = 24.sp)
         }
     }
 }
 
 @Composable
 fun LensSelector(currentLens: String, onLensSelect: (String) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.glassmorphismEffect().padding(4.dp)) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(40.dp))
+            .background(Color(0x66000000))
+            .border(0.5.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(40.dp))
+            .padding(4.dp)
+    ) {
         listOf("0.5x", "1x", "3x").forEach { lens ->
             val isSelected = currentLens == lens
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isSelected) Color.White.copy(alpha = 0.2f)
-                        else Color.Transparent
-                    )
+                    .background(if (isSelected) Color.White.copy(alpha = 0.2f) else Color.Transparent)
                     .clickable { onLensSelect(lens) },
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = lens,
-                    color = if (isSelected) Color(0xFFFFD700) else Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(text = lens, color = if (isSelected) Color(0xFFFFD700) else Color.White, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
-
-// Glassmorphism real — funciona en Android 12+ (S21 FE con One UI 8 lo soporta perfectamente)
-fun Modifier.glassmorphismEffect(): Modifier = this
-    .clip(RoundedCornerShape(40.dp))
-    .background(Color.Black.copy(alpha = 0.4f))
-    .blur(radius = 24.dp)
-    .border(0.5.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(40.dp))
