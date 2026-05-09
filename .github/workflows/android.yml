@@ -20,8 +20,8 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        # Quitamos el cache de gradle temporalmente para asegurar una limpieza total
-    
+        cache: gradle
+
     - name: Configurar SDK de Android
       uses: android-actions/setup-android@v3
 
@@ -30,10 +30,16 @@ jobs:
         echo "y" | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
         echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
 
-    - name: Compilar con Gradle del Sistema
-      # En lugar de ./gradlew (que usa tu archivo corrupto), usamos 'gradle' directo.
-      # Esto ignora tu carpeta gradle/wrapper y usa el motor oficial de la VM de GitHub.
-      run: gradle assembleDebug --stacktrace
+    - name: Generar Gradle Wrapper Estable
+      # Forzamos la versión 8.7 que es extremadamente estable y compatible con Java 17
+      run: gradle wrapper --gradle-version 8.7
+
+    - name: Dar permisos de ejecución
+      run: chmod +x gradlew
+
+    - name: Sincronizar y Compilar APK (Debug)
+      # Ahora usamos ./gradlew (el que acabamos de generar) en lugar del gradle del sistema
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: Subir APK generado
       uses: actions/upload-artifact@v4
