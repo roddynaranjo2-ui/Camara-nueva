@@ -12,17 +12,20 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 class CameraControlViewModel : ViewModel() {
-
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var cameraManager: CameraManager? = null
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
     private var imageReader: ImageReader? = null
+    private var currentSurface: Surface? = null
 
     private val _currentLens = MutableStateFlow("1x")
     val currentLens = _currentLens.asStateFlow()
@@ -33,25 +36,36 @@ class CameraControlViewModel : ViewModel() {
     private val _cameraMode = MutableStateFlow("FOTO")
     val cameraMode = _cameraMode.asStateFlow()
 
-    private var activeSurface: Surface? = null
+    private val _isFrontCamera = MutableStateFlow(false)
+    val isFrontCamera = _isFrontCamera.asStateFlow()
+
+    private var cachedPhysicalIds: Map<String, String>? = null
 
     init {
-        System.loadLibrary("rodytolenspro")
         startBackgroundThread()
     }
-
-    private external fun getPhysicalCameraIdsNative(): Array<String>?
 
     private fun startBackgroundThread() {
         backgroundThread = HandlerThread("CameraBackground").also { it.start() }
         backgroundHandler = Handler(backgroundThread!!.looper)
     }
 
-    // Detecta automáticamente los IDs físicos reales del S21 FE por longitud focal
+    private fun stopBackgroundThread() {
+        backgroundThread?.quitSafely()
+        try {
+            backgroundThread?.join()
+            backgroundThread = null
+            backgroundHandler = null
+        } catch (e: InterruptedException) {
+            Log.e("RodytoLensPro", "Error al detener el hilo", e)
+        }
+    }
+
     private fun detectPhysicalCameraIds(context: Context): Map<String, String> {
+        if (cachedPhysicalIds != null) return cachedPhysicalIds!!
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val result = mutableMapOf<String, String>()
-
+        
         var wideAngleId: String? = null
         var mainId: String? = null
         var telephotoId: String? = null
@@ -66,8 +80,6 @@ class CameraControlViewModel : ViewModel() {
             val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             val focalLength = focalLengths?.firstOrNull() ?: continue
 
-            Log.d("RodytoLensPro", "Cámara ID=$id FocalLength=$focalLength")
-
             if (focalLength < minWideFocalLength) {
                 minWideFocalLength = focalLength
                 wideAngleId = id
@@ -80,8 +92,7 @@ class CameraControlViewModel : ViewModel() {
 
         for (id in manager.cameraIdList) {
             val chars = manager.getCameraCharacteristics(id)
-            val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+            if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
             if (id != wideAngleId && id != telephotoId) {
                 mainId = id
                 break
@@ -94,93 +105,94 @@ class CameraControlViewModel : ViewModel() {
         result["1x"]   = mainId      ?: "0"
         result["3x"]   = telephotoId ?: "3"
 
-        Log.d("RodytoLensPro", "Mapa de lentes detectado: $result")
+        cachedPhysicalIds = result
         return result
     }
 
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lensLabel: String) {
-        // Si la cámara ya está abierta y solo cambiamos de lente,
-        // no cerramos el dispositivo. Solo reiniciamos la sesión.
-        if (cameraDevice != null && activeSurface == surface && _currentLens.value != lensLabel) {
-            _currentLens.value = lensLabel
-            createCaptureSession(surface, lensLabel, context)
-            return
-        }
-
-        closeCamera()
-        activeSurface = surface
+        currentSurface = surface
         _currentLens.value = lensLabel
         cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-        // Configurar ImageReader para captura JPEG en resolución alta
-        imageReader = ImageReader.newInstance(4000, 3000, ImageFormat.JPEG, 2).apply {
-            setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                try {
-                    val buffer = image.planes[0].buffer
-                    val bytes = ByteArray(buffer.remaining())
-                    buffer.get(bytes)
-                    MediaStorageManager.savePhoto(context, bytes)
-                    Log.d("RodytoLensPro", "Foto guardada correctamente")
-                } catch (e: Exception) {
-                    Log.e("RodytoLensPro", "Error procesando imagen", e)
-                } finally {
-                    image.close()
-                }
-            }, backgroundHandler)
+        if (cameraDevice != null) {
+            createCaptureSession(surface, context)
+            return
         }
 
-        // En Samsung One UI siempre abrimos el ID lógico "0" (agrupa todas las traseras)
-        val logicalId = "0"
+        var logicalId = "0"
+        if (_isFrontCamera.value) {
+             for (id in cameraManager!!.cameraIdList) {
+                 val chars = cameraManager!!.getCameraCharacteristics(id)
+                 if (chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
+                     logicalId = id
+                     break
+                 }
+             }
+        }
+
+        setupImageReader(context)
 
         try {
             cameraManager?.openCamera(logicalId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     cameraDevice = camera
-                    createCaptureSession(surface, lensLabel, context)
+                    createCaptureSession(surface, context)
                 }
                 override fun onDisconnected(camera: CameraDevice) {
                     closeCamera()
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
-                    Log.e("RodytoLensPro", "Error crítico en cámara: $error")
+                    closeCamera()
                 }
             }, backgroundHandler)
         } catch (e: CameraAccessException) {
-            Log.e("RodytoLensPro", "Error al abrir cámara lógica", e)
+            Log.e("RodytoLensPro", "Error al abrir cámara", e)
         }
     }
 
-    private fun createCaptureSession(previewSurface: Surface, lensLabel: String, context: Context) {
+    private fun setupImageReader(context: Context) {
+        imageReader?.close()
+        imageReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2).apply {
+            setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                val buffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                image.close()
+                
+                viewModelScope.launch(Dispatchers.IO) {
+                    MediaStorageManager.savePhoto(context, bytes)
+                }
+            }, backgroundHandler)
+        }
+    }
+
+    private fun createCaptureSession(previewSurface: Surface, context: Context) {
         try {
-            val physicalIds = detectPhysicalCameraIds(context)
-            val targetPhysicalId = physicalIds[lensLabel] ?: "0"
-
-            Log.d("RodytoLensPro", "Enrutando a sensor físico ID=$targetPhysicalId para lente=$lensLabel")
-
-            // Configurar salidas con enrutamiento al sensor físico específico
             val previewOutputConfig = OutputConfiguration(previewSurface)
-            val imageSurface = imageReader?.surface
-            val imageOutputConfig = imageSurface?.let { OutputConfiguration(it) }
+            val imageOutputConfig = imageReader?.surface?.let { OutputConfiguration(it) }
 
-            // La magia: forzar el ISP del Snapdragon 888 a usar el lente físico correcto
-            if (targetPhysicalId != "0") {
-                previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
-                imageOutputConfig?.setPhysicalCameraId(targetPhysicalId)
+            if (!_isFrontCamera.value) {
+                val physicalIds = detectPhysicalCameraIds(context)
+                val targetPhysicalId = physicalIds[_currentLens.value] ?: "0"
+                if (targetPhysicalId != "0") {
+                    previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
+                    imageOutputConfig?.setPhysicalCameraId(targetPhysicalId)
+                }
             }
 
             val outputConfigs = mutableListOf(previewOutputConfig)
             imageOutputConfig?.let { outputConfigs.add(it) }
 
-            val previewRequestBuilder = cameraDevice
-                ?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                ?.apply { addTarget(previewSurface) }
+            val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.apply {
+                addTarget(previewSurface)
+            }
 
             val sessionConfig = SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
                 outputConfigs,
-                { it.run() }, // Executor en el hilo actual
+                { it.run() },
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
@@ -188,40 +200,39 @@ class CameraControlViewModel : ViewModel() {
                             session.setRepeatingRequest(it.build(), null, backgroundHandler)
                         }
                     }
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e("RodytoLensPro", "Fallo al configurar sesión para lente $lensLabel")
-                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {}
                 }
             )
 
             cameraDevice?.createCaptureSession(sessionConfig)
-
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error al crear sesión de captura: ${e.message}")
+            Log.e("RodytoLensPro", "Error al crear sesión: ${e.message}")
         }
     }
 
     fun capturePhoto() {
-        if (cameraDevice == null || captureSession == null || imageReader == null) {
-            Log.w("RodytoLensPro", "capturePhoto llamado antes de que la cámara esté lista")
-            return
-        }
+        if (cameraDevice == null || captureSession == null || imageReader == null) return
         try {
             val captureBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             captureBuilder.addTarget(imageReader!!.surface)
             captureBuilder.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 90) // Orientación portrait S21 FE
+            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 90) 
 
             captureSession?.capture(captureBuilder.build(), null, backgroundHandler)
-            Log.d("RodytoLensPro", "Captura disparada")
         } catch (e: CameraAccessException) {
             Log.e("RodytoLensPro", "Error al capturar foto", e)
         }
     }
 
     fun switchLens(context: Context, lens: String) {
-        val surface = activeSurface ?: return
-        startCameraSession(context, surface, lens)
+        if (_isFrontCamera.value || _currentLens.value == lens) return
+        currentSurface?.let { startCameraSession(context, it, lens) }
+    }
+
+    fun toggleFrontCamera(context: Context) {
+        _isFrontCamera.value = !_isFrontCamera.value
+        closeCamera()
+        currentSurface?.let { startCameraSession(context, it, "1x") }
     }
 
     fun setCameraMode(mode: String) {
@@ -238,12 +249,12 @@ class CameraControlViewModel : ViewModel() {
         cameraDevice?.close()
         cameraDevice = null
         imageReader?.close()
-        imageReader = null
     }
 
     override fun onCleared() {
         super.onCleared()
         closeCamera()
-        backgroundThread?.quitSafely()
+        stopBackgroundThread()
+        currentSurface = null
     }
 }
