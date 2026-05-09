@@ -30,8 +30,12 @@ jobs:
         echo "y" | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
         echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
 
-    - name: Dar permisos de ejecución a Gradlew
-      run: chmod +x gradlew
+    - name: Regenerar Gradle Wrapper
+      run: |
+        wget https://services.gradle.org/distributions/gradle-8.1.1-bin.zip -P /tmp
+        unzip /tmp/gradle-8.1.1-bin.zip -d /tmp
+        /tmp/gradle-8.1.1/bin/gradle wrapper --gradle-version 8.1.1
+        chmod +x gradlew
 
     - name: Compilar APK con Gradle
       run: ./gradlew assembleDebug
