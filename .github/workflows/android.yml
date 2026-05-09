@@ -1,11 +1,11 @@
-name: Android CI Build
+name: Android CI Build - Rodyto Lens Pro
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: # Permite disparar la compilación manualmente
 
 jobs:
   build:
@@ -22,26 +22,25 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Instalar NDK y CMake
+    - name: Configurar SDK de Android
       uses: android-actions/setup-android@v3
 
-    - name: Instalar versión específica de NDK
+    - name: Instalar NDK y CMake específicos
       run: |
+        # Instalamos la versión exacta que requiere tu proyecto para evitar errores de enlace en C++
         echo "y" | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+        # Configuramos las variables de entorno para que Gradle encuentre el NDK en Android 16
         echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
 
-    - name: Regenerar Gradle Wrapper
-      run: |
-        wget https://services.gradle.org/distributions/gradle-8.1.1-bin.zip -P /tmp
-        unzip /tmp/gradle-8.1.1-bin.zip -d /tmp
-        /tmp/gradle-8.1.1/bin/gradle wrapper --gradle-version 8.1.1
-        chmod +x gradlew
+    - name: Dar permisos de ejecución a Gradlew
+      run: chmod +x gradlew
 
-    - name: Compilar APK con Gradle
-      run: ./gradlew assembleDebug
+    - name: Sincronizar y Compilar APK (Debug)
+      # Usamos 'assembleDebug' porque es el comando estándar para generar el APK de prueba
+      run: ./gradlew assembleDebug --stacktrace
 
-    - name: Subir APK generada
+    - name: Subir APK generado
       uses: actions/upload-artifact@v4
       with:
-        name: RodytoLensPro-Debug-APK
+        name: RodytoLensPro-Alpha
         path: app/build/outputs/apk/debug/app-debug.apk
