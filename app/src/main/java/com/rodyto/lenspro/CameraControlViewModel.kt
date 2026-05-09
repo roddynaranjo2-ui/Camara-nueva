@@ -25,7 +25,6 @@ class CameraControlViewModel : ViewModel() {
     private val _focusLocked = MutableStateFlow(false)
     val focusLocked = _focusLocked.asStateFlow()
 
-    // Surface activo guardado para poder reutilizarlo al cambiar de lente
     private var activeSurface: Surface? = null
 
     init {
@@ -40,6 +39,61 @@ class CameraControlViewModel : ViewModel() {
         backgroundHandler = Handler(backgroundThread!!.looper)
     }
 
+    // Detecta automáticamente qué cámara es gran angular, principal y teleobjetivo
+    // Funciona en cualquier dispositivo, no solo en el S21 FE
+    private fun detectCameraIds(context: Context): Map<String, String> {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val result = mutableMapOf<String, String>()
+
+        var wideAngleId: String? = null
+        var mainId: String? = null
+        var telephotoId: String? = null
+        var maxTeleFocalLength = 0f
+        var minWideFocalLength = Float.MAX_VALUE
+
+        for (id in manager.cameraIdList) {
+            val chars = manager.getCameraCharacteristics(id)
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+
+            val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            val focalLength = focalLengths?.firstOrNull() ?: continue
+
+            Log.d("RodytoLensPro", "Cámara ID=$id FocalLength=$focalLength")
+
+            if (focalLength < minWideFocalLength) {
+                minWideFocalLength = focalLength
+                wideAngleId = id
+            }
+
+            if (focalLength > maxTeleFocalLength) {
+                maxTeleFocalLength = focalLength
+                telephotoId = id
+            }
+        }
+
+        // La principal (1x) es la que queda entre las dos extremas
+        for (id in manager.cameraIdList) {
+            val chars = manager.getCameraCharacteristics(id)
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+            if (id != wideAngleId && id != telephotoId) {
+                mainId = id
+                break
+            }
+        }
+
+        // Si solo hay 2 cámaras traseras, la principal es el teleobjetivo
+        if (mainId == null) mainId = telephotoId
+
+        result["0.5x"] = wideAngleId ?: "2"
+        result["1x"]   = mainId      ?: "0"
+        result["3x"]   = telephotoId ?: "3"
+
+        Log.d("RodytoLensPro", "Mapa de lentes: $result")
+        return result
+    }
+
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lensLabel: String) {
         closeCamera()
@@ -47,13 +101,10 @@ class CameraControlViewModel : ViewModel() {
         _currentLens.value = lensLabel
         cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-        val physicalIds = getPhysicalCameraIdsNative()
+        val cameraIds = detectCameraIds(context)
+        val targetId = cameraIds[lensLabel] ?: "0"
 
-        val targetId = when (lensLabel) {
-            "0.5x" -> physicalIds?.getOrNull(2) ?: "2"
-            "3x"   -> physicalIds?.getOrNull(1) ?: "3"
-            else   -> physicalIds?.getOrNull(0) ?: "0"
-        }
+        Log.d("RodytoLensPro", "Abriendo cámara ID=$targetId para lente=$lensLabel")
 
         try {
             cameraManager?.openCamera(targetId, object : CameraDevice.StateCallback() {
@@ -97,7 +148,6 @@ class CameraControlViewModel : ViewModel() {
         )
     }
 
-    // Ahora switchLens sí reinicia la sesión con el nuevo sensor físico
     fun switchLens(context: Context, lens: String) {
         val surface = activeSurface ?: return
         startCameraSession(context, surface, lens)
