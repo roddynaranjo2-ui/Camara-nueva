@@ -2,77 +2,95 @@ package com.rodyto.lenspro
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.Image
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
-import java.io.OutputStream
+import java.nio.ByteBuffer
 
-/**
- * Gestor de almacenamiento optimizado para Android 10+ (Scoped Storage)
- * y compatible con Android 16.
- */
-object MediaStorageManager {
+class MediaStorageManager {
 
-    private const val FOLDER_NAME = "RodytoLensPro"
+    private val folderName = "LensPro"
 
-    /**
-     * Guarda una fotografía en la galería de forma asíncrona y segura.
-     */
-    fun savePhoto(context: Context, jpegBytes: ByteArray) {
+    fun saveImage(context: Context, image: Image?) {
+        if (image == null) {
+            Log.e("RodytoLensPro", "La imagen es nula, no se puede guardar.")
+            return
+        }
+
+        val bytes = try {
+            val plane = image.planes.firstOrNull()
+            if (plane == null) {
+                Log.e("RodytoLensPro", "La imagen no contiene planos válidos.")
+                return
+            }
+
+            val buffer: ByteBuffer = plane.buffer
+            ByteArray(buffer.remaining()).also { buffer.get(it) }
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "No se pudieron extraer bytes de la imagen", e)
+            return
+        } finally {
+            image.close()
+        }
+
         val filename = "IMG_${System.currentTimeMillis()}.jpg"
+        val resolver = context.contentResolver
+
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER_NAME")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$folderName")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
 
-        val resolver = context.contentResolver
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
 
+        var uri: Uri? = null
+
         try {
-            val imageUri: Uri? = resolver.insert(collection, contentValues)
+            uri = resolver.insert(collection, contentValues)
+                ?: throw IllegalStateException("No se pudo crear el registro en MediaStore")
 
-            imageUri?.let { uri ->
-                resolver.openOutputStream(uri)?.use { outputStream ->
-                    outputStream.write(jpegBytes)
-                    outputStream.flush()
-                }
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                outputStream.write(bytes)
+                outputStream.flush()
+            } ?: throw IllegalStateException("No se pudo abrir OutputStream para $uri")
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val updatedValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    }
-                    resolver.update(uri, updatedValues, null, null)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val updatedValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }
-                Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
+                resolver.update(uri, updatedValues, null, null)
             }
+
+            Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error crítico guardando foto", e)
+            uri?.let {
+                runCatching { resolver.delete(it, null, null) }
+            }
         }
     }
 
-    /**
-     * Crea un Uri para grabación de video en la carpeta dedicada.
-     */
     fun createVideoUri(context: Context): Uri? {
         val filename = "VID_${System.currentTimeMillis()}.mp4"
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER_NAME")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$folderName")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-        
+
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
@@ -87,9 +105,6 @@ object MediaStorageManager {
         }
     }
 
-    /**
-     * Finaliza el guardado del video para que sea visible en la galería.
-     */
     fun finalizeVideoSave(context: Context, videoUri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
