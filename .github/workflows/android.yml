@@ -12,36 +12,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout del código
+    - name: 1. Checkout del código
       uses: actions/checkout@v4
 
-    - name: Configurar JDK 17
+    - name: 2. Configurar JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Configurar SDK de Android
+    - name: 3. Configurar Gradle (Motor 8.7)
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 8.7
+
+    - name: 4. Configurar SDK de Android
       uses: android-actions/setup-android@v3
 
-    - name: Instalar NDK y CMake específicos
+    - name: 5. Instalar NDK y CMake (Específicos para S21 FE)
       run: |
+        echo "Instalando herramientas de compilación nativa..."
         echo "y" | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
         echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
 
-    - name: Generar Gradle Wrapper Estable
-      # Forzamos la versión 8.7 que es extremadamente estable y compatible con Java 17
-      run: gradle wrapper --gradle-version 8.7
+    - name: 6. Compilar APK con Diagnóstico Extendido
+      # Añadimos --info para ver qué estaba haciendo exactamente
+      # y --display-name para identificar la tarea fallida
+      run: gradle assembleDebug --stacktrace --info --warning-mode all
 
-    - name: Dar permisos de ejecución
-      run: chmod +x gradlew
+    - name: 7. Reporte de Errores (Solo si falla)
+      if: failure()
+      run: |
+        echo "--------------------------------------------------------"
+        echo "🚨 ERROR DETECTADO EN RODYTO LENS PRO 🚨"
+        echo "Analizando la causa del fallo..."
+        echo "--------------------------------------------------------"
+        # Este comando busca errores específicos en los logs de Android
+        grep -r "error:" app/build/reports || echo "No se encontraron reportes HTML, revisa el stacktrace arriba."
 
-    - name: Sincronizar y Compilar APK (Debug)
-      # Ahora usamos ./gradlew (el que acabamos de generar) en lugar del gradle del sistema
-      run: ./gradlew assembleDebug --stacktrace
-
-    - name: Subir APK generado
+    - name: 8. Subir APK generado
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: RodytoLensPro-Alpha
