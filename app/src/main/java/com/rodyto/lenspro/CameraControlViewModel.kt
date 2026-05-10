@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.Executor
 
 class CameraControlViewModel : ViewModel() {
     private var cameraDevice: CameraDevice? = null
@@ -65,44 +66,48 @@ class CameraControlViewModel : ViewModel() {
         if (cachedPhysicalIds != null) return cachedPhysicalIds!!
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val result = mutableMapOf<String, String>()
-        
+
         var wideAngleId: String? = null
         var mainId: String? = null
         var telephotoId: String? = null
         var maxTeleFocalLength = 0f
         var minWideFocalLength = Float.MAX_VALUE
 
-        for (id in manager.cameraIdList) {
-            val chars = manager.getCameraCharacteristics(id)
-            val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+        try {
+            for (id in manager.cameraIdList) {
+                val chars = manager.getCameraCharacteristics(id)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
 
-            val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-            val focalLength = focalLengths?.firstOrNull() ?: continue
+                val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                val focalLength = focalLengths?.firstOrNull() ?: continue
 
-            if (focalLength < minWideFocalLength) {
-                minWideFocalLength = focalLength
-                wideAngleId = id
+                if (focalLength < minWideFocalLength) {
+                    minWideFocalLength = focalLength
+                    wideAngleId = id
+                }
+                if (focalLength > maxTeleFocalLength) {
+                    maxTeleFocalLength = focalLength
+                    telephotoId = id
+                }
             }
-            if (focalLength > maxTeleFocalLength) {
-                maxTeleFocalLength = focalLength
-                telephotoId = id
+
+            for (id in manager.cameraIdList) {
+                val chars = manager.getCameraCharacteristics(id)
+                if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
+                if (id != wideAngleId && id != telephotoId) {
+                    mainId = id
+                    break
+                }
             }
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error detectando IDs físicos", e)
         }
 
-        for (id in manager.cameraIdList) {
-            val chars = manager.getCameraCharacteristics(id)
-            if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
-            if (id != wideAngleId && id != telephotoId) {
-                mainId = id
-                break
-            }
-        }
-
-        if (mainId == null) mainId = telephotoId
+        if (mainId == null) mainId = "0"
 
         result["0.5x"] = wideAngleId ?: "2"
-        result["1x"]   = mainId      ?: "0"
+        result["1x"]   = mainId
         result["3x"]   = telephotoId ?: "3"
 
         cachedPhysicalIds = result
@@ -160,7 +165,7 @@ class CameraControlViewModel : ViewModel() {
                 val bytes = ByteArray(buffer.remaining())
                 buffer.get(bytes)
                 image.close()
-                
+
                 viewModelScope.launch(Dispatchers.IO) {
                     MediaStorageManager.savePhoto(context, bytes)
                 }
@@ -169,6 +174,8 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private fun createCaptureSession(previewSurface: Surface, context: Context) {
+        if (cameraDevice == null) return
+        
         try {
             val previewOutputConfig = OutputConfiguration(previewSurface)
             val imageOutputConfig = imageReader?.surface?.let { OutputConfiguration(it) }
@@ -176,37 +183,50 @@ class CameraControlViewModel : ViewModel() {
             if (!_isFrontCamera.value) {
                 val physicalIds = detectPhysicalCameraIds(context)
                 val targetPhysicalId = physicalIds[_currentLens.value] ?: "0"
-                if (targetPhysicalId != "0") {
-                    previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
-                    imageOutputConfig?.setPhysicalCameraId(targetPhysicalId)
+                
+                // Solo aplicamos ID físico si es diferente al ID lógico base
+                if (targetPhysicalId != "0" && targetPhysicalId != cameraDevice?.id) {
+                    try {
+                        previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
+                        imageOutputConfig?.setPhysicalCameraId(targetPhysicalId)
+                    } catch (e: Exception) {
+                        Log.w("RodytoLensPro", "Lente físico no soportado directamente: $targetPhysicalId")
+                    }
                 }
             }
 
-            val outputConfigs = mutableListOf(previewOutputConfig)
+            val outputConfigs = mutableListOf<OutputConfiguration>()
+            outputConfigs.add(previewOutputConfig)
             imageOutputConfig?.let { outputConfigs.add(it) }
 
-            val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.apply {
-                addTarget(previewSurface)
-            }
+            val executor = Executor { command -> backgroundHandler?.post(command) }
 
             val sessionConfig = SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
                 outputConfigs,
-                { it.run() },
+                executor,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
-                        previewRequestBuilder?.let {
-                            session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                        try {
+                            val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                            previewRequestBuilder?.addTarget(previewSurface)
+                            previewRequestBuilder?.let {
+                                session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("RodytoLensPro", "Error al iniciar preview", e)
                         }
                     }
-                    override fun onConfigureFailed(session: CameraCaptureSession) {}
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e("RodytoLensPro", "Configuración de sesión fallida")
+                    }
                 }
             )
 
             cameraDevice?.createCaptureSession(sessionConfig)
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error al crear sesión: ${e.message}")
+            Log.e("RodytoLensPro", "Error crítico al crear sesión: ${e.message}")
         }
     }
 
