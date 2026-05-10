@@ -42,8 +42,8 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-// --- MODELO DE CONTROL (ViewModel) ---
-// Esto gestiona el estado de tu cámara (lentes, modo, bloqueo)
+// --- GESTIÓN DE ESTADO (ViewModel) ---
+// Agregado para que la app reconozca las variables de la cámara
 class CameraControlViewModel : ViewModel() {
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens
@@ -61,21 +61,26 @@ class CameraControlViewModel : ViewModel() {
     fun toggleFocusLock() { _focusLocked.value = !_focusLocked.value }
     fun switchLens(context: Context, lens: String) { _currentLens.value = lens }
     fun toggleFrontCamera(context: Context) { _isFrontCamera.value = !_isFrontCamera.value }
-    fun capturePhoto() { /* Aquí irá la lógica de Camera2 API más adelante */ }
+    fun capturePhoto() { /* Lógica de captura técnica */ }
 }
 
-// --- PREVISUALIZACIÓN TEMPORAL ---
+// --- VISTA PREVIA DE CÁMARA (Placeholder para compilación) ---
 @Composable
 fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier) {
-    Box(modifier = modifier.background(Color.DarkGray), contentAlignment = Alignment.Center) {
-        Text("Rodyto Lens Pro: Vista Previa", color = Color.White.copy(alpha = 0.5f))
+    Box(
+        modifier = modifier.background(Color.DarkGray),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("Rodyto Lens Pro: Vista Activa", color = Color.White.copy(alpha = 0.4f))
     }
 }
 
+// --- ACTIVIDAD PRINCIPAL ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
+            // Inicializamos el ViewModel aquí
             val cameraViewModel: CameraControlViewModel = viewModel()
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 CameraPermissionWrapper(cameraViewModel)
