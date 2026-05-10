@@ -20,6 +20,16 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.Executor
 
 class CameraControlViewModel : ViewModel() {
+
+    init {
+        // Carga la librería nativa compilada por CMake
+        System.loadLibrary("rodytolenspro")
+        startBackgroundThread()
+    }
+
+    // Función nativa expuesta desde C++
+    external fun getPhysicalCameraIdsNative(): Array<String>
+
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var cameraManager: CameraManager? = null
@@ -41,10 +51,6 @@ class CameraControlViewModel : ViewModel() {
     val isFrontCamera = _isFrontCamera.asStateFlow()
 
     private var cachedPhysicalIds: Map<String, String>? = null
-
-    init {
-        startBackgroundThread()
-    }
 
     private fun startBackgroundThread() {
         backgroundThread = HandlerThread("CameraBackground").also { it.start() }
@@ -74,6 +80,12 @@ class CameraControlViewModel : ViewModel() {
         var minWideFocalLength = Float.MAX_VALUE
 
         try {
+            // Intentamos usar la función nativa si está disponible
+            val nativeIds = getPhysicalCameraIdsNative()
+            if (nativeIds.isNotEmpty()) {
+                Log.i("RodytoLensPro", "IDs nativos encontrados: ${nativeIds.joinToString()}")
+            }
+
             for (id in manager.cameraIdList) {
                 val chars = manager.getCameraCharacteristics(id)
                 val facing = chars.get(CameraCharacteristics.LENS_FACING)
@@ -105,10 +117,11 @@ class CameraControlViewModel : ViewModel() {
         }
 
         if (mainId == null) mainId = "0"
-
-        result["0.5x"] = wideAngleId ?: "2"
+        
+        // Mapeo dinámico, evitando hardcodear "2" o "3" si es posible
+        result["0.5x"] = wideAngleId ?: mainId
         result["1x"]   = mainId
-        result["3x"]   = telephotoId ?: "3"
+        result["3x"]   = telephotoId ?: mainId
 
         cachedPhysicalIds = result
         return result
@@ -167,7 +180,7 @@ class CameraControlViewModel : ViewModel() {
                 image.close()
 
                 viewModelScope.launch(Dispatchers.IO) {
-                    MediaStorageManager.savePhoto(context, bytes)
+                    MediaStorageManager.savePhoto(context.applicationContext, bytes)
                 }
             }, backgroundHandler)
         }
@@ -184,7 +197,6 @@ class CameraControlViewModel : ViewModel() {
                 val physicalIds = detectPhysicalCameraIds(context)
                 val targetPhysicalId = physicalIds[_currentLens.value] ?: "0"
                 
-                // Solo aplicamos ID físico si es diferente al ID lógico base
                 if (targetPhysicalId != "0" && targetPhysicalId != cameraDevice?.id) {
                     try {
                         previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
@@ -223,7 +235,6 @@ class CameraControlViewModel : ViewModel() {
                     }
                 }
             )
-
             cameraDevice?.createCaptureSession(sessionConfig)
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error crítico al crear sesión: ${e.message}")
@@ -269,6 +280,7 @@ class CameraControlViewModel : ViewModel() {
         cameraDevice?.close()
         cameraDevice = null
         imageReader?.close()
+        imageReader = null
     }
 
     override fun onCleared() {
