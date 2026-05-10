@@ -1,7 +1,6 @@
 package com.rodyto.lenspro
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaActionSound
 import android.os.Build
@@ -12,7 +11,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -39,48 +37,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
-// --- GESTIÓN DE ESTADO (ViewModel) ---
-// Agregado para que la app reconozca las variables de la cámara
-class CameraControlViewModel : ViewModel() {
-    private val _currentLens = MutableStateFlow("1x")
-    val currentLens: StateFlow<String> = _currentLens
-
-    private val _cameraMode = MutableStateFlow("FOTO")
-    val cameraMode: StateFlow<String> = _cameraMode
-
-    private val _isFrontCamera = MutableStateFlow(false)
-    val isFrontCamera: StateFlow<Boolean> = _isFrontCamera
-
-    private val _focusLocked = MutableStateFlow(false)
-    val focusLocked: StateFlow<Boolean> = _focusLocked
-
-    fun setCameraMode(mode: String) { _cameraMode.value = mode }
-    fun toggleFocusLock() { _focusLocked.value = !_focusLocked.value }
-    fun switchLens(context: Context, lens: String) { _currentLens.value = lens }
-    fun toggleFrontCamera(context: Context) { _isFrontCamera.value = !_isFrontCamera.value }
-    fun capturePhoto() { /* Lógica de captura técnica */ }
-}
-
-// --- VISTA PREVIA DE CÁMARA (Placeholder para compilación) ---
-@Composable
-fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier) {
-    Box(
-        modifier = modifier.background(Color.DarkGray),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("Rodyto Lens Pro: Vista Activa", color = Color.White.copy(alpha = 0.4f))
-    }
-}
-
-// --- ACTIVIDAD PRINCIPAL ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Inicializamos el ViewModel aquí
             val cameraViewModel: CameraControlViewModel = viewModel()
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                 CameraPermissionWrapper(cameraViewModel)
@@ -92,7 +53,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
-
     val requiredPermissions = remember {
         mutableListOf(
             Manifest.permission.CAMERA,
@@ -158,6 +118,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // Se llama al CameraPreview real definido en CameraPreview.kt
         CameraPreview(
             viewModel = viewModel,
             modifier = Modifier
@@ -246,9 +207,7 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
     DisposableEffect(Unit) {
-        onDispose {
-            sound.release()
-        }
+        onDispose { sound.release() }
     }
 
     Row(
