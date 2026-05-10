@@ -13,24 +13,24 @@ class MediaStorageManager {
 
     private val folderName = "LensPro"
 
-    fun saveImage(context: Context, image: Image?) {
+    // Ahora retorna Uri? para que el ViewModel pueda actualizar la miniatura
+    fun saveImage(context: Context, image: Image?): Uri? {
         if (image == null) {
             Log.e("RodytoLensPro", "La imagen es nula, no se puede guardar.")
-            return
+            return null
         }
 
         val bytes = try {
             val plane = image.planes.firstOrNull()
             if (plane == null) {
                 Log.e("RodytoLensPro", "La imagen no contiene planos válidos.")
-                return
+                return null
             }
-
             val buffer: ByteBuffer = plane.buffer
             ByteArray(buffer.remaining()).also { buffer.get(it) }
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "No se pudieron extraer bytes de la imagen", e)
-            return
+            return null
         } finally {
             image.close()
         }
@@ -72,11 +72,11 @@ class MediaStorageManager {
             }
 
             Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
+            return uri
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error crítico guardando foto", e)
-            uri?.let {
-                runCatching { resolver.delete(it, null, null) }
-            }
+            uri?.let { runCatching { resolver.delete(it, null, null) } }
+            return null
         }
     }
 
