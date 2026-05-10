@@ -1,5 +1,6 @@
 package com.rodyto.lenspro
 
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,14 +18,21 @@ fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifi
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var activeSurface by remember { mutableStateOf<android.view.Surface?>(null) }
+    // Usamos un State para la superficie para que el ciclo de vida reaccione correctamente
+    var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, activeSurface, currentLens) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                activeSurface?.let { viewModel.startCameraSession(context, it, currentLens) }
-            } else if (event == Lifecycle.Event.ON_PAUSE) {
-                viewModel.closeCamera()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    activeSurface?.let { surface ->
+                        viewModel.startCameraSession(context, surface, currentLens)
+                    }
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.closeCamera()
+                }
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -34,24 +42,33 @@ fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifi
     }
 
     AndroidView(
-        factory = { ctx ->
-            SurfaceView(ctx).apply {
+        factory = { viewContext ->
+            SurfaceView(viewContext).apply {
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        activeSurface = holder.surface
-                        viewModel.startCameraSession(context, holder.surface, currentLens)
+                        val surface = holder.surface
+                        activeSurface = surface
+                        // Usamos el contexto de la vista para mayor seguridad en el NDK/Camera2
+                        viewModel.startCameraSession(viewContext, surface, currentLens)
                     }
 
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                        // Si el tamaño cambia, Camera2 suele necesitar una reconfiguración
+                        if (holder.surface.isValid) {
+                            activeSurface = holder.surface
+                        }
+                    }
 
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        viewModel.closeCamera()
                         activeSurface = null
+                        viewModel.closeCamera()
                     }
                 })
             }
         },
-        update = {}, // Vacío intencionalmente para evitar bucles de reinicio
+        update = { _ ->
+            // El update se mantiene vacío para que el control lo lleve el SurfaceHolder.Callback
+        },
         modifier = modifier.fillMaxSize()
     )
 }
