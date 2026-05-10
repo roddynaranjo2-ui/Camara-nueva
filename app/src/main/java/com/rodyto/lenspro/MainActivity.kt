@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState // Importación explícita para evitar errores de resolución
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -118,7 +119,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // Se llama al CameraPreview real definido en CameraPreview.kt
         CameraPreview(
             viewModel = viewModel,
             modifier = Modifier
