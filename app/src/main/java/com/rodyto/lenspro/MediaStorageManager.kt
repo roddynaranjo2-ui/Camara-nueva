@@ -8,11 +8,17 @@ import android.provider.MediaStore
 import android.util.Log
 import java.io.OutputStream
 
+/**
+ * Gestor de almacenamiento optimizado para Android 10+ (Scoped Storage)
+ * y compatible con Android 16.
+ */
 object MediaStorageManager {
 
     private const val FOLDER_NAME = "RodytoLensPro"
 
-    // 1. Guardar Fotografía (JPEG)
+    /**
+     * Guarda una fotografía en la galería de forma asíncrona y segura.
+     */
     fun savePhoto(context: Context, jpegBytes: ByteArray) {
         val filename = "IMG_${System.currentTimeMillis()}.jpg"
         val contentValues = ContentValues().apply {
@@ -25,11 +31,16 @@ object MediaStorageManager {
         }
 
         val resolver = context.contentResolver
-        val imageUri: Uri? = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
 
-        imageUri?.let { uri ->
-            try {
-                // Simplificación del stream para evitar errores de inferencia del compilador
+        try {
+            val imageUri: Uri? = resolver.insert(collection, contentValues)
+
+            imageUri?.let { uri ->
                 resolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(jpegBytes)
                     outputStream.flush()
@@ -42,13 +53,15 @@ object MediaStorageManager {
                     resolver.update(uri, updatedValues, null, null)
                 }
                 Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
-            } catch (e: Exception) {
-                Log.e("RodytoLensPro", "Error guardando foto", e)
             }
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error crítico guardando foto", e)
         }
     }
 
-    // 2. Preparar el Uri para grabación de Video
+    /**
+     * Crea un Uri para grabación de video en la carpeta dedicada.
+     */
     fun createVideoUri(context: Context): Uri? {
         val filename = "VID_${System.currentTimeMillis()}.mp4"
         val contentValues = ContentValues().apply {
@@ -59,15 +72,24 @@ object MediaStorageManager {
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
+        
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
         return try {
-            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+            context.contentResolver.insert(collection, contentValues)
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error creando Uri de video", e)
             null
         }
     }
 
-    // 3. Finalizar guardado de video (remover flag IS_PENDING)
+    /**
+     * Finaliza el guardado del video para que sea visible en la galería.
+     */
     fun finalizeVideoSave(context: Context, videoUri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {

@@ -23,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState // Importación explícita para evitar errores de resolución
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,14 +37,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val cameraViewModel: CameraControlViewModel = viewModel()
-            Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                CameraPermissionWrapper(cameraViewModel)
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                    CameraPermissionWrapper(cameraViewModel)
+                }
             }
         }
     }
@@ -55,18 +57,18 @@ class MainActivity : ComponentActivity() {
 fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
     val requiredPermissions = remember {
-        mutableListOf(
+        val list = mutableListOf(
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
-        ).apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.READ_MEDIA_IMAGES)
-                add(Manifest.permission.READ_MEDIA_VIDEO)
-            } else {
-                add(Manifest.permission.READ_EXTERNAL_STORAGE)
-                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.READ_MEDIA_IMAGES)
+            list.add(Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            list.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
+        list
     }
 
     var hasPermissions by remember {
@@ -93,13 +95,17 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Se necesitan permisos para usar la app.",
+                    text = "LensPro necesita permisos para funcionar.",
                     color = Color.White,
-                    fontSize = 16.sp,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(24.dp)
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 24.dp)
                 )
-                Button(onClick = { launcher.launch(requiredPermissions.toTypedArray()) }) {
+                Button(
+                    onClick = { launcher.launch(requiredPermissions.toTypedArray()) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD700), contentColor = Color.Black)
+                ) {
                     Text("Conceder permisos")
                 }
             }
@@ -109,10 +115,10 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 
 @Composable
 fun CameraScreen(viewModel: CameraControlViewModel) {
-    val lens by viewModel.currentLens.collectAsState()
-    val mode by viewModel.cameraMode.collectAsState()
-    val isFront by viewModel.isFrontCamera.collectAsState()
-    val isFocusLocked by viewModel.focusLocked.collectAsState()
+    val lens by viewModel.currentLens.collectAsStateWithLifecycle()
+    val mode by viewModel.cameraMode.collectAsStateWithLifecycle()
+    val isFront by viewModel.isFrontCamera.collectAsStateWithLifecycle()
+    val isFocusLocked by viewModel.focusLocked.collectAsStateWithLifecycle()
     val view = LocalView.current
     val density = LocalDensity.current
 
@@ -145,8 +151,14 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 modifier = Modifier
                     .offset(x = xDp - 30.dp, y = yDp - 30.dp)
                     .size(60.dp)
-                    .border(2.dp, Color.Yellow)
+                    .border(1.5.dp, Color.Yellow.copy(alpha = 0.8f))
             )
+            
+            // Auto-hide focus point after 2 seconds
+            LaunchedEffect(it) {
+                kotlinx.coroutines.delay(2000)
+                focusPoint = null
+            }
         }
 
         if (isFocusLocked) {
@@ -154,11 +166,13 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 text = "AE/AF LOCK",
                 color = Color(0xFFFFD700),
                 fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 48.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .padding(top = 60.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
             )
         }
 
@@ -169,7 +183,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     viewModel.switchLens(view.context, it)
                 },
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp)
             )
         }
 
@@ -178,14 +192,15 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
-                modifier = Modifier.padding(bottom = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(28.dp)
+                modifier = Modifier.padding(bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(32.dp)
             ) {
                 listOf("FOTO", "VIDEO").forEach { m ->
                     Text(
                         text = m,
-                        color = if (mode == m) Color(0xFFFFD700) else Color.White,
+                        color = if (mode == m) Color(0xFFFFD700) else Color.White.copy(alpha = 0.7f),
                         fontWeight = if (mode == m) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 14.sp,
                         modifier = Modifier.clickable {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             viewModel.setCameraMode(m)
@@ -201,7 +216,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
 @Composable
 fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) {
     var isPressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(targetValue = if (isPressed) 0.85f else 1f, label = "scale")
+    val scale by animateFloatAsState(targetValue = if (isPressed) 0.88f else 1f, label = "scale")
     val buttonColor by animateColorAsState(targetValue = if (mode == "VIDEO") Color.Red else Color.White, label = "color")
 
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
@@ -213,29 +228,32 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp)
-            .clip(RoundedCornerShape(40.dp))
-            .background(Color(0x66000000))
-            .border(0.5.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(40.dp))
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            .padding(horizontal = 24.dp, vertical = 32.dp)
+            .height(100.dp)
+            .clip(RoundedCornerShape(50.dp))
+            .background(Color.Black.copy(alpha = 0.4f))
+            .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(50.dp))
+            .padding(horizontal = 30.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Thumbnail placeholder
         Box(
             modifier = Modifier
-                .size(50.dp)
+                .size(52.dp)
                 .clip(CircleShape)
-                .background(Color.DarkGray)
-                .border(1.dp, Color.White, CircleShape)
+                .background(Color.DarkGray.copy(alpha = 0.8f))
+                .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
         )
 
+        // Shutter Button
         Box(
             modifier = Modifier
-                .size(76.dp)
+                .size(80.dp)
                 .scale(scale)
                 .clip(CircleShape)
                 .background(buttonColor)
-                .border(4.dp, Color.LightGray, CircleShape)
+                .border(4.dp, Color.Gray.copy(alpha = 0.5f), CircleShape)
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onPress = {
@@ -252,18 +270,19 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
                 }
         )
 
+        // Flip Camera Button
         Box(
             modifier = Modifier
-                .size(50.dp)
+                .size(52.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.2f))
+                .background(Color.White.copy(alpha = 0.15f))
                 .clickable {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     viewModel.toggleFrontCamera(view.context)
                 },
             contentAlignment = Alignment.Center
         ) {
-            Text(text = "↺", color = Color.White, fontSize = 24.sp)
+            Text(text = "↺", color = Color.White, fontSize = 28.sp)
         }
     }
 }
@@ -272,25 +291,27 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
 fun LensSelector(currentLens: String, onLensSelect: (String) -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(40.dp))
-            .background(Color(0x66000000))
-            .border(0.5.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(40.dp))
-            .padding(4.dp)
+            .clip(RoundedCornerShape(30.dp))
+            .background(Color.Black.copy(alpha = 0.5f))
+            .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(30.dp))
+            .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         listOf("0.5x", "1x", "3x").forEach { lens ->
             val isSelected = currentLens == lens
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(46.dp)
                     .clip(CircleShape)
-                    .background(if (isSelected) Color.White.copy(alpha = 0.2f) else Color.Transparent)
+                    .background(if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Transparent)
                     .clickable { onLensSelect(lens) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = lens,
                     color = if (isSelected) Color(0xFFFFD700) else Color.White,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
                 )
             }
         }

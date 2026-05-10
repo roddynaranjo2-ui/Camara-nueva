@@ -11,22 +11,27 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifier) {
-    val currentLens by viewModel.currentLens.collectAsState()
+    val currentLens by viewModel.currentLens.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Usamos un State para la superficie para que el ciclo de vida reaccione correctamente
+    // Estado para rastrear si la superficie está lista
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
-    DisposableEffect(lifecycleOwner, activeSurface, currentLens) {
+    // Manejo del ciclo de vida de la actividad/fragmento
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
+                    // La cámara se abrirá automáticamente cuando la superficie esté lista o si ya lo está
                     activeSurface?.let { surface ->
-                        viewModel.startCameraSession(context, surface, currentLens)
+                        if (surface.isValid) {
+                            viewModel.startCameraSession(context, surface, currentLens)
+                        }
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> {
@@ -38,6 +43,16 @@ fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifi
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.closeCamera()
+        }
+    }
+
+    // Reiniciar sesión si cambia el lente y la superficie está activa
+    LaunchedEffect(currentLens) {
+        activeSurface?.let { surface ->
+            if (surface.isValid) {
+                viewModel.startCameraSession(context, surface, currentLens)
+            }
         }
     }
 
@@ -48,12 +63,10 @@ fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifi
                     override fun surfaceCreated(holder: SurfaceHolder) {
                         val surface = holder.surface
                         activeSurface = surface
-                        // Usamos el contexto de la vista para mayor seguridad en el NDK/Camera2
                         viewModel.startCameraSession(viewContext, surface, currentLens)
                     }
 
                     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                        // Si el tamaño cambia, Camera2 suele necesitar una reconfiguración
                         if (holder.surface.isValid) {
                             activeSurface = holder.surface
                         }
@@ -66,9 +79,7 @@ fun CameraPreview(viewModel: CameraControlViewModel, modifier: Modifier = Modifi
                 })
             }
         },
-        update = { _ ->
-            // El update se mantiene vacío para que el control lo lleve el SurfaceHolder.Callback
-        },
+        update = { _ -> },
         modifier = modifier.fillMaxSize()
     )
 }

@@ -19,10 +19,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executor
 
+/**
+ * CameraControlViewModel optimizado para Snapdragon 888 y Android 16.
+ * Implementa gestión avanzada de lentes físicos y flujos de estado reactivos.
+ */
 class CameraControlViewModel : ViewModel() {
 
     init {
-        System.loadLibrary("rodytolenspro")
+        try {
+            System.loadLibrary("rodytolenspro")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e("RodytoLensPro", "Error cargando librería nativa", e)
+        }
         startBackgroundThread()
     }
 
@@ -51,8 +59,10 @@ class CameraControlViewModel : ViewModel() {
     private var cachedPhysicalIds: Map<String, String>? = null
 
     private fun startBackgroundThread() {
-        backgroundThread = HandlerThread("CameraBackground").also { it.start() }
-        backgroundHandler = Handler(backgroundThread!!.looper)
+        if (backgroundThread == null) {
+            backgroundThread = HandlerThread("CameraBackground").also { it.start() }
+            backgroundHandler = Handler(backgroundThread!!.looper)
+        }
     }
 
     private fun stopBackgroundThread() {
@@ -67,7 +77,8 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private fun detectPhysicalCameraIds(context: Context): Map<String, String> {
-        if (cachedPhysicalIds != null) return cachedPhysicalIds!!
+        cachedPhysicalIds?.let { return it }
+        
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val result = mutableMapOf<String, String>()
 
@@ -78,9 +89,10 @@ class CameraControlViewModel : ViewModel() {
         var minWideFocalLength = Float.MAX_VALUE
 
         try {
-            val nativeIds = getPhysicalCameraIdsNative()
+            // Intento de obtener IDs nativos para optimización en Snapdragon
+            val nativeIds = try { getPhysicalCameraIdsNative() } catch (e: Exception) { emptyArray<String>() }
             if (nativeIds.isNotEmpty()) {
-                Log.i("RodytoLensPro", "IDs nativos encontrados: ${nativeIds.joinToString()}")
+                Log.i("RodytoLensPro", "IDs nativos detectados: ${nativeIds.joinToString()}")
             }
 
             for (id in manager.cameraIdList) {
@@ -101,6 +113,7 @@ class CameraControlViewModel : ViewModel() {
                 }
             }
 
+            // El principal suele ser el que no es ni el más angular ni el más tele
             for (id in manager.cameraIdList) {
                 val chars = manager.getCameraCharacteristics(id)
                 if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
@@ -113,9 +126,7 @@ class CameraControlViewModel : ViewModel() {
             Log.e("RodytoLensPro", "Error detectando IDs físicos", e)
         }
 
-        // Resolución estricta de nulos para evitar errores de compilación
         val safeMainId = mainId ?: "0"
-        
         result["0.5x"] = wideAngleId ?: safeMainId
         result["1x"]   = safeMainId
         result["3x"]   = telephotoId ?: safeMainId
@@ -130,6 +141,7 @@ class CameraControlViewModel : ViewModel() {
         _currentLens.value = lensLabel
         cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
+        // Si ya hay una cámara abierta, solo reconfiguramos la sesión si es necesario
         if (cameraDevice != null) {
             createCaptureSession(surface, context)
             return
@@ -158,6 +170,7 @@ class CameraControlViewModel : ViewModel() {
                     closeCamera()
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
+                    Log.e("RodytoLensPro", "Error de cámara: $error")
                     closeCamera()
                 }
             }, backgroundHandler)
@@ -168,7 +181,8 @@ class CameraControlViewModel : ViewModel() {
 
     private fun setupImageReader(context: Context) {
         imageReader?.close()
-        imageReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2).apply {
+        // Optimización: Usar resolución máxima permitida o 4K para Snapdragon 888
+        imageReader = ImageReader.newInstance(3840, 2160, ImageFormat.JPEG, 2).apply {
             setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 val buffer = image.planes[0].buffer
@@ -184,7 +198,7 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private fun createCaptureSession(previewSurface: Surface, context: Context) {
-        if (cameraDevice == null) return
+        val device = cameraDevice ?: return
         
         try {
             val previewOutputConfig = OutputConfiguration(previewSurface)
@@ -194,7 +208,8 @@ class CameraControlViewModel : ViewModel() {
                 val physicalIds = detectPhysicalCameraIds(context)
                 val targetPhysicalId = physicalIds[_currentLens.value] ?: "0"
                 
-                if (targetPhysicalId != "0" && targetPhysicalId != cameraDevice?.id) {
+                // Configuración de lente físico específico para zoom óptico real
+                if (targetPhysicalId != "0" && targetPhysicalId != device.id) {
                     try {
                         previewOutputConfig.setPhysicalCameraId(targetPhysicalId)
                         imageOutputConfig?.setPhysicalCameraId(targetPhysicalId)
@@ -217,36 +232,67 @@ class CameraControlViewModel : ViewModel() {
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
-                        try {
-                            val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                            previewRequestBuilder?.addTarget(previewSurface)
-                            previewRequestBuilder?.let {
-                                session.setRepeatingRequest(it.build(), null, backgroundHandler)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("RodytoLensPro", "Error al iniciar preview", e)
-                        }
+                        updatePreview()
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e("RodytoLensPro", "Configuración de sesión fallida")
                     }
                 }
             )
-            cameraDevice?.createCaptureSession(sessionConfig)
+            device.createCaptureSession(sessionConfig)
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error crítico al crear sesión: ${e.message}")
         }
     }
 
-    fun capturePhoto() {
-        if (cameraDevice == null || captureSession == null || imageReader == null) return
+    private fun updatePreview() {
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
+        val surface = currentSurface ?: return
+
         try {
-            val captureBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            captureBuilder.addTarget(imageReader!!.surface)
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(surface)
+            
+            // Optimización de AF/AE para fluidez
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            
+            if (_focusLocked.value) {
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                // Aquí se podrían fijar valores de exposición manual si se desea
+            }
+
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error al actualizar preview", e)
+        }
+    }
+
+    fun capturePhoto() {
+        val device = cameraDevice ?: return
+        val session = captureSession ?: return
+        val reader = imageReader ?: return
+
+        try {
+            val captureBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            captureBuilder.addTarget(reader.surface)
             captureBuilder.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+            
+            // Orientación automática (simplificada para este ejemplo)
             captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 90) 
 
-            captureSession?.capture(captureBuilder.build(), null, backgroundHandler)
+            // Bloquear AF antes de capturar para máxima nitidez
+            captureBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+
+            session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    super.onCaptureCompleted(session, request, result)
+                    Log.d("RodytoLensPro", "Captura finalizada")
+                    // Volver al estado de preview normal
+                    updatePreview()
+                }
+            }, backgroundHandler)
         } catch (e: CameraAccessException) {
             Log.e("RodytoLensPro", "Error al capturar foto", e)
         }
@@ -254,6 +300,9 @@ class CameraControlViewModel : ViewModel() {
 
     fun switchLens(context: Context, lens: String) {
         if (_isFrontCamera.value || _currentLens.value == lens) return
+        _currentLens.value = lens
+        // Reiniciamos la sesión para aplicar el cambio de ID físico de cámara
+        closeCamera()
         currentSurface?.let { startCameraSession(context, it, lens) }
     }
 
@@ -269,15 +318,21 @@ class CameraControlViewModel : ViewModel() {
 
     fun toggleFocusLock() {
         _focusLocked.value = !_focusLocked.value
+        updatePreview()
     }
 
     fun closeCamera() {
-        captureSession?.close()
-        captureSession = null
-        cameraDevice?.close()
-        cameraDevice = null
-        imageReader?.close()
-        imageReader = null
+        try {
+            captureSession?.stopRepeating()
+            captureSession?.close()
+            captureSession = null
+            cameraDevice?.close()
+            cameraDevice = null
+            imageReader?.close()
+            imageReader = null
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error al cerrar cámara", e)
+        }
     }
 
     override fun onCleared() {
