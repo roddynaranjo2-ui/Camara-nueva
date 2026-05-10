@@ -11,10 +11,14 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.MeteringRectangle
 import android.media.ImageReader
+import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -24,13 +28,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.max
 
-/**
- * ViewModel de cámara endurecido para producción.
- * - Nunca intenta abrir physical camera IDs directamente.
- * - Usa una cámara trasera lógica/standalone válida.
- * - Evita carreras de apertura al recrear la Surface.
- * - Usa tamaños JPEG soportados por la cámara.
- */
 class CameraControlViewModel : ViewModel() {
 
     init {
@@ -51,7 +48,8 @@ class CameraControlViewModel : ViewModel() {
         val jpegSize: Size,
         val sensorRect: Rect?,
         val zoomRatioRange: Range<Float>?,
-        val maxDigitalZoom: Float
+        val maxDigitalZoom: Float,
+        val exposureRange: Range<Int>?
     )
 
     private var cameraDevice: CameraDevice? = null
@@ -60,6 +58,9 @@ class CameraControlViewModel : ViewModel() {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
     private var imageReader: ImageReader? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var videoParcelFileDescriptor: ParcelFileDescriptor? = null
+    private var currentVideoUri: Uri? = null
     private var currentSurface: Surface? = null
     private var currentCameraId: String? = null
     private var currentCameraConfig: CameraConfig? = null
@@ -77,6 +78,20 @@ class CameraControlViewModel : ViewModel() {
 
     private val _isFrontCamera = MutableStateFlow(false)
     val isFrontCamera = _isFrontCamera.asStateFlow()
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording = _isRecording.asStateFlow()
+
+    private val _flashEnabled = MutableStateFlow(false)
+    val flashEnabled = _flashEnabled.asStateFlow()
+
+    private val _exposureLevel = MutableStateFlow(0)
+    val exposureLevel = _exposureLevel.asStateFlow()
+
+    private val _lastPhotoUri = MutableStateFlow<Uri?>(null)
+    val lastPhotoUri = _lastPhotoUri.asStateFlow()
+
+    private external fun getPhysicalCameraIdsNative(): Array<String>?
 
     private fun startBackgroundThread() {
         if (backgroundThread == null) {
@@ -109,20 +124,15 @@ class CameraControlViewModel : ViewModel() {
             val characteristics = manager.getCameraCharacteristics(cameraId)
             when (characteristics.get(CameraCharacteristics.LENS_FACING)) {
                 CameraCharacteristics.LENS_FACING_FRONT -> {
-                    if (frontCameraId == null) {
-                        frontCameraId = cameraId
-                    }
+                    if (frontCameraId == null) frontCameraId = cameraId
                 }
-
                 CameraCharacteristics.LENS_FACING_BACK -> {
                     val capabilities = characteristics
                         .get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
                         .orEmpty()
-
                     val isLogical = capabilities.contains(
                         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA
                     )
-
                     if (bestBackCameraId == null || (!bestBackIsLogical && isLogical)) {
                         bestBackCameraId = cameraId
                         bestBackIsLogical = isLogical
@@ -148,21 +158,21 @@ class CameraControlViewModel : ViewModel() {
             ?.maxByOrNull { it.width * it.height }
             ?: Size(1920, 1080)
 
-        val zoomRatioRange =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-            } else {
-                null
-            }
+        val zoomRatioRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+        } else null
 
         val maxDigitalZoom =
             characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+
+        val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
 
         return CameraConfig(
             jpegSize = jpegSize,
             sensorRect = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE),
             zoomRatioRange = zoomRatioRange,
-            maxDigitalZoom = maxDigitalZoom
+            maxDigitalZoom = maxDigitalZoom,
+            exposureRange = exposureRange
         )
     }
 
@@ -193,16 +203,31 @@ class CameraControlViewModel : ViewModel() {
 
         val sensorRect = config.sensorRect ?: return
         val safeZoom = zoomRatio.coerceAtLeast(1f)
-
         val cropWidth = (sensorRect.width() / safeZoom).toInt()
         val cropHeight = (sensorRect.height() / safeZoom).toInt()
         val left = (sensorRect.width() - cropWidth) / 2
         val top = (sensorRect.height() - cropHeight) / 2
-
         builder.set(
             CaptureRequest.SCALER_CROP_REGION,
             Rect(left, top, left + cropWidth, top + cropHeight)
         )
+    }
+
+    private fun applyFlash(builder: CaptureRequest.Builder) {
+        if (_flashEnabled.value && !_isFrontCamera.value) {
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        } else {
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        }
+    }
+
+    private fun applyExposure(builder: CaptureRequest.Builder) {
+        val config = currentCameraConfig ?: return
+        val range = config.exposureRange ?: return
+        val clamped = _exposureLevel.value.coerceIn(range.lower, range.upper)
+        builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, clamped)
     }
 
     @SuppressLint("MissingPermission")
@@ -238,15 +263,12 @@ class CameraControlViewModel : ViewModel() {
             manager.openCamera(targetCameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     cameraDevice = camera
-                    createCaptureSession()
+                    createPreviewSession()
                     isStartingCamera = false
                 }
-
-                override fun onDisconnected(camera: CameraDevice) {
-                    closeCamera()
-                }
-
+                override fun onDisconnected(camera: CameraDevice) { closeCamera() }
                 override fun onError(camera: CameraDevice, error: Int) {
+                    Log.e("RodytoLensPro", "Error al abrir cámara: $error")
                     closeCamera()
                 }
             }, backgroundHandler)
@@ -256,12 +278,13 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    private fun createCaptureSession() {
+    private fun createPreviewSession() {
         val device = cameraDevice ?: return
         val surface = currentSurface ?: return
         val config = currentCameraConfig ?: return
 
         try {
+            imageReader?.close()
             imageReader = ImageReader.newInstance(
                 config.jpegSize.width,
                 config.jpegSize.height,
@@ -275,13 +298,12 @@ class CameraControlViewModel : ViewModel() {
                     captureSession = session
                     updatePreview()
                 }
-
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     Log.e("RodytoLensPro", "Configuración de sesión fallida")
                 }
             }, backgroundHandler)
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error creando sesión de captura", e)
+            Log.e("RodytoLensPro", "Error creando sesión de vista previa", e)
         }
     }
 
@@ -292,8 +314,9 @@ class CameraControlViewModel : ViewModel() {
         try {
             val builder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
-
             applyZoom(builder)
+            applyFlash(builder)
+            applyExposure(builder)
 
             if (_focusLocked.value) {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
@@ -304,7 +327,66 @@ class CameraControlViewModel : ViewModel() {
 
             session.setRepeatingRequest(builder.build(), null, backgroundHandler)
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error actualizando preview", e)
+            Log.e("RodytoLensPro", "Error actualizando vista previa", e)
+        }
+    }
+
+    fun tapToFocus(x: Float, y: Float, screenWidth: Int, screenHeight: Int) {
+        val session = captureSession ?: return
+        val surface = currentSurface ?: return
+        val config = currentCameraConfig ?: return
+        val sensorRect = config.sensorRect ?: return
+
+        try {
+            val halfSize = 150
+            val sensorX = (x / screenWidth.toFloat() * sensorRect.width()).toInt()
+                .coerceIn(0, sensorRect.width())
+            val sensorY = (y / screenHeight.toFloat() * sensorRect.height()).toInt()
+                .coerceIn(0, sensorRect.height())
+
+            val left = maxOf(0, sensorX - halfSize)
+            val top = maxOf(0, sensorY - halfSize)
+            val right = minOf(sensorRect.width(), sensorX + halfSize)
+            val bottom = minOf(sensorRect.height(), sensorY + halfSize)
+            val focusWidth = maxOf(1, right - left)
+            val focusHeight = maxOf(1, bottom - top)
+
+            val focusRect = MeteringRectangle(
+                left, top, focusWidth, focusHeight,
+                MeteringRectangle.METERING_WEIGHT_MAX
+            )
+
+            // Paso 1: cancelar AF en curso
+            val cancelBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            cancelBuilder.addTarget(surface)
+            cancelBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+            session.capture(cancelBuilder.build(), null, backgroundHandler)
+
+            // Paso 2: disparar AF hacia el punto tocado
+            val focusBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            focusBuilder.addTarget(surface)
+            focusBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            focusBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(focusRect))
+            focusBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(focusRect))
+            focusBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            applyZoom(focusBuilder)
+            applyExposure(focusBuilder)
+            applyFlash(focusBuilder)
+            session.capture(focusBuilder.build(), null, backgroundHandler)
+
+            // Paso 3: repeating con AF bloqueado en la región
+            val repeatingBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            repeatingBuilder.addTarget(surface)
+            repeatingBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            repeatingBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(focusRect))
+            repeatingBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(focusRect))
+            applyZoom(repeatingBuilder)
+            applyExposure(repeatingBuilder)
+            applyFlash(repeatingBuilder)
+            session.setRepeatingRequest(repeatingBuilder.build(), null, backgroundHandler)
+
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error en tapToFocus", e)
         }
     }
 
@@ -316,19 +398,143 @@ class CameraControlViewModel : ViewModel() {
             val builder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             builder.addTarget(reader.surface)
             applyZoom(builder)
+            builder.set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+            builder.set(CaptureRequest.JPEG_ORIENTATION, if (_isFrontCamera.value) 270 else 90)
 
-            reader.setOnImageAvailableListener({
-                val image = it.acquireLatestImage()
-                storage.saveImage(context, image)
+            if (_flashEnabled.value && !_isFrontCamera.value) {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+            }
+
+            reader.setOnImageAvailableListener({ imageReader ->
+                val image = imageReader.acquireLatestImage()
+                val uri = storage.saveImage(context, image)
+                uri?.let { _lastPhotoUri.value = it }
             }, backgroundHandler)
 
             session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
-                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: CaptureFailure
+                ) {
                     Log.e("RodytoLensPro", "Fallo en captura de foto")
                 }
             }, backgroundHandler)
         } catch (e: Exception) {
             Log.e("RodytoLensPro", "Error al tomar foto", e)
+        }
+    }
+
+    fun startVideoRecording(context: Context, storage: MediaStorageManager) {
+        if (_isRecording.value) return
+        val surface = currentSurface ?: return
+        val device = cameraDevice ?: return
+
+        try {
+            val videoUri = storage.createVideoUri(context) ?: return
+            currentVideoUri = videoUri
+
+            val pfd = context.contentResolver.openFileDescriptor(videoUri, "w") ?: return
+            videoParcelFileDescriptor = pfd
+
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(context)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+
+            recorder.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setVideoEncodingBitRate(10_000_000)
+                setVideoFrameRate(30)
+                setVideoSize(1920, 1080)
+                setOutputFile(pfd.fileDescriptor)
+                prepare()
+            }
+
+            mediaRecorder = recorder
+            val recorderSurface = recorder.surface
+
+            // Cerrar sesión actual (sin cerrar el dispositivo)
+            try {
+                captureSession?.stopRepeating()
+                captureSession?.abortCaptures()
+                captureSession?.close()
+                captureSession = null
+            } catch (e: Exception) {
+                Log.w("RodytoLensPro", "Error cerrando sesión previa al video", e)
+            }
+
+            // Crear nueva sesión solo con preview + recorder (sin imageReader)
+            val targets = listOf(surface, recorderSurface)
+            device.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    captureSession = session
+                    try {
+                        val builder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                        builder.addTarget(surface)
+                        builder.addTarget(recorderSurface)
+                        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                        applyZoom(builder)
+                        applyFlash(builder)
+                        session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                        recorder.start()
+                        _isRecording.value = true
+                        Log.d("RodytoLensPro", "Grabación de video iniciada")
+                    } catch (e: Exception) {
+                        Log.e("RodytoLensPro", "Error iniciando request de grabación", e)
+                    }
+                }
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    Log.e("RodytoLensPro", "Fallo configurando sesión de video")
+                }
+            }, backgroundHandler)
+
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error iniciando grabación de video", e)
+            mediaRecorder?.release()
+            mediaRecorder = null
+            videoParcelFileDescriptor?.close()
+            videoParcelFileDescriptor = null
+        }
+    }
+
+    fun stopVideoRecording(context: Context, storage: MediaStorageManager) {
+        if (!_isRecording.value) return
+        _isRecording.value = false
+
+        try {
+            captureSession?.stopRepeating()
+            mediaRecorder?.stop()
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error deteniendo grabación", e)
+        }
+
+        try {
+            mediaRecorder?.reset()
+            mediaRecorder?.release()
+            mediaRecorder = null
+
+            videoParcelFileDescriptor?.close()
+            videoParcelFileDescriptor = null
+
+            currentVideoUri?.let { uri ->
+                storage.finalizeVideoSave(context, uri)
+                currentVideoUri = null
+            }
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error finalizando video", e)
+        }
+
+        // Reiniciar sesión de preview
+        val surface = currentSurface
+        if (surface != null && surface.isValid) {
+            createPreviewSession()
         }
     }
 
@@ -357,17 +563,23 @@ class CameraControlViewModel : ViewModel() {
         updatePreview()
     }
 
+    fun toggleFlash() {
+        _flashEnabled.value = !_flashEnabled.value
+        updatePreview()
+    }
+
+    fun setExposure(level: Int) {
+        val config = currentCameraConfig ?: return
+        val range = config.exposureRange ?: return
+        _exposureLevel.value = level.coerceIn(range.lower, range.upper)
+        updatePreview()
+    }
+
+    fun getExposureRange(): Range<Int>? = currentCameraConfig?.exposureRange
+
     fun closeCamera() {
-        try {
-            captureSession?.stopRepeating()
-        } catch (_: Exception) {
-        }
-
-        try {
-            captureSession?.abortCaptures()
-        } catch (_: Exception) {
-        }
-
+        try { captureSession?.stopRepeating() } catch (_: Exception) {}
+        try { captureSession?.abortCaptures() } catch (_: Exception) {}
         try {
             captureSession?.close()
             cameraDevice?.close()
