@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -53,17 +54,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
-    
-    val requiredPermissions = mutableListOf(
-        Manifest.permission.CAMERA,
-        Manifest.permission.RECORD_AUDIO
-    ).apply {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            add(Manifest.permission.READ_MEDIA_IMAGES)
-            add(Manifest.permission.READ_MEDIA_VIDEO)
-        } else {
-            add(Manifest.permission.READ_EXTERNAL_STORAGE)
-            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+
+    val requiredPermissions = remember {
+        mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        ).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.READ_MEDIA_IMAGES)
+                add(Manifest.permission.READ_MEDIA_VIDEO)
+            } else {
+                add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
         }
     }
 
@@ -80,7 +83,9 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     }
 
     LaunchedEffect(Unit) {
-        if (!hasPermissions) launcher.launch(requiredPermissions.toTypedArray())
+        if (!hasPermissions) {
+            launcher.launch(requiredPermissions.toTypedArray())
+        }
     }
 
     if (hasPermissions) {
@@ -110,6 +115,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
     val isFront by viewModel.isFrontCamera.collectAsState()
     val isFocusLocked by viewModel.focusLocked.collectAsState()
     val view = LocalView.current
+    val density = LocalDensity.current
 
     var focusPoint by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
 
@@ -132,12 +138,14 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 }
         )
 
+        // Corregido el cálculo del offset usando LocalDensity para evitar errores de compilación
         focusPoint?.let {
-            val metrics = LocalContext.current.resources.displayMetrics
+            val xDp = with(density) { it.x.toDp() }
+            val yDp = with(density) { it.y.toDp() }
+            
             Box(
                 modifier = Modifier
-                    .offset(x = (it.x / metrics.density).dp - 30.dp, 
-                            y = (it.y / metrics.density).dp - 30.dp)
+                    .offset(x = xDp - 30.dp, y = yDp - 30.dp)
                     .size(60.dp)
                     .border(2.dp, Color.Yellow)
             )
@@ -200,7 +208,11 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
 
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
 
-    DisposableEffect(Unit) { onDispose { sound.release() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            sound.release()
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -214,7 +226,11 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(50.dp).clip(CircleShape).background(Color.DarkGray).border(1.dp, Color.White, CircleShape)
+            modifier = Modifier
+                .size(50.dp)
+                .clip(CircleShape)
+                .background(Color.DarkGray)
+                .border(1.dp, Color.White, CircleShape)
         )
 
         Box(
@@ -245,7 +261,10 @@ fun BottomControls(view: View, viewModel: CameraControlViewModel, mode: String) 
                 .size(50.dp)
                 .clip(CircleShape)
                 .background(Color.White.copy(alpha = 0.2f))
-                .clickable { viewModel.toggleFrontCamera(view.context) },
+                .clickable {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    viewModel.toggleFrontCamera(view.context)
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(text = "↺", color = Color.White, fontSize = 24.sp)
@@ -272,7 +291,11 @@ fun LensSelector(currentLens: String, onLensSelect: (String) -> Unit, modifier: 
                     .clickable { onLensSelect(lens) },
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = lens, color = if (isSelected) Color(0xFFFFD700) else Color.White, fontWeight = FontWeight.Bold)
+                Text(
+                    text = lens,
+                    color = if (isSelected) Color(0xFFFFD700) else Color.White,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
