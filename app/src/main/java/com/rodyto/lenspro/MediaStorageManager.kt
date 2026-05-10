@@ -29,14 +29,17 @@ object MediaStorageManager {
 
         imageUri?.let { uri ->
             try {
-                resolver.openOutputStream(uri)?.use { outputStream: OutputStream ->
+                // Simplificación del stream para evitar errores de inferencia del compilador
+                resolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(jpegBytes)
+                    outputStream.flush()
                 }
-                
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentValues.clear()
-                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(uri, contentValues, null, null)
+                    val updatedValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }
+                    resolver.update(uri, updatedValues, null, null)
                 }
                 Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
             } catch (e: Exception) {
@@ -56,16 +59,25 @@ object MediaStorageManager {
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-        return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+        return try {
+            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+        } catch (e: Exception) {
+            Log.e("RodytoLensPro", "Error creando Uri de video", e)
+            null
+        }
     }
 
     // 3. Finalizar guardado de video (remover flag IS_PENDING)
     fun finalizeVideoSave(context: Context, videoUri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            try {
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                context.contentResolver.update(videoUri, contentValues, null, null)
+            } catch (e: Exception) {
+                Log.e("RodytoLensPro", "Error finalizando video", e)
             }
-            context.contentResolver.update(videoUri, contentValues, null, null)
         }
     }
 }
