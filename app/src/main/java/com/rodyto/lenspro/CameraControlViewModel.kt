@@ -22,12 +22,10 @@ import java.util.concurrent.Executor
 class CameraControlViewModel : ViewModel() {
 
     init {
-        // Carga la librería nativa compilada por CMake
         System.loadLibrary("rodytolenspro")
         startBackgroundThread()
     }
 
-    // Función nativa expuesta desde C++
     external fun getPhysicalCameraIdsNative(): Array<String>
 
     private var cameraDevice: CameraDevice? = null
@@ -80,7 +78,6 @@ class CameraControlViewModel : ViewModel() {
         var minWideFocalLength = Float.MAX_VALUE
 
         try {
-            // Intentamos usar la función nativa si está disponible
             val nativeIds = getPhysicalCameraIdsNative()
             if (nativeIds.isNotEmpty()) {
                 Log.i("RodytoLensPro", "IDs nativos encontrados: ${nativeIds.joinToString()}")
@@ -116,12 +113,12 @@ class CameraControlViewModel : ViewModel() {
             Log.e("RodytoLensPro", "Error detectando IDs físicos", e)
         }
 
-        if (mainId == null) mainId = "0"
+        // Resolución estricta de nulos para evitar errores de compilación
+        val safeMainId = mainId ?: "0"
         
-        // Mapeo dinámico, evitando hardcodear "2" o "3" si es posible
-        result["0.5x"] = wideAngleId ?: mainId
-        result["1x"]   = mainId
-        result["3x"]   = telephotoId ?: mainId
+        result["0.5x"] = wideAngleId ?: safeMainId
+        result["1x"]   = safeMainId
+        result["3x"]   = telephotoId ?: safeMainId
 
         cachedPhysicalIds = result
         return result
