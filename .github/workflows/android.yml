@@ -21,20 +21,48 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
-      - name: 3. Configurar Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: 4. Configurar SDK de Android
+      - name: 3. Configurar SDK de Android
         uses: android-actions/setup-android@v3
 
-      - name: 5. Instalar plataformas (API 35) + NDK + CMake
+      - name: 4. Instalar plataformas (API 34) + NDK + CMake
         shell: bash
         run: |
           echo "y" | sdkmanager --install \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
             "ndk;25.1.8937393" \
             "cmake;3.22.1"
 
-      - name: 6. Compilar APK
-        run: ./gradlew :app:assembleDebug
+      - name: 5. Reparar Gradle Wrapper si está corrupto
+        shell: bash
+        run: |
+          set -e
+          WRAPPER_JAR="gradle/wrapper/gradle-wrapper.jar"
+          NEEDS_FIX=0
+          if [ ! -s "$WRAPPER_JAR" ]; then
+            NEEDS_FIX=1
+          else
+            if ! unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF 2>/dev/null | grep -q "Main-Class: org.gradle.wrapper.GradleWrapperMain"; then
+              echo "⚠️  gradle-wrapper.jar no tiene Main-Class válido. Regenerando..."
+              NEEDS_FIX=1
+            fi
+          fi
+          if [ "$NEEDS_FIX" = "1" ]; then
+            curl -fL -o "$WRAPPER_JAR" \
+              "https://raw.githubusercontent.com/gradle/gradle/v8.7.0/gradle/wrapper/gradle-wrapper.jar"
+            echo "✅ Wrapper regenerado."
+          fi
+          chmod +x ./gradlew
+
+      - name: 6. Configurar Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: 7. Compilar APK Debug
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: 8. Subir APK como artefacto
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LensPro-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
