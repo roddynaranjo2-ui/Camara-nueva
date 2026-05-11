@@ -1,103 +1,91 @@
-- name: 5. Reparación Inteligente del Gradle Wrapper
-  shell: bash
-  run: |
-    set -euo pipefail
+name: Android CI Build - Rodyto Lens Pro
 
-    echo "🚀 Verificando Gradle Wrapper..."
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 
-    WRAPPER_DIR="gradle/wrapper"
-    WRAPPER_JAR="$WRAPPER_DIR/gradle-wrapper.jar"
-    WRAPPER_PROPERTIES="$WRAPPER_DIR/gradle-wrapper.properties"
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-    mkdir -p "$WRAPPER_DIR"
+    steps:
+      - name: 1. Checkout del código
+        uses: actions/checkout@v4
 
-    NEEDS_FIX=0
+      - name: 2. Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
 
-    # -----------------------------
-    # Verificar existencia del JAR
-    # -----------------------------
-    if [ ! -f "$WRAPPER_JAR" ]; then
-      echo "⚠️ gradle-wrapper.jar no existe."
-      NEEDS_FIX=1
-    elif [ ! -s "$WRAPPER_JAR" ]; then
-      echo "⚠️ gradle-wrapper.jar está vacío."
-      NEEDS_FIX=1
-    else
-      echo "🔍 Verificando integridad del JAR..."
+      - name: 3. Configurar SDK de Android
+        uses: android-actions/setup-android@v3
 
-      if ! unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF 2>/dev/null \
-        | tr -d '\r' \
-        | grep -q "GradleWrapperMain"; then
+      - name: 4. Instalar plataformas (API 34) + NDK + CMake
+        shell: bash
+        run: |
+          echo "y" | sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;25.1.8937393" \
+            "cmake;3.22.1"
 
-        echo "⚠️ gradle-wrapper.jar corrupto o inválido."
-        NEEDS_FIX=1
-      fi
-    fi
+      - name: 5. Reparar Gradle Wrapper (forzado y verificado)
+        shell: bash
+        run: |
+          set -e
+          WRAPPER_JAR="gradle/wrapper/gradle-wrapper.jar"
+          mkdir -p gradle/wrapper
 
-    # -----------------------------
-    # Reparación automática
-    # -----------------------------
-    if [ "$NEEDS_FIX" = "1" ]; then
+          NEEDS_FIX=0
+          if [ ! -s "$WRAPPER_JAR" ]; then
+            echo "⚠️  gradle-wrapper.jar no existe o está vacío."
+            NEEDS_FIX=1
+          else
+            # Verificamos que el manifest tenga la Main-Class correcta
+            if ! unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF 2>/dev/null \
+                 | tr -d '\r' | grep -q "^Main-Class: org.gradle.wrapper.GradleWrapperMain$"; then
+              echo "⚠️  gradle-wrapper.jar NO tiene 'Main-Class: org.gradle.wrapper.GradleWrapperMain'. Regenerando..."
+              NEEDS_FIX=1
+            fi
+          fi
 
-      echo "🛠️ Iniciando reparación automática..."
+          if [ "$NEEDS_FIX" = "1" ]; then
+            rm -f "$WRAPPER_JAR"
+            curl -fL --retry 3 --retry-delay 2 -o "$WRAPPER_JAR" \
+              "https://raw.githubusercontent.com/gradle/gradle/v8.7.0/gradle/wrapper/gradle-wrapper.jar"
 
-      rm -f "$WRAPPER_JAR"
+            # Verificación post-descarga
+            if ! unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF 2>/dev/null \
+                 | tr -d '\r' | grep -q "^Main-Class: org.gradle.wrapper.GradleWrapperMain$"; then
+              echo "❌ Descarga válida falló. Probando con la URL alternativa de gradle.org..."
+              rm -f "$WRAPPER_JAR"
+              curl -fL --retry 3 --retry-delay 2 -o /tmp/gradle.zip \
+                "https://services.gradle.org/distributions/gradle-8.7-bin.zip"
+              unzip -j -o /tmp/gradle.zip "gradle-8.7/lib/plugins/gradle-wrapper-*.jar" -d /tmp/wrapper
+              cp /tmp/wrapper/gradle-wrapper-*.jar "$WRAPPER_JAR"
+            fi
 
-      # Descargar distribución oficial completa
-      curl -fL --retry 5 --retry-delay 3 \
-        -o /tmp/gradle-8.7-bin.zip \
-        https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            echo "✅ Wrapper regenerado correctamente:"
+            unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF | head -5
+          else
+            echo "✅ Wrapper válido, no se requiere reparación."
+          fi
 
-      echo "📦 Extrayendo wrapper oficial..."
+          chmod +x ./gradlew
 
-      unzip -q /tmp/gradle-8.7-bin.zip \
-        "gradle-8.7/lib/plugins/gradle-wrapper-*.jar" \
-        -d /tmp/gradle-extract
+      - name: 6. Configurar Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-      FOUND_JAR=$(find /tmp/gradle-extract -name "*.jar" | head -1)
+      - name: 7. Compilar APK Debug
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
-      if [ -z "$FOUND_JAR" ]; then
-        echo "❌ No se pudo encontrar gradle-wrapper.jar dentro del ZIP."
-        exit 1
-      fi
-
-      cp "$FOUND_JAR" "$WRAPPER_JAR"
-
-      echo "✅ Wrapper copiado correctamente."
-
-      # Verificación final REAL
-      if ! unzip -p "$WRAPPER_JAR" META-INF/MANIFEST.MF 2>/dev/null \
-        | tr -d '\r' \
-        | grep -q "GradleWrapperMain"; then
-
-        echo "❌ El wrapper descargado sigue siendo inválido."
-        exit 1
-      fi
-
-      echo "✅ Gradle Wrapper reparado exitosamente."
-    else
-      echo "✅ Wrapper válido. No se requiere reparación."
-    fi
-
-    # -----------------------------
-    # Verificar properties
-    # -----------------------------
-    if [ ! -f "$WRAPPER_PROPERTIES" ]; then
-      echo "⚠️ gradle-wrapper.properties no existe. Recreando..."
-
-      cat > "$WRAPPER_PROPERTIES" <<EOF
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-EOF
-    fi
-
-    chmod +x ./gradlew
-
-    echo "📋 Estado final:"
-    ls -lah "$WRAPPER_DIR"
-
-    echo "🧪 Probando Gradle..."
-    ./gradlew --version
+      - name: 8. Subir APK como artefacto
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LensPro-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
