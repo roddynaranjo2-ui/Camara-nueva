@@ -19,20 +19,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -40,13 +27,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,7 +49,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 
-// Constantes de color para el diseño
 private val GoldColor = Color(0xFFFFD700)
 private val GlassBackground = Color.Black.copy(alpha = 0.45f)
 private val GlassBorder = Color.White.copy(alpha = 0.18f)
@@ -103,8 +83,8 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 
     var hasPermissions by remember {
         mutableStateOf(
-            requiredPermissions.all { permission ->
-                ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+            requiredPermissions.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
             }
         )
     }
@@ -112,9 +92,9 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        hasPermissions = requiredPermissions.all { permission ->
-            permissions[permission] == true ||
-                ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        hasPermissions = requiredPermissions.all { p ->
+            permissions[p] == true ||
+                ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -131,7 +111,7 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "LensPro necesita acceso a la cámara y al micrófono para funcionar.",
+                    text = "LensPro necesita acceso a la cámara y al micrófono.",
                     color = Color.White,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium,
@@ -156,6 +136,8 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 fun CameraScreen(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val view = LocalView.current
+
     val lens by viewModel.currentLens.collectAsStateWithLifecycle()
     val mode by viewModel.cameraMode.collectAsStateWithLifecycle()
     val isFront by viewModel.isFrontCamera.collectAsStateWithLifecycle()
@@ -164,17 +146,13 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
     val flashEnabled by viewModel.flashEnabled.collectAsStateWithLifecycle()
     val exposureLevel by viewModel.exposureLevel.collectAsStateWithLifecycle()
     val lastPhotoUri by viewModel.lastPhotoUri.collectAsStateWithLifecycle()
-    val view = LocalView.current
 
-    // Instancias persistentes que no se recrean en cada recomposición
     val storage = remember { MediaStorageManager() }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
     DisposableEffect(Unit) { onDispose { sound.release() } }
 
-    // Corrección del error de tipo: Offset? con tipo explícito
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
 
-    // Auto-dismiss del indicador de foco después de 2 segundos
     LaunchedEffect(focusPoint) {
         if (focusPoint != null) {
             delay(2000L)
@@ -186,7 +164,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
         val screenWidthPx = with(density) { maxWidth.toPx() }.toInt()
         val screenHeightPx = with(density) { maxHeight.toPx() }.toInt()
 
-        // Preview de cámara
         CameraPreview(
             viewModel = viewModel,
             modifier = Modifier
@@ -211,7 +188,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 }
         )
 
-        // Indicador de foco (cuadro amarillo o rojo en tap)
         focusPoint?.let { point ->
             val xDp = with(density) { point.x.toDp() }
             val yDp = with(density) { point.y.toDp() }
@@ -224,7 +200,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             )
         }
 
-        // Barra superior: Flash / AE-AF Lock / Cambio de cámara
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -233,7 +208,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Botón de flash
             GlassCircleButton(
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -248,25 +222,18 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 )
             }
 
-            // Indicador AE/AF LOCK
             if (isFocusLocked) {
                 Box(
                     modifier = Modifier
                         .background(GoldColor.copy(alpha = 0.92f), RoundedCornerShape(6.dp))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Text(
-                        text = "AE/AF LOCK",
-                        color = Color.Black,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("AE/AF LOCK", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
                 Spacer(modifier = Modifier.width(88.dp))
             }
 
-            // Botón frontal/trasera
             GlassCircleButton(
                 onClick = {
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -278,7 +245,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             }
         }
 
-        // Control de exposición (lado derecho, columna de botones)
         val exposureRange = viewModel.getExposureRange()
         if (exposureRange != null && exposureRange.lower < exposureRange.upper) {
             Column(
@@ -313,7 +279,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             }
         }
 
-        // Controles inferiores
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -321,7 +286,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 .padding(bottom = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Selector de lente (solo cámara trasera)
             if (!isFront) {
                 Row(
                     modifier = Modifier
@@ -346,7 +310,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 Spacer(modifier = Modifier.height(52.dp))
             }
 
-            // Selector de modo FOTO / VIDEO
             Row(
                 modifier = Modifier.padding(bottom = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(36.dp)
@@ -365,7 +328,6 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 }
             }
 
-            // Fila principal: thumbnail | obturador | espacio
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -375,10 +337,8 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Miniatura de la última foto (real con Coil)
                 ThumbnailButton(uri = lastPhotoUri)
 
-                // Botón obturador / grabar
                 CaptureButton(
                     mode = mode,
                     isRecording = isRecording,
@@ -389,17 +349,14 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
                                 sound.play(MediaActionSound.SHUTTER_CLICK)
                                 viewModel.takePicture(storage, context)
                             }
-                            mode == "VIDEO" && !isRecording -> {
+                            mode == "VIDEO" && !isRecording ->
                                 viewModel.startVideoRecording(context, storage)
-                            }
-                            mode == "VIDEO" && isRecording -> {
+                            mode == "VIDEO" && isRecording ->
                                 viewModel.stopVideoRecording(context, storage)
-                            }
                         }
                     }
                 )
 
-                // Espacio simétrico al thumbnail
                 Box(modifier = Modifier.size(56.dp))
             }
         }
@@ -458,7 +415,7 @@ fun ThumbnailButton(uri: Uri?) {
         if (uri != null) {
             AsyncImage(
                 model = uri,
-                contentDescription = "Última foto capturada",
+                contentDescription = "Última foto",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
@@ -501,31 +458,15 @@ fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         when {
-            mode == "VIDEO" && isRecording -> {
-                // Icono de detener (cuadrado blanco)
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .background(Color.White, RoundedCornerShape(4.dp))
-                )
-            }
-            mode == "VIDEO" -> {
-                // Icono de grabar (punto rojo)
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(Color.Red, CircleShape)
-                )
-            }
-            else -> {
-                // Obturador fotográfico (círculo interno negro)
-                Box(
-                    modifier = Modifier
-                        .size(66.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black)
-                )
-            }
+            mode == "VIDEO" && isRecording -> Box(
+                modifier = Modifier.size(26.dp).background(Color.White, RoundedCornerShape(4.dp))
+            )
+            mode == "VIDEO" -> Box(
+                modifier = Modifier.size(32.dp).background(Color.Red, CircleShape)
+            )
+            else -> Box(
+                modifier = Modifier.size(66.dp).clip(CircleShape).background(Color.Black)
+            )
         }
     }
 }
