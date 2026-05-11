@@ -46,10 +46,9 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // Hook nativo (opcional). Si la lib no carga, no se invoca.
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
-    // ----- Estado expuesto a la UI -----
+    // ----- Estado expuesto -----
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -88,6 +87,11 @@ class CameraControlViewModel : ViewModel() {
     private var videoUri: Uri? = null
     private var videoFd: ParcelFileDescriptor? = null
 
+    // IDs cacheados de cámaras traseras (principal + ultrawide)
+    private var backMainId: String? = null
+    private var backUltraWideId: String? = null
+    private var frontMainId: String? = null
+
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
@@ -95,9 +99,7 @@ class CameraControlViewModel : ViewModel() {
     @Volatile private var isCameraActive = false
     @Volatile private var isStartingCamera = false
 
-    init {
-        startBackgroundThread()
-    }
+    init { startBackgroundThread() }
 
     private fun startBackgroundThread() {
         backgroundThread = HandlerThread("RodytoLensProCamera").also { it.start() }
@@ -133,6 +135,8 @@ class CameraControlViewModel : ViewModel() {
         _isFrontCamera.value = !_isFrontCamera.value
         _flashEnabled.value = false
         _focusLocked.value = false
+        _currentLens.value = "1x"
+        _zoomLevel.value = 1f
         val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock { closeCameraInternal() }
@@ -140,20 +144,40 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 0.5x = ultrawide físico (si existe) -> reapertura de cámara
+     * 1x   = principal trasera, zoom 1
+     * 2x   = principal trasera, zoom digital x2
+     */
     fun switchLens(context: Context, lens: String) {
+        if (_isRecording.value) return
+        val prevLens = _currentLens.value
         _currentLens.value = lens
         _zoomLevel.value = when (lens) {
             "0.5x" -> 1f
-            "1x" -> 1f
-            "2x" -> 2f
-            else -> 1f
+            "1x"   -> 1f
+            "2x"   -> 2f
+            else   -> 1f
         }
-        updateRepeatingRequest()
+
+        val needsCameraSwap = !_isFrontCamera.value && (
+            (lens == "0.5x" && prevLens != "0.5x") ||
+            (lens != "0.5x" && prevLens == "0.5x")
+        )
+
+        if (needsCameraSwap) {
+            val surface = previewSurface ?: return
+            viewModelScope.launch(Dispatchers.IO) {
+                cameraMutex.withLock { closeCameraInternal() }
+                startCameraSession(context, surface, lens)
+            }
+        } else {
+            updateRepeatingRequest()
+        }
     }
 
     fun setExposure(level: Int) {
         val range = getExposureRange() ?: return
-        // Coerción explícita y simétrica
         val clamped = level.coerceIn(range.lower, range.upper)
         if (clamped == _exposureLevel.value) return
         _exposureLevel.value = clamped
@@ -213,9 +237,13 @@ class CameraControlViewModel : ViewModel() {
                     val mgr = context.applicationContext
                         .getSystemService(Context.CAMERA_SERVICE) as CameraManager
                     cameraManager = mgr
+                    cacheCameraIds(mgr)
 
-                    currentCameraId = if (_isFrontCamera.value) getFrontCameraId(mgr)
-                                      else getBackCameraId(mgr)
+                    currentCameraId = when {
+                        _isFrontCamera.value -> frontMainId ?: getFrontCameraId(mgr)
+                        lens == "0.5x"       -> backUltraWideId ?: backMainId ?: getBackCameraId(mgr)
+                        else                  -> backMainId ?: getBackCameraId(mgr)
+                    }
 
                     mgr.openCamera(currentCameraId, object : CameraDevice.StateCallback() {
                         override fun onOpened(camera: CameraDevice) {
@@ -225,23 +253,63 @@ class CameraControlViewModel : ViewModel() {
                             createPreviewSession()
                         }
                         override fun onDisconnected(camera: CameraDevice) {
-                            isCameraActive = false
-                            isStartingCamera = false
+                            isCameraActive = false; isStartingCamera = false
                             closeCameraInternal()
                         }
                         override fun onError(camera: CameraDevice, error: Int) {
                             Log.e(TAG, "Error abriendo cámara: $error")
-                            isCameraActive = false
-                            isStartingCamera = false
+                            isCameraActive = false; isStartingCamera = false
                             closeCameraInternal()
                         }
                     }, backgroundHandler)
                 } catch (e: Exception) {
-                    isCameraActive = false
-                    isStartingCamera = false
+                    isCameraActive = false; isStartingCamera = false
                     Log.e(TAG, "Error iniciando cámara", e)
                 }
             }
+        }
+    }
+
+    /**
+     * Detecta y cachea los IDs de cámara: principal trasera, ultra-wide trasera y frontal.
+     * Para el Galaxy S21 FE Snapdragon 888: la cámara lógica "0" agrupa la principal y ultra-wide;
+     * estos IDs físicos se exponen vía LOGICAL_MULTI_CAMERA_PHYSICAL_IDS.
+     */
+    private fun cacheCameraIds(manager: CameraManager) {
+        if (backMainId != null && frontMainId != null) return
+        try {
+            val ids = manager.cameraIdList
+            // Principal trasera = la primera trasera "lógica" (suele ser id "0")
+            backMainId = ids.firstOrNull {
+                manager.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            // Frontal
+            frontMainId = ids.firstOrNull {
+                manager.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+            }
+
+            // Ultra-wide: la trasera con menor focal length
+            var bestId: String? = null
+            var bestFocal = Float.MAX_VALUE
+            ids.forEach { id ->
+                val ch = manager.getCameraCharacteristics(id)
+                if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@forEach
+                val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: return@forEach
+                val minFocal = focals.minOrNull() ?: return@forEach
+                if (minFocal < bestFocal) {
+                    bestFocal = minFocal
+                    bestId = id
+                }
+            }
+            // Sólo lo consideramos ultra-wide si su focal es claramente menor que la principal
+            if (bestId != null && bestId != backMainId) {
+                backUltraWideId = bestId
+            }
+            Log.d(TAG, "IDs cacheados → main=$backMainId, ultra=$backUltraWideId, front=$frontMainId")
+        } catch (e: Exception) {
+            Log.e(TAG, "cacheCameraIds error", e)
         }
     }
 
@@ -422,10 +490,12 @@ class CameraControlViewModel : ViewModel() {
                             _isRecording.value = true
                         } catch (e: Exception) {
                             Log.e(TAG, "Error iniciando grabación", e)
+                            cleanupRecorder()
                         }
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Falló sesión de grabación")
+                        cleanupRecorder()
                     }
                 },
                 backgroundHandler
