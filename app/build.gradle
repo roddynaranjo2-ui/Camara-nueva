@@ -13,23 +13,13 @@ android {
         targetSdk 35
         versionCode 1
         versionName "1.0"
-
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary true
-        }
-        ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a"
-        }
+        ndk { abiFilters "arm64-v8a", "armeabi-v7a" }
     }
 
     buildTypes {
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-        debug {
-            minifyEnabled false
         }
     }
 
@@ -38,45 +28,27 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = '17'
-    }
+    kotlinOptions { jvmTarget = '17' }
 
-    buildFeatures {
-        compose true
-    }
-
-    composeOptions {
-        // 1.5.13 es la versión correcta para Kotlin 1.9.23 — esto corrige el error de compilación
-        kotlinCompilerExtensionVersion '1.5.13'
-    }
-
+    buildFeatures { compose true }
+    composeOptions { kotlinCompilerExtensionVersion '1.5.13' }
+    
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"
             version "3.22.1"
         }
     }
-
-    // Debe coincidir con lo que instala el workflow de GitHub Actions
-    ndkVersion "25.1.8937393"
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.0'
-    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.0'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0'
     implementation 'androidx.activity:activity-compose:1.9.0'
     implementation platform('androidx.compose:compose-bom:2024.05.00')
     implementation 'androidx.compose.ui:ui'
-    implementation 'androidx.compose.ui:ui-graphics'
-    implementation 'androidx.compose.ui:ui-tooling-preview'
     implementation 'androidx.compose.material3:material3'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-    // Coil para mostrar la miniatura real de la última foto
     implementation 'io.coil-kt:coil-compose:2.6.0'
-
-    debugImplementation 'androidx.compose.ui:ui-tooling'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 }
