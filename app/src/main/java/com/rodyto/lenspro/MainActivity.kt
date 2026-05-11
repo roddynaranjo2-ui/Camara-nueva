@@ -430,6 +430,9 @@ fun ThumbnailButton(uri: Uri?) {
 
 @Composable
 fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
+    // ✅ FIX: rememberUpdatedState evita stale closure en pointerInput
+    val currentOnClick by rememberUpdatedState(onClick)
+
     var isPressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.88f else 1f,
@@ -441,7 +444,6 @@ fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
         label = "ring_color"
     )
 
-    // Anillo exterior (sólo borde) + interior según modo
     Box(
         modifier = Modifier
             .size(80.dp)
@@ -455,7 +457,7 @@ fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
                         isPressed = true
                         tryAwaitRelease()
                         isPressed = false
-                        onClick()
+                        currentOnClick()
                     }
                 )
             },
