@@ -46,7 +46,6 @@ fun CameraPreview(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // NO cerramos cámara aquí: ya lo hace ON_PAUSE/ON_DESTROY del Activity
         }
     }
 
@@ -57,7 +56,7 @@ fun CameraPreview(
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
                         val s = holder.surface
-                        if (s.isValid) {
+                        if (s != null && s.isValid) {
                             activeSurface = s
                             if (!viewModel.isCameraRunning()) {
                                 viewModel.startCameraSession(ctx, s, latestLens)
