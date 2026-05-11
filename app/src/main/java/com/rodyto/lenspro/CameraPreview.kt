@@ -25,24 +25,28 @@ fun CameraPreview(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    
+    // Observamos la lente actual desde el ViewModel
     val currentLens by viewModel.currentLens.collectAsStateWithLifecycle()
+    
+    // Usamos rememberUpdatedState para que los callbacks siempre tengan el valor más reciente
     val latestLens by rememberUpdatedState(currentLens)
 
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
+    // Gestión del ciclo de vida (OnResume / OnPause)
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     activeSurface?.takeIf { it.isValid }?.let { surface ->
+                        // Iniciamos sesión con la lente actual al volver a la app
                         viewModel.startCameraSession(context, surface, latestLens)
                     }
                 }
-
                 Lifecycle.Event.ON_PAUSE -> {
                     viewModel.closeCamera()
                 }
-
                 else -> Unit
             }
         }
@@ -54,14 +58,17 @@ fun CameraPreview(
         }
     }
 
+    // Integración de SurfaceView con Compose
     AndroidView(
         factory = { viewContext ->
             SurfaceView(viewContext).apply {
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        activeSurface = holder.surface
-                        if (holder.surface.isValid) {
-                            viewModel.startCameraSession(viewContext, holder.surface, latestLens)
+                        val surface = holder.surface
+                        activeSurface = surface
+                        if (surface.isValid) {
+                            // IMPORTANTE: Pasamos explícitamente el String de la lente
+                            viewModel.startCameraSession(viewContext, surface, latestLens)
                         }
                     }
 
@@ -71,9 +78,10 @@ fun CameraPreview(
                         width: Int,
                         height: Int
                     ) {
-                        activeSurface = holder.surface
-                        if (holder.surface.isValid) {
-                            viewModel.startCameraSession(viewContext, holder.surface, latestLens)
+                        val surface = holder.surface
+                        activeSurface = surface
+                        if (surface.isValid) {
+                            viewModel.startCameraSession(viewContext, surface, latestLens)
                         }
                     }
 
