@@ -200,6 +200,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             )
         }
 
+        // Top bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -245,6 +246,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             }
         }
 
+        // Exposure column
         val exposureRange = viewModel.getExposureRange()
         if (exposureRange != null && exposureRange.lower < exposureRange.upper) {
             Column(
@@ -279,6 +281,7 @@ fun CameraScreen(viewModel: CameraControlViewModel) {
             }
         }
 
+        // Bottom controls
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -433,18 +436,19 @@ fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
         label = "shutter_scale",
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
     )
-    val outerColor by animateColorAsState(
+    val ringColor by animateColorAsState(
         targetValue = if (isRecording) Color.Red else Color.White,
-        label = "outer_color"
+        label = "ring_color"
     )
 
+    // Anillo exterior (sólo borde) + interior según modo
     Box(
         modifier = Modifier
             .size(80.dp)
             .scale(scale)
             .clip(CircleShape)
-            .background(outerColor)
-            .border(3.5.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+            .background(Color.Transparent)
+            .border(4.dp, ringColor, CircleShape)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -459,13 +463,13 @@ fun CaptureButton(mode: String, isRecording: Boolean, onClick: () -> Unit) {
     ) {
         when {
             mode == "VIDEO" && isRecording -> Box(
-                modifier = Modifier.size(26.dp).background(Color.White, RoundedCornerShape(4.dp))
+                modifier = Modifier.size(28.dp).background(Color.Red, RoundedCornerShape(6.dp))
             )
             mode == "VIDEO" -> Box(
-                modifier = Modifier.size(32.dp).background(Color.Red, CircleShape)
+                modifier = Modifier.size(60.dp).clip(CircleShape).background(Color.Red)
             )
             else -> Box(
-                modifier = Modifier.size(66.dp).clip(CircleShape).background(Color.Black)
+                modifier = Modifier.size(64.dp).clip(CircleShape).background(Color.White)
             )
         }
     }
