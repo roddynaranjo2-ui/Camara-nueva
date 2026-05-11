@@ -10,7 +10,6 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.media.ImageReader
@@ -40,7 +39,15 @@ class CameraControlViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "RodytoLensPro"
+        init {
+            try { System.loadLibrary("rodytolenspro") } catch (e: UnsatisfiedLinkError) {
+                Log.w(TAG, "Librería nativa no disponible (modo solo Kotlin)", e)
+            }
+        }
     }
+
+    // Hook nativo (opcional). Si la lib no carga, no se invoca.
+    private external fun getPhysicalCameraIdsNative(): Array<String>
 
     // ----- Estado expuesto a la UI -----
     private val _currentLens = MutableStateFlow("1x")
@@ -81,7 +88,6 @@ class CameraControlViewModel : ViewModel() {
     private var videoUri: Uri? = null
     private var videoFd: ParcelFileDescriptor? = null
 
-    // Hilo dedicado para evitar ANR
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
@@ -100,17 +106,13 @@ class CameraControlViewModel : ViewModel() {
 
     private fun stopBackgroundThread() {
         backgroundThread?.quitSafely()
-        try {
-            backgroundThread?.join(500)
-        } catch (_: InterruptedException) {
-        }
+        try { backgroundThread?.join(500) } catch (_: InterruptedException) {}
         backgroundThread = null
         backgroundHandler = null
     }
 
     fun isCameraRunning(): Boolean = isCameraActive
 
-    // ---------- Acciones de UI ----------
     fun toggleFlash() {
         _flashEnabled.value = !_flashEnabled.value
         updateRepeatingRequest()
@@ -133,9 +135,7 @@ class CameraControlViewModel : ViewModel() {
         _focusLocked.value = false
         val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            cameraMutex.withLock {
-                closeCameraInternal()
-            }
+            cameraMutex.withLock { closeCameraInternal() }
             startCameraSession(context, surface, _currentLens.value)
         }
     }
@@ -143,7 +143,7 @@ class CameraControlViewModel : ViewModel() {
     fun switchLens(context: Context, lens: String) {
         _currentLens.value = lens
         _zoomLevel.value = when (lens) {
-            "0.5x" -> 1f   // implementado vía physical id si existe; aquí baseline
+            "0.5x" -> 1f
             "1x" -> 1f
             "2x" -> 2f
             else -> 1f
@@ -153,14 +153,19 @@ class CameraControlViewModel : ViewModel() {
 
     fun setExposure(level: Int) {
         val range = getExposureRange() ?: return
-        _exposureLevel.value = level.coerceIn(range.lower, range.upper)
+        // Coerción explícita y simétrica
+        val clamped = level.coerceIn(range.lower, range.upper)
+        if (clamped == _exposureLevel.value) return
+        _exposureLevel.value = clamped
         updateRepeatingRequest()
     }
 
     fun getExposureRange(): Range<Int>? = try {
         cameraManager?.getCameraCharacteristics(currentCameraId)
             ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
-    } catch (e: Exception) { null }
+    } catch (e: Exception) {
+        Log.e(TAG, "Error getExposureRange", e); null
+    }
 
     fun tapToFocus(x: Float, y: Float, screenWidth: Int, screenHeight: Int) {
         if (_focusLocked.value) return
@@ -190,15 +195,12 @@ class CameraControlViewModel : ViewModel() {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             session.capture(builder.build(), null, backgroundHandler)
-
-            // Volvemos al modo continuo
             updateRepeatingRequest()
         } catch (e: Exception) {
             Log.e(TAG, "Error tapToFocus", e)
         }
     }
 
-    // ---------- Apertura de cámara ----------
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -212,11 +214,8 @@ class CameraControlViewModel : ViewModel() {
                         .getSystemService(Context.CAMERA_SERVICE) as CameraManager
                     cameraManager = mgr
 
-                    currentCameraId = if (_isFrontCamera.value) {
-                        getFrontCameraId(mgr)
-                    } else {
-                        getBackCameraId(mgr)
-                    }
+                    currentCameraId = if (_isFrontCamera.value) getFrontCameraId(mgr)
+                                      else getBackCameraId(mgr)
 
                     mgr.openCamera(currentCameraId, object : CameraDevice.StateCallback() {
                         override fun onOpened(camera: CameraDevice) {
@@ -281,10 +280,7 @@ class CameraControlViewModel : ViewModel() {
 
     private fun applyBaseSettings(builder: CaptureRequest.Builder) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        builder.set(
-            CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-        )
+        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         builder.set(
             CaptureRequest.CONTROL_AE_MODE,
             if (_flashEnabled.value && !_isFrontCamera.value)
@@ -330,7 +326,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // ---------- FOTO ----------
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val camera = cameraDevice ?: return
         val session = captureSession ?: return
@@ -374,7 +369,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // ---------- VIDEO ----------
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
         if (_isRecording.value) return
@@ -383,17 +377,14 @@ class CameraControlViewModel : ViewModel() {
         val appContext = context.applicationContext
 
         try {
-            // 1) Reset de sesión actual
             captureSession?.close()
             captureSession = null
 
-            // 2) Crear URI y FD
             val uri = storage.createVideoUri(appContext) ?: return
             val fd = storage.openVideoFd(appContext, uri) ?: return
             videoUri = uri
             videoFd = fd
 
-            // 3) Configurar MediaRecorder en orden CORRECTO
             mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(appContext)
             } else {
@@ -415,7 +406,6 @@ class CameraControlViewModel : ViewModel() {
 
             val recorderSurface = mediaRecorder!!.surface
 
-            // 4) Nueva CaptureSession con preview + recorder
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
                 listOf(surface, recorderSurface),
@@ -469,7 +459,6 @@ class CameraControlViewModel : ViewModel() {
         videoFd = null
     }
 
-    // ---------- Cierre ----------
     fun closeCamera() {
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock { closeCameraInternal() }
