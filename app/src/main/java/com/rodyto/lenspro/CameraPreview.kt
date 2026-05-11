@@ -23,52 +23,91 @@ fun CameraPreview(
     viewModel: CameraControlViewModel,
     modifier: Modifier = Modifier
 ) {
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    
-    // Observamos la lente actual desde el ViewModel
+
     val currentLens by viewModel.currentLens.collectAsStateWithLifecycle()
-    
-    // Usamos rememberUpdatedState para que los callbacks siempre tengan el valor más reciente
+
     val latestLens by rememberUpdatedState(currentLens)
 
-    var activeSurface by remember { mutableStateOf<Surface?>(null) }
+    var activeSurface by remember {
+        mutableStateOf<Surface?>(null)
+    }
 
-    // Gestión del ciclo de vida (OnResume / OnPause)
+    var isSurfaceReady by remember {
+        mutableStateOf(false)
+    }
+
     DisposableEffect(lifecycleOwner) {
+
         val observer = LifecycleEventObserver { _, event ->
+
             when (event) {
+
                 Lifecycle.Event.ON_RESUME -> {
-                    activeSurface?.takeIf { it.isValid }?.let { surface ->
-                        // Iniciamos sesión con la lente actual al volver a la app
-                        viewModel.startCameraSession(context, surface, latestLens)
+
+                    val safeSurface = activeSurface
+
+                    if (
+                        safeSurface != null &&
+                        safeSurface.isValid &&
+                        isSurfaceReady &&
+                        !viewModel.isCameraRunning()
+                    ) {
+                        viewModel.startCameraSession(
+                            context,
+                            safeSurface,
+                            latestLens
+                        )
                     }
                 }
+
                 Lifecycle.Event.ON_PAUSE -> {
                     viewModel.closeCamera()
                 }
+
+                Lifecycle.Event.ON_DESTROY -> {
+                    viewModel.closeCamera()
+                }
+
                 else -> Unit
             }
         }
 
         lifecycleOwner.lifecycle.addObserver(observer)
+
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.closeCamera()
         }
     }
 
-    // Integración de SurfaceView con Compose
     AndroidView(
+        modifier = modifier,
+
         factory = { viewContext ->
+
             SurfaceView(viewContext).apply {
+
                 holder.addCallback(object : SurfaceHolder.Callback {
+
                     override fun surfaceCreated(holder: SurfaceHolder) {
+
                         val surface = holder.surface
-                        activeSurface = surface
-                        if (surface.isValid) {
-                            // IMPORTANTE: Pasamos explícitamente el String de la lente
-                            viewModel.startCameraSession(viewContext, surface, latestLens)
+
+                        if (surface != null && surface.isValid) {
+
+                            activeSurface = surface
+                            isSurfaceReady = true
+
+                            if (!viewModel.isCameraRunning()) {
+                                viewModel.startCameraSession(
+                                    viewContext,
+                                    surface,
+                                    latestLens
+                                )
+                            }
                         }
                     }
 
@@ -78,20 +117,31 @@ fun CameraPreview(
                         width: Int,
                         height: Int
                     ) {
+
                         val surface = holder.surface
-                        activeSurface = surface
-                        if (surface.isValid) {
-                            viewModel.startCameraSession(viewContext, surface, latestLens)
+
+                        if (surface != null && surface.isValid) {
+
+                            activeSurface = surface
+                            isSurfaceReady = true
+
+                            if (!viewModel.isCameraRunning()) {
+                                viewModel.startCameraSession(
+                                    viewContext,
+                                    surface,
+                                    latestLens
+                                )
+                            }
                         }
                     }
 
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        isSurfaceReady = false
                         activeSurface = null
                         viewModel.closeCamera()
                     }
                 })
             }
-        },
-        modifier = modifier
+        }
     )
 }
