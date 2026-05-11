@@ -23,120 +23,53 @@ fun CameraPreview(
     viewModel: CameraControlViewModel,
     modifier: Modifier = Modifier
 ) {
-
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
     val currentLens by viewModel.currentLens.collectAsStateWithLifecycle()
-
     val latestLens by rememberUpdatedState(currentLens)
 
-    var activeSurface by remember {
-        mutableStateOf<Surface?>(null)
-    }
-
-    var isSurfaceReady by remember {
-        mutableStateOf(false)
-    }
+    var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
     DisposableEffect(lifecycleOwner) {
-
         val observer = LifecycleEventObserver { _, event ->
-
             when (event) {
-
                 Lifecycle.Event.ON_RESUME -> {
-
-                    val safeSurface = activeSurface
-
-                    if (
-                        safeSurface != null &&
-                        safeSurface.isValid &&
-                        isSurfaceReady &&
-                        !viewModel.isCameraRunning()
-                    ) {
-                        viewModel.startCameraSession(
-                            context,
-                            safeSurface,
-                            latestLens
-                        )
+                    val s = activeSurface
+                    if (s != null && s.isValid && !viewModel.isCameraRunning()) {
+                        viewModel.startCameraSession(context, s, latestLens)
                     }
                 }
-
-                Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.closeCamera()
-                }
-
-                Lifecycle.Event.ON_DESTROY -> {
-                    viewModel.closeCamera()
-                }
-
+                Lifecycle.Event.ON_PAUSE -> viewModel.closeCamera()
                 else -> Unit
             }
         }
-
         lifecycleOwner.lifecycle.addObserver(observer)
-
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.closeCamera()
+            // NO cerramos cámara aquí: ya lo hace ON_PAUSE/ON_DESTROY del Activity
         }
     }
 
     AndroidView(
         modifier = modifier,
-
-        factory = { viewContext ->
-
-            SurfaceView(viewContext).apply {
-
+        factory = { ctx ->
+            SurfaceView(ctx).apply {
                 holder.addCallback(object : SurfaceHolder.Callback {
-
                     override fun surfaceCreated(holder: SurfaceHolder) {
-
-                        val surface = holder.surface
-
-                        if (surface != null && surface.isValid) {
-
-                            activeSurface = surface
-                            isSurfaceReady = true
-
+                        val s = holder.surface
+                        if (s.isValid) {
+                            activeSurface = s
                             if (!viewModel.isCameraRunning()) {
-                                viewModel.startCameraSession(
-                                    viewContext,
-                                    surface,
-                                    latestLens
-                                )
+                                viewModel.startCameraSession(ctx, s, latestLens)
                             }
                         }
                     }
-
                     override fun surfaceChanged(
-                        holder: SurfaceHolder,
-                        format: Int,
-                        width: Int,
-                        height: Int
+                        holder: SurfaceHolder, format: Int, width: Int, height: Int
                     ) {
-
-                        val surface = holder.surface
-
-                        if (surface != null && surface.isValid) {
-
-                            activeSurface = surface
-                            isSurfaceReady = true
-
-                            if (!viewModel.isCameraRunning()) {
-                                viewModel.startCameraSession(
-                                    viewContext,
-                                    surface,
-                                    latestLens
-                                )
-                            }
-                        }
+                        // Sin re-creación; el Surface es el mismo
                     }
-
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        isSurfaceReady = false
                         activeSurface = null
                         viewModel.closeCamera()
                     }
