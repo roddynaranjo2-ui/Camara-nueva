@@ -1,622 +1,509 @@
 package com.rodyto.lenspro
 
-import android.annotation.SuppressLint import android.content.Context import android.graphics.ImageFormat import android.graphics.Rect import android.hardware.camera2.CameraCaptureSession import android.hardware.camera2.CameraCharacteristics import android.hardware.camera2.CameraDevice import android.hardware.camera2.CameraManager import android.hardware.camera2.CaptureRequest import android.hardware.camera2.CaptureResult import android.hardware.camera2.DngCreator import android.hardware.camera2.TotalCaptureResult import android.media.ImageReader import android.media.MediaRecorder import android.os.Build import android.os.Environment import android.util.Log import android.util.Range import android.util.Size import android.view.Surface import androidx.lifecycle.ViewModel import androidx.lifecycle.viewModelScope import kotlinx.coroutines.Dispatchers import kotlinx.coroutines.flow.MutableStateFlow import kotlinx.coroutines.flow.StateFlow import kotlinx.coroutines.flow.asStateFlow import kotlinx.coroutines.launch import kotlinx.coroutines.sync.Mutex import kotlinx.coroutines.sync.withLock import java.io.File import java.io.FileOutputStream import java.nio.ByteBuffer import java.text.SimpleDateFormat import java.util.Date import java.util.Locale
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.MeteringRectangle
+import android.media.ImageReader
+import android.media.MediaRecorder
+import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import android.util.Range
+import android.util.Size
+import android.view.Surface
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.nio.ByteBuffer
+import kotlin.math.max
 
 class CameraControlViewModel : ViewModel() {
 
-companion object {
-    private const val TAG = "RodytoLensPro"
-}
+    companion object {
+        private const val TAG = "RodytoLensPro"
+    }
 
-private var cameraDevice: CameraDevice? = null
-private var cameraCaptureSession: CameraCaptureSession? = null
-private var imageReader: ImageReader? = null
-private var mediaRecorder: MediaRecorder? = null
+    // ----- Estado expuesto a la UI -----
+    private val _currentLens = MutableStateFlow("1x")
+    val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
-private var previewSurface: Surface? = null
-private var cameraManager: CameraManager? = null
+    private val _cameraMode = MutableStateFlow("FOTO")
+    val cameraMode: StateFlow<String> = _cameraMode.asStateFlow()
 
-private var currentCaptureResult: TotalCaptureResult? = null
+    private val _isFrontCamera = MutableStateFlow(false)
+    val isFrontCamera: StateFlow<Boolean> = _isFrontCamera.asStateFlow()
 
-private var currentCameraId: String = "0"
+    private val _focusLocked = MutableStateFlow(false)
+    val focusLocked: StateFlow<Boolean> = _focusLocked.asStateFlow()
 
-private var isStartingCamera = false
-private val cameraMutex = Mutex()
-private var isCameraActive = false
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
-private val _isRecording = MutableStateFlow(false)
-val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+    private val _flashEnabled = MutableStateFlow(false)
+    val flashEnabled: StateFlow<Boolean> = _flashEnabled.asStateFlow()
 
-private val _zoomLevel = MutableStateFlow(1f)
-val zoomLevel: StateFlow<Float> = _zoomLevel.asStateFlow()
+    private val _exposureLevel = MutableStateFlow(0)
+    val exposureLevel: StateFlow<Int> = _exposureLevel.asStateFlow()
 
-private val _currentLens = MutableStateFlow("BACK")
-val currentLens: StateFlow<String> = _currentLens.asStateFlow()
+    private val _lastPhotoUri = MutableStateFlow<Uri?>(null)
+    val lastPhotoUri: StateFlow<Uri?> = _lastPhotoUri.asStateFlow()
 
-private val _flashEnabled = MutableStateFlow(false)
-val flashEnabled: StateFlow<Boolean> = _flashEnabled.asStateFlow()
+    private val _zoomLevel = MutableStateFlow(1f)
+    val zoomLevel: StateFlow<Float> = _zoomLevel.asStateFlow()
 
-private val _hdrEnabled = MutableStateFlow(false)
-val hdrEnabled: StateFlow<Boolean> = _hdrEnabled.asStateFlow()
+    // ----- Recursos Camera2 -----
+    private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
+    private var imageReader: ImageReader? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var previewSurface: Surface? = null
+    private var cameraManager: CameraManager? = null
+    private var currentCameraId: String = "0"
+    private var videoUri: Uri? = null
+    private var videoFd: ParcelFileDescriptor? = null
 
-private val _rawEnabled = MutableStateFlow(false)
-val rawEnabled: StateFlow<Boolean> = _rawEnabled.asStateFlow()
+    // Hilo dedicado para evitar ANR
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
 
-fun isCameraRunning(): Boolean = isCameraActive
+    private val cameraMutex = Mutex()
+    @Volatile private var isCameraActive = false
+    @Volatile private var isStartingCamera = false
 
-fun setLens(lens: String) {
-    _currentLens.value = lens
-}
+    init {
+        startBackgroundThread()
+    }
 
-fun toggleFlash() {
-    _flashEnabled.value = !_flashEnabled.value
-    updateRepeatingRequest()
-}
+    private fun startBackgroundThread() {
+        backgroundThread = HandlerThread("RodytoLensProCamera").also { it.start() }
+        backgroundHandler = Handler(backgroundThread!!.looper)
+    }
 
-fun toggleHdr() {
-    _hdrEnabled.value = !_hdrEnabled.value
-}
+    private fun stopBackgroundThread() {
+        backgroundThread?.quitSafely()
+        try {
+            backgroundThread?.join(500)
+        } catch (_: InterruptedException) {
+        }
+        backgroundThread = null
+        backgroundHandler = null
+    }
 
-fun toggleRaw() {
-    _rawEnabled.value = !_rawEnabled.value
-}
+    fun isCameraRunning(): Boolean = isCameraActive
 
-fun setZoom(zoom: Float) {
-    _zoomLevel.value = zoom
-    updateRepeatingRequest()
-}
+    // ---------- Acciones de UI ----------
+    fun toggleFlash() {
+        _flashEnabled.value = !_flashEnabled.value
+        updateRepeatingRequest()
+    }
 
-@SuppressLint("MissingPermission")
-fun startCameraSession(
-    context: Context,
-    surface: Surface,
-    lens: String
-) {
+    fun setCameraMode(mode: String) {
+        if (_isRecording.value) return
+        _cameraMode.value = mode
+    }
 
-    viewModelScope.launch(Dispatchers.IO) {
+    fun toggleFocusLock() {
+        _focusLocked.value = !_focusLocked.value
+        updateRepeatingRequest()
+    }
 
-        cameraMutex.withLock {
+    fun toggleFrontCamera(context: Context) {
+        if (_isRecording.value) return
+        _isFrontCamera.value = !_isFrontCamera.value
+        _flashEnabled.value = false
+        _focusLocked.value = false
+        val surface = previewSurface ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            cameraMutex.withLock {
+                closeCameraInternal()
+            }
+            startCameraSession(context, surface, _currentLens.value)
+        }
+    }
 
-            try {
+    fun switchLens(context: Context, lens: String) {
+        _currentLens.value = lens
+        _zoomLevel.value = when (lens) {
+            "0.5x" -> 1f   // implementado vía physical id si existe; aquí baseline
+            "1x" -> 1f
+            "2x" -> 2f
+            else -> 1f
+        }
+        updateRepeatingRequest()
+    }
 
-                if (isStartingCamera || isCameraActive) {
-                    return@withLock
-                }
+    fun setExposure(level: Int) {
+        val range = getExposureRange() ?: return
+        _exposureLevel.value = level.coerceIn(range.lower, range.upper)
+        updateRepeatingRequest()
+    }
 
+    fun getExposureRange(): Range<Int>? = try {
+        cameraManager?.getCameraCharacteristics(currentCameraId)
+            ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+    } catch (e: Exception) { null }
+
+    fun tapToFocus(x: Float, y: Float, screenWidth: Int, screenHeight: Int) {
+        if (_focusLocked.value) return
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
+        val surface = previewSurface ?: return
+        val manager = cameraManager ?: return
+
+        try {
+            val ch = manager.getCameraCharacteristics(currentCameraId)
+            val arr = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+            val sensorX = (y / screenHeight * arr.width()).toInt().coerceIn(0, arr.width() - 1)
+            val sensorY = ((1 - x / screenWidth) * arr.height()).toInt().coerceIn(0, arr.height() - 1)
+            val halfSize = max(arr.width(), arr.height()) / 20
+            val region = MeteringRectangle(
+                (sensorX - halfSize).coerceAtLeast(0),
+                (sensorY - halfSize).coerceAtLeast(0),
+                halfSize * 2, halfSize * 2,
+                MeteringRectangle.METERING_WEIGHT_MAX - 1
+            )
+
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(surface)
+            applyBaseSettings(builder)
+            builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+            builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            session.capture(builder.build(), null, backgroundHandler)
+
+            // Volvemos al modo continuo
+            updateRepeatingRequest()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error tapToFocus", e)
+        }
+    }
+
+    // ---------- Apertura de cámara ----------
+    @SuppressLint("MissingPermission")
+    fun startCameraSession(context: Context, surface: Surface, lens: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            cameraMutex.withLock {
+                if (isStartingCamera || isCameraActive) return@withLock
                 isStartingCamera = true
-
                 previewSurface = surface
 
-                cameraManager =
-                    context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                try {
+                    val mgr = context.applicationContext
+                        .getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                    cameraManager = mgr
 
-                currentCameraId = when (lens) {
-                    "FRONT" -> getFrontCameraId(cameraManager!!)
-                    else -> getBackCameraId(cameraManager!!)
-                }
+                    currentCameraId = if (_isFrontCamera.value) {
+                        getFrontCameraId(mgr)
+                    } else {
+                        getBackCameraId(mgr)
+                    }
 
-                closeCamera()
-
-                cameraManager?.openCamera(
-                    currentCameraId,
-                    object : CameraDevice.StateCallback() {
-
+                    mgr.openCamera(currentCameraId, object : CameraDevice.StateCallback() {
                         override fun onOpened(camera: CameraDevice) {
-
                             cameraDevice = camera
-
-                            try {
-                                createPreviewSession()
-                                isCameraActive = true
-                                isStartingCamera = false
-                            } catch (e: Exception) {
-                                isCameraActive = false
-                                isStartingCamera = false
-                                Log.e(TAG, "Error creando preview session", e)
-                            }
+                            isCameraActive = true
+                            isStartingCamera = false
+                            createPreviewSession()
                         }
-
                         override fun onDisconnected(camera: CameraDevice) {
                             isCameraActive = false
                             isStartingCamera = false
-                            closeCamera()
+                            closeCameraInternal()
                         }
-
                         override fun onError(camera: CameraDevice, error: Int) {
+                            Log.e(TAG, "Error abriendo cámara: $error")
                             isCameraActive = false
                             isStartingCamera = false
-                            Log.e(TAG, "Error al abrir cámara: $error")
-                            closeCamera()
+                            closeCameraInternal()
                         }
-                    },
-                    null
-                )
-
-            } catch (e: Exception) {
-
-                isCameraActive = false
-                isStartingCamera = false
-
-                Log.e(TAG, "Error iniciando cámara", e)
+                    }, backgroundHandler)
+                } catch (e: Exception) {
+                    isCameraActive = false
+                    isStartingCamera = false
+                    Log.e(TAG, "Error iniciando cámara", e)
+                }
             }
         }
     }
-}
 
-private fun createPreviewSession() {
+    private fun createPreviewSession() {
+        val camera = cameraDevice ?: return
+        val surface = previewSurface ?: return
+        try {
+            val ch = cameraManager?.getCameraCharacteristics(currentCameraId)
+            val map = ch?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)
+                ?.maxByOrNull { it.width * it.height } ?: Size(1920, 1080)
 
-    val camera = cameraDevice ?: return
-    val surface = previewSurface ?: return
+            imageReader?.close()
+            imageReader = ImageReader.newInstance(
+                jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2
+            )
 
-    val characteristics =
-        cameraManager?.getCameraCharacteristics(currentCameraId)
-
-    val map = characteristics?.get(
-        CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
-    )
-
-    val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull {
-        it.width * it.height
-    } ?: Size(1920, 1080)
-
-    imageReader = ImageReader.newInstance(
-        jpegSize.width,
-        jpegSize.height,
-        ImageFormat.JPEG,
-        5
-    )
-
-    val targets = mutableListOf(surface)
-
-    imageReader?.surface?.let {
-        targets.add(it)
+            @Suppress("DEPRECATION")
+            camera.createCaptureSession(
+                listOf(surface, imageReader!!.surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        updateRepeatingRequest()
+                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e(TAG, "Falló CaptureSession")
+                    }
+                },
+                backgroundHandler
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error createPreviewSession", e)
+        }
     }
 
-    camera.createCaptureSession(
-        targets,
-        object : CameraCaptureSession.StateCallback() {
-
-            override fun onConfigured(session: CameraCaptureSession) {
-
-                cameraCaptureSession = session
-
-                updateRepeatingRequest()
-            }
-
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-
-                isCameraActive = false
-                isStartingCamera = false
-
-                Log.e(TAG, "Falló CameraCaptureSession")
-            }
-        },
-        null
-    )
-}
-
-private fun updateRepeatingRequest() {
-
-    try {
-
-        val camera = cameraDevice ?: return
-        val session = cameraCaptureSession ?: return
-        val surface = previewSurface ?: return
-
-        val builder = camera.createCaptureRequest(
-            CameraDevice.TEMPLATE_PREVIEW
-        )
-
-        builder.addTarget(surface)
-
-        builder.set(
-            CaptureRequest.CONTROL_MODE,
-            CaptureRequest.CONTROL_MODE_AUTO
-        )
-
+    private fun applyBaseSettings(builder: CaptureRequest.Builder) {
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         builder.set(
             CaptureRequest.CONTROL_AF_MODE,
             CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         )
-
         builder.set(
             CaptureRequest.CONTROL_AE_MODE,
-            if (_flashEnabled.value)
-                CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+            if (_flashEnabled.value && !_isFrontCamera.value)
+                CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
             else
                 CaptureRequest.CONTROL_AE_MODE_ON
         )
-
+        builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, _focusLocked.value)
+        builder.set(CaptureRequest.CONTROL_AWB_LOCK, _focusLocked.value)
         applyZoom(builder)
-
-        session.setRepeatingRequest(
-            builder.build(),
-            object : CameraCaptureSession.CaptureCallback() {
-
-                override fun onCaptureCompleted(
-                    session: CameraCaptureSession,
-                    request: CaptureRequest,
-                    result: TotalCaptureResult
-                ) {
-                    currentCaptureResult = result
-                }
-            },
-            null
-        )
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error actualizando repeating request", e)
     }
-}
 
-private fun applyZoom(builder: CaptureRequest.Builder) {
-
-    try {
-
-        val manager = cameraManager ?: return
-
-        val characteristics =
-            manager.getCameraCharacteristics(currentCameraId)
-
-        val rect = characteristics.get(
-            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE
-        ) ?: return
-
-        val zoom = _zoomLevel.value.coerceAtLeast(1f)
-
-        val cropW = (rect.width() / zoom).toInt()
-        val cropH = (rect.height() / zoom).toInt()
-
-        val cropX = (rect.width() - cropW) / 2
-        val cropY = (rect.height() - cropH) / 2
-
-        val zoomRect = Rect(
-            cropX,
-            cropY,
-            cropX + cropW,
-            cropY + cropH
-        )
-
-        builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error aplicando zoom", e)
+    private fun updateRepeatingRequest() {
+        try {
+            val camera = cameraDevice ?: return
+            val session = captureSession ?: return
+            val surface = previewSurface ?: return
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(surface)
+            applyBaseSettings(builder)
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updateRepeatingRequest", e)
+        }
     }
-}
 
-fun takePhoto(context: Context) {
+    private fun applyZoom(builder: CaptureRequest.Builder) {
+        try {
+            val ch = cameraManager?.getCameraCharacteristics(currentCameraId) ?: return
+            val rect = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+            val zoom = _zoomLevel.value.coerceAtLeast(1f)
+            val cropW = (rect.width() / zoom).toInt()
+            val cropH = (rect.height() / zoom).toInt()
+            val cropX = (rect.width() - cropW) / 2
+            val cropY = (rect.height() - cropH) / 2
+            builder.set(
+                CaptureRequest.SCALER_CROP_REGION,
+                Rect(cropX, cropY, cropX + cropW, cropY + cropH)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error applyZoom", e)
+        }
+    }
 
-    try {
-
+    // ---------- FOTO ----------
+    fun takePicture(storage: MediaStorageManager, context: Context) {
         val camera = cameraDevice ?: return
-        val session = cameraCaptureSession ?: return
-        val imageReader = imageReader ?: return
+        val session = captureSession ?: return
+        val reader = imageReader ?: return
+        val appContext = context.applicationContext
 
-        imageReader.setOnImageAvailableListener({ reader ->
-
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-
+        reader.setOnImageAvailableListener({ r ->
+            val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-
                 val buffer: ByteBuffer = image.planes[0].buffer
                 val bytes = ByteArray(buffer.remaining())
                 buffer.get(bytes)
-
-                saveJpeg(bytes)
-
-                if (_rawEnabled.value) {
-                    saveRaw(image)
-                }
-
+                val uri = storage.saveJpeg(appContext, bytes)
+                if (uri != null) _lastPhotoUri.value = uri
             } catch (e: Exception) {
                 Log.e(TAG, "Error procesando imagen", e)
             } finally {
                 image.close()
             }
+        }, backgroundHandler)
 
-        }, null)
-
-        val builder = camera.createCaptureRequest(
-            CameraDevice.TEMPLATE_STILL_CAPTURE
-        )
-
-        builder.addTarget(imageReader.surface)
-
-        builder.set(
-            CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-        )
-
-        builder.set(
-            CaptureRequest.CONTROL_AE_MODE,
-            if (_flashEnabled.value)
-                CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
-            else
-                CaptureRequest.CONTROL_AE_MODE_ON
-        )
-
-        applyZoom(builder)
-
-        session.capture(
-            builder.build(),
-            object : CameraCaptureSession.CaptureCallback() {},
-            null
-        )
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error tomando foto", e)
-    }
-}
-
-private fun saveJpeg(bytes: ByteArray) {
-
-    try {
-
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DCIM
-            ),
-            "LensPro"
-        )
-
-        if (!dir.exists()) {
-            dir.mkdirs()
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            builder.addTarget(reader.surface)
+            applyBaseSettings(builder)
+            builder.set(
+                CaptureRequest.JPEG_ORIENTATION,
+                if (_isFrontCamera.value) 270 else 90
+            )
+            session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult
+                ) {
+                    updateRepeatingRequest()
+                }
+            }, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error takePicture", e)
         }
-
-        val fileName = SimpleDateFormat(
-            "yyyyMMdd_HHmmss",
-            Locale.US
-        ).format(Date())
-
-        val file = File(dir, "IMG_$fileName.jpg")
-
-        FileOutputStream(file).use {
-            it.write(bytes)
-        }
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error guardando JPEG", e)
     }
-}
 
-private fun saveRaw(image: android.media.Image) {
-
-    try {
-
-        val result = currentCaptureResult ?: return
-
-        val manager = cameraManager ?: return
-
-        val characteristics =
-            manager.getCameraCharacteristics(currentCameraId)
-
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DCIM
-            ),
-            "LensPro/RAW"
-        )
-
-        if (!dir.exists()) {
-            dir.mkdirs()
-        }
-
-        val fileName = SimpleDateFormat(
-            "yyyyMMdd_HHmmss",
-            Locale.US
-        ).format(Date())
-
-        val file = File(dir, "RAW_$fileName.dng")
-
-        DngCreator(characteristics, result).writeImage(
-            FileOutputStream(file),
-            image
-        )
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error guardando RAW", e)
-    }
-}
-
-fun startRecording(context: Context) {
-
-    try {
-
+    // ---------- VIDEO ----------
+    @SuppressLint("MissingPermission")
+    fun startVideoRecording(context: Context, storage: MediaStorageManager) {
         if (_isRecording.value) return
-
         val camera = cameraDevice ?: return
         val surface = previewSurface ?: return
+        val appContext = context.applicationContext
 
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_MOVIES
-            ),
-            "LensPro"
-        )
+        try {
+            // 1) Reset de sesión actual
+            captureSession?.close()
+            captureSession = null
 
-        if (!dir.exists()) {
-            dir.mkdirs()
-        }
+            // 2) Crear URI y FD
+            val uri = storage.createVideoUri(appContext) ?: return
+            val fd = storage.openVideoFd(appContext, uri) ?: return
+            videoUri = uri
+            videoFd = fd
 
-        val fileName = SimpleDateFormat(
-            "yyyyMMdd_HHmmss",
-            Locale.US
-        ).format(Date())
+            // 3) Configurar MediaRecorder en orden CORRECTO
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(appContext)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setOutputFile(fd.fileDescriptor)
+                setVideoEncodingBitRate(10_000_000)
+                setVideoFrameRate(30)
+                setVideoSize(1920, 1080)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOrientationHint(if (_isFrontCamera.value) 270 else 90)
+                prepare()
+            }
 
-        val videoFile = File(dir, "VID_$fileName.mp4")
+            val recorderSurface = mediaRecorder!!.surface
 
-        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            MediaRecorder(context)
-        } else {
-            MediaRecorder()
-        }
-
-        mediaRecorder?.apply {
-
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-
-            setOutputFile(videoFile.absolutePath)
-
-            setVideoEncodingBitRate(30_000_000)
-            setVideoFrameRate(60)
-            setVideoSize(1920, 1080)
-
-            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-
-            prepare()
-        }
-
-        val recorderSurface = mediaRecorder?.surface ?: return
-
-        camera.createCaptureSession(
-            listOf(surface, recorderSurface),
-            object : CameraCaptureSession.StateCallback() {
-
-                override fun onConfigured(session: CameraCaptureSession) {
-
-                    cameraCaptureSession = session
-
-                    try {
-
-                        val builder = camera.createCaptureRequest(
-                            CameraDevice.TEMPLATE_RECORD
-                        )
-
-                        builder.addTarget(surface)
-                        builder.addTarget(recorderSurface)
-
-                        session.setRepeatingRequest(
-                            builder.build(),
-                            null,
-                            null
-                        )
-
-                        mediaRecorder?.start()
-
-                        _isRecording.value = true
-
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error iniciando grabación", e)
+            // 4) Nueva CaptureSession con preview + recorder
+            @Suppress("DEPRECATION")
+            camera.createCaptureSession(
+                listOf(surface, recorderSurface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                            builder.addTarget(surface)
+                            builder.addTarget(recorderSurface)
+                            applyBaseSettings(builder)
+                            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                            mediaRecorder?.start()
+                            _isRecording.value = true
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error iniciando grabación", e)
+                        }
                     }
-                }
-
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Log.e(TAG, "Error configurando grabación")
-                }
-            },
-            null
-        )
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error startRecording", e)
-    }
-}
-
-fun stopRecording() {
-
-    try {
-
-        if (!_isRecording.value) return
-
-        try {
-            mediaRecorder?.stop()
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e(TAG, "Falló sesión de grabación")
+                    }
+                },
+                backgroundHandler
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Error deteniendo grabación", e)
+            Log.e(TAG, "Error startVideoRecording", e)
+            cleanupRecorder()
         }
+    }
 
+    fun stopVideoRecording(context: Context, storage: MediaStorageManager) {
+        if (!_isRecording.value) return
+        val appContext = context.applicationContext
         try {
-            mediaRecorder?.reset()
-            mediaRecorder?.release()
-        } catch (_: Exception) {
+            try { mediaRecorder?.stop() } catch (e: Exception) { Log.e(TAG, "stop()", e) }
+            cleanupRecorder()
+            videoUri?.let { storage.finalizeVideo(appContext, it) }
+            videoUri = null
+            _isRecording.value = false
+            createPreviewSession()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopVideoRecording", e)
         }
+    }
 
+    private fun cleanupRecorder() {
+        try { mediaRecorder?.reset() } catch (_: Exception) {}
+        try { mediaRecorder?.release() } catch (_: Exception) {}
         mediaRecorder = null
-
-        _isRecording.value = false
-
-        createPreviewSession()
-
-    } catch (e: Exception) {
-        Log.e(TAG, "Error stopRecording", e)
-    }
-}
-
-fun closeCamera() {
-
-    try {
-        cameraCaptureSession?.stopRepeating()
-    } catch (_: Exception) {
+        try { videoFd?.close() } catch (_: Exception) {}
+        videoFd = null
     }
 
-    try {
-        cameraCaptureSession?.abortCaptures()
-    } catch (_: Exception) {
+    // ---------- Cierre ----------
+    fun closeCamera() {
+        viewModelScope.launch(Dispatchers.IO) {
+            cameraMutex.withLock { closeCameraInternal() }
+        }
     }
 
-    try {
-        cameraCaptureSession?.close()
-    } catch (_: Exception) {
+    private fun closeCameraInternal() {
+        try { captureSession?.stopRepeating() } catch (_: Exception) {}
+        try { captureSession?.close() } catch (_: Exception) {}
+        captureSession = null
+        try { imageReader?.close() } catch (_: Exception) {}
+        imageReader = null
+        cleanupRecorder()
+        try { cameraDevice?.close() } catch (_: Exception) {}
+        cameraDevice = null
+        isCameraActive = false
+        isStartingCamera = false
     }
 
-    cameraCaptureSession = null
+    private fun getBackCameraId(manager: CameraManager): String =
+        manager.cameraIdList.firstOrNull {
+            manager.getCameraCharacteristics(it)
+                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        } ?: manager.cameraIdList.firstOrNull() ?: "0"
 
-    try {
-        imageReader?.close()
-    } catch (_: Exception) {
+    private fun getFrontCameraId(manager: CameraManager): String =
+        manager.cameraIdList.firstOrNull {
+            manager.getCameraCharacteristics(it)
+                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        } ?: manager.cameraIdList.firstOrNull() ?: "1"
+
+    override fun onCleared() {
+        super.onCleared()
+        closeCameraInternal()
+        stopBackgroundThread()
     }
-
-    imageReader = null
-
-    try {
-        mediaRecorder?.reset()
-        mediaRecorder?.release()
-    } catch (_: Exception) {
-    }
-
-    mediaRecorder = null
-
-    try {
-        cameraDevice?.close()
-    } catch (_: Exception) {
-    }
-
-    cameraDevice = null
-
-    isCameraActive = false
-    isStartingCamera = false
-}
-
-private fun getBackCameraId(manager: CameraManager): String {
-
-    return manager.cameraIdList.firstOrNull {
-
-        val characteristics = manager.getCameraCharacteristics(it)
-
-        characteristics.get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
-
-    } ?: "0"
-}
-
-private fun getFrontCameraId(manager: CameraManager): String {
-
-    return manager.cameraIdList.firstOrNull {
-
-        val characteristics = manager.getCameraCharacteristics(it)
-
-        characteristics.get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_FRONT
-
-    } ?: "1"
-}
-
-override fun onCleared() {
-    super.onCleared()
-    closeCamera()
-}
-
 }
