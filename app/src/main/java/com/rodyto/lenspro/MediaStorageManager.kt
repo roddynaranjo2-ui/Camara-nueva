@@ -2,50 +2,31 @@ package com.rodyto.lenspro
 
 import android.content.ContentValues
 import android.content.Context
-import android.media.Image
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
-import java.nio.ByteBuffer
 
 class MediaStorageManager {
 
-    private val folderName = "LensPro"
+    companion object {
+        private const val TAG = "RodytoLensPro"
+        private const val FOLDER = "LensPro"
+    }
 
-    fun saveImage(context: Context, image: Image?): Uri? {
-        if (image == null) {
-            Log.e("RodytoLensPro", "La imagen es nula, no se puede guardar.")
-            return null
-        }
-
-        // Extraemos los bytes y cerramos la imagen inmediatamente para liberar memoria
-        val bytes = try {
-            val planes = image.planes
-            if (planes.isEmpty()) {
-                Log.e("RodytoLensPro", "La imagen no contiene planos válidos.")
-                image.close()
-                return null
-            }
-            val buffer: ByteBuffer = planes[0].buffer
-            val data = ByteArray(buffer.remaining())
-            buffer.get(data)
-            image.close() // Cerramos aquí para mayor seguridad
-            data
-        } catch (e: Exception) {
-            Log.e("RodytoLensPro", "No se pudieron extraer bytes de la imagen", e)
-            image.close()
-            return null
-        }
+    // ---------- IMÁGENES JPEG ----------
+    fun saveJpeg(context: Context, bytes: ByteArray): Uri? {
+        if (bytes.isEmpty()) return null
 
         val filename = "IMG_${System.currentTimeMillis()}.jpg"
         val resolver = context.contentResolver
 
-        val contentValues = ContentValues().apply {
+        val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$folderName")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
@@ -57,66 +38,70 @@ class MediaStorageManager {
         }
 
         var uri: Uri? = null
+        return try {
+            uri = resolver.insert(collection, values)
+                ?: throw IllegalStateException("MediaStore insert returned null")
 
-        try {
-            uri = resolver.insert(collection, contentValues)
-                ?: throw IllegalStateException("No se pudo crear el registro en MediaStore")
-
-            resolver.openOutputStream(uri)?.use { outputStream ->
-                outputStream.write(bytes)
-                outputStream.flush()
-            } ?: throw IllegalStateException("No se pudo abrir OutputStream para $uri")
+            resolver.openOutputStream(uri)?.use { out ->
+                out.write(bytes)
+                out.flush()
+            } ?: throw IllegalStateException("OutputStream null for $uri")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val updatedValues = ContentValues().apply {
+                resolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
-                }
-                resolver.update(uri, updatedValues, null, null)
+                }, null, null)
             }
 
-            Log.d("RodytoLensPro", "Foto guardada exitosamente: $uri")
-            return uri
+            Log.d(TAG, "JPEG guardado: $uri")
+            uri
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error crítico guardando foto", e)
+            Log.e(TAG, "Error guardando JPEG", e)
             uri?.let { runCatching { resolver.delete(it, null, null) } }
-            return null
+            null
         }
     }
 
+    // ---------- VIDEO MP4 ----------
     fun createVideoUri(context: Context): Uri? {
         val filename = "VID_${System.currentTimeMillis()}.mp4"
-        val contentValues = ContentValues().apply {
+        val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$folderName")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         } else {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         }
-
         return try {
-            context.contentResolver.insert(collection, contentValues)
+            context.contentResolver.insert(collection, values)
         } catch (e: Exception) {
-            Log.e("RodytoLensPro", "Error creando Uri de video", e)
+            Log.e(TAG, "Error creando Uri de video", e)
             null
         }
     }
 
-    fun finalizeVideoSave(context: Context, videoUri: Uri) {
+    fun openVideoFd(context: Context, uri: Uri): ParcelFileDescriptor? =
+        try {
+            context.contentResolver.openFileDescriptor(uri, "w")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error abriendo FD de video", e)
+            null
+        }
+
+    fun finalizeVideo(context: Context, uri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                val contentValues = ContentValues().apply {
+                context.contentResolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
-                }
-                context.contentResolver.update(videoUri, contentValues, null, null)
+                }, null, null)
             } catch (e: Exception) {
-                Log.e("RodytoLensPro", "Error finalizando video", e)
+                Log.e(TAG, "Error finalizando video", e)
             }
         }
     }
