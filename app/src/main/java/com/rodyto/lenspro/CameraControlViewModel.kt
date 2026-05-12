@@ -35,6 +35,21 @@ import kotlinx.coroutines.sync.withLock
 import java.nio.ByteBuffer
 import kotlin.math.max
 
+/**
+ * Resoluciones de video soportadas.
+ * El nombre es lo que se muestra en UI; los enteros son los píxeles reales para el encoder.
+ */
+enum class VideoResolution(val label: String, val width: Int, val height: Int) {
+    HD("HD",   1280,  720),
+    FHD("FHD", 1920, 1080),
+    UHD("4K",  3840, 2160);
+}
+
+enum class VideoFps(val label: String, val value: Int) {
+    FPS30("30", 30),
+    FPS60("60", 60);
+}
+
 class CameraControlViewModel : ViewModel() {
 
     companion object {
@@ -49,8 +64,8 @@ class CameraControlViewModel : ViewModel() {
     @Suppress("unused")
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
-    // ----- Estado expuesto -----
-    private val _currentLens = MutableStateFlow("1x")
+    // ---------------- Estado UI expuesto ----------------
+    private val _currentLens = MutableStateFlow("1x")          // "0.5x" | "1x" | "3x"
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
     private val _cameraMode = MutableStateFlow("FOTO")
@@ -77,7 +92,30 @@ class CameraControlViewModel : ViewModel() {
     private val _zoomLevel = MutableStateFlow(1f)
     val zoomLevel: StateFlow<Float> = _zoomLevel.asStateFlow()
 
-    // ----- Recursos Camera2 -----
+    // --- Ajustes ---
+    private val _hdrEnabled = MutableStateFlow(false)
+    val hdrEnabled: StateFlow<Boolean> = _hdrEnabled.asStateFlow()
+
+    private val _gridEnabled = MutableStateFlow(false)
+    val gridEnabled: StateFlow<Boolean> = _gridEnabled.asStateFlow()
+
+    private val _timerSeconds = MutableStateFlow(0)  // 0 | 3 | 10
+    val timerSeconds: StateFlow<Int> = _timerSeconds.asStateFlow()
+
+    private val _shutterSoundEnabled = MutableStateFlow(true)
+    val shutterSoundEnabled: StateFlow<Boolean> = _shutterSoundEnabled.asStateFlow()
+
+    private val _videoResolution = MutableStateFlow(VideoResolution.FHD)
+    val videoResolution: StateFlow<VideoResolution> = _videoResolution.asStateFlow()
+
+    private val _videoFps = MutableStateFlow(VideoFps.FPS30)
+    val videoFps: StateFlow<VideoFps> = _videoFps.asStateFlow()
+
+    /** Aspecto del preview actual (ancho/alto) – emitido cuando se conoce el sensor. */
+    private val _previewAspectRatio = MutableStateFlow(3f / 4f)
+    val previewAspectRatio: StateFlow<Float> = _previewAspectRatio.asStateFlow()
+
+    // ---------------- Recursos Camera2 ----------------
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var imageReader: ImageReader? = null
@@ -90,6 +128,7 @@ class CameraControlViewModel : ViewModel() {
 
     private var backMainId: String? = null
     private var backUltraWideId: String? = null
+    private var backTeleId: String? = null       // ← NUEVO: tele óptico
     private var frontMainId: String? = null
 
     private var backgroundThread: HandlerThread? = null
@@ -115,20 +154,20 @@ class CameraControlViewModel : ViewModel() {
 
     fun isCameraRunning(): Boolean = isCameraActive
 
-    fun toggleFlash() {
-        _flashEnabled.value = !_flashEnabled.value
-        updateRepeatingRequest()
-    }
+    // ---------------- Setters de UI ----------------
+    fun toggleFlash() { _flashEnabled.value = !_flashEnabled.value; updateRepeatingRequest() }
+    fun setCameraMode(mode: String) { if (_isRecording.value) return; _cameraMode.value = mode }
+    fun toggleFocusLock() { _focusLocked.value = !_focusLocked.value; updateRepeatingRequest() }
 
-    fun setCameraMode(mode: String) {
-        if (_isRecording.value) return
-        _cameraMode.value = mode
+    fun toggleHdr() { _hdrEnabled.value = !_hdrEnabled.value; updateRepeatingRequest() }
+    fun toggleGrid() { _gridEnabled.value = !_gridEnabled.value }
+    fun cycleTimer() {
+        _timerSeconds.value = when (_timerSeconds.value) { 0 -> 3; 3 -> 10; else -> 0 }
     }
+    fun toggleShutterSound() { _shutterSoundEnabled.value = !_shutterSoundEnabled.value }
 
-    fun toggleFocusLock() {
-        _focusLocked.value = !_focusLocked.value
-        updateRepeatingRequest()
-    }
+    fun setVideoResolution(r: VideoResolution) { if (!_isRecording.value) _videoResolution.value = r }
+    fun setVideoFps(f: VideoFps) { if (!_isRecording.value) _videoFps.value = f }
 
     fun toggleFrontCamera(context: Context) {
         if (_isRecording.value) return
@@ -138,7 +177,6 @@ class CameraControlViewModel : ViewModel() {
         _currentLens.value = "1x"
         _zoomLevel.value = 1f
         val surface = previewSurface ?: return
-        // ✅ FIX: una sola corrutina que cierra y abre dentro del mismo lock
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock {
                 closeCameraInternal()
@@ -147,22 +185,26 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Cambio de lente.
+     *  - 0.5x → cámara ultra-wide física
+     *  - 1x   → cámara principal física (zoom 1)
+     *  - 3x   → cámara tele física si existe; si no, fallback a crop 3x sobre la principal
+     */
     fun switchLens(context: Context, lens: String) {
         if (_isRecording.value) return
         val prevLens = _currentLens.value
         _currentLens.value = lens
+
+        val teleAvailable = backTeleId != null
         _zoomLevel.value = when (lens) {
             "0.5x" -> 1f
             "1x"   -> 1f
-            "2x"   -> 2f
+            "3x"   -> if (teleAvailable) 1f else 3f   // si no hay tele → crop 3x
             else   -> 1f
         }
 
-        val needsCameraSwap = !_isFrontCamera.value && (
-            (lens == "0.5x" && prevLens != "0.5x") ||
-            (lens != "0.5x" && prevLens == "0.5x")
-        )
-
+        val needsCameraSwap = !_isFrontCamera.value && targetCameraIdFor(lens) != currentCameraId
         if (needsCameraSwap) {
             val surface = previewSurface ?: return
             viewModelScope.launch(Dispatchers.IO) {
@@ -176,6 +218,13 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    private fun targetCameraIdFor(lens: String): String = when {
+        _isFrontCamera.value -> frontMainId ?: currentCameraId
+        lens == "0.5x"       -> backUltraWideId ?: backMainId ?: currentCameraId
+        lens == "3x"         -> backTeleId ?: backMainId ?: currentCameraId
+        else                  -> backMainId ?: currentCameraId
+    }
+
     fun setExposure(level: Int) {
         val range = getExposureRange() ?: return
         val clamped = level.coerceIn(range.lower, range.upper)
@@ -187,9 +236,7 @@ class CameraControlViewModel : ViewModel() {
     fun getExposureRange(): Range<Int>? = try {
         cameraManager?.getCameraCharacteristics(currentCameraId)
             ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
-    } catch (e: Exception) {
-        Log.e(TAG, "Error getExposureRange", e); null
-    }
+    } catch (e: Exception) { Log.e(TAG, "Error getExposureRange", e); null }
 
     fun tapToFocus(x: Float, y: Float, screenWidth: Int, screenHeight: Int) {
         if (_focusLocked.value) return
@@ -210,7 +257,6 @@ class CameraControlViewModel : ViewModel() {
                 halfSize * 2, halfSize * 2,
                 MeteringRectangle.METERING_WEIGHT_MAX - 1
             )
-
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
             applyBaseSettings(builder)
@@ -220,12 +266,9 @@ class CameraControlViewModel : ViewModel() {
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             session.capture(builder.build(), null, backgroundHandler)
             updateRepeatingRequest()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error tapToFocus", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error tapToFocus", e) }
     }
 
-    /** Entry point seguro: si ya hay cámara, sale; si no, abre. */
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock {
@@ -235,13 +278,9 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /** Debe llamarse SIEMPRE con el mutex tomado. */
     @SuppressLint("MissingPermission")
     private fun openCameraLocked(context: Context, surface: Surface, lens: String) {
-        if (!surface.isValid) {
-            Log.w(TAG, "Surface no válido, se omite apertura de cámara")
-            return
-        }
+        if (!surface.isValid) { Log.w(TAG, "Surface no válido"); return }
         isStartingCamera = true
         previewSurface = surface
         try {
@@ -249,18 +288,24 @@ class CameraControlViewModel : ViewModel() {
                 .getSystemService(Context.CAMERA_SERVICE) as CameraManager
             cameraManager = mgr
             cacheCameraIds(mgr)
+            currentCameraId = targetCameraIdFor(lens)
 
-            currentCameraId = when {
-                _isFrontCamera.value -> frontMainId ?: getFrontCameraId(mgr)
-                lens == "0.5x"       -> backUltraWideId ?: backMainId ?: getBackCameraId(mgr)
-                else                  -> backMainId ?: getBackCameraId(mgr)
-            }
+            // Calcular aspect ratio del preview a partir del sensor
+            try {
+                val ch = mgr.getCameraCharacteristics(currentCameraId)
+                val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                val best = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+                    ?.maxByOrNull { it.width.toLong() * it.height }
+                if (best != null) {
+                    // SurfaceView en portrait → ratio = height/width
+                    _previewAspectRatio.value = best.height.toFloat() / best.width.toFloat()
+                }
+            } catch (_: Exception) {}
 
             mgr.openCamera(currentCameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     cameraDevice = camera
-                    isCameraActive = true
-                    isStartingCamera = false
+                    isCameraActive = true; isStartingCamera = false
                     createPreviewSession()
                 }
                 override fun onDisconnected(camera: CameraDevice) {
@@ -281,10 +326,16 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Cachea IDs de cámara: principal, ultra-wide (focal mínima)
+     * y telephoto (focal máxima si difiere de la principal).
+     */
     private fun cacheCameraIds(manager: CameraManager) {
-        if (backMainId != null && frontMainId != null) return
+        if (backMainId != null && frontMainId != null && (backUltraWideId != null || backTeleId != null))
+            return
         try {
             val ids = manager.cameraIdList
+
             backMainId = ids.firstOrNull {
                 manager.getCameraCharacteristics(it)
                     .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
@@ -294,40 +345,47 @@ class CameraControlViewModel : ViewModel() {
                     .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
             }
 
-            var bestId: String? = null
-            var bestFocal = Float.MAX_VALUE
+            // Focal de la principal como referencia
+            val mainFocal = backMainId?.let {
+                manager.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.firstOrNull()
+            } ?: 0f
+
+            var ultraId: String? = null
+            var ultraFocal = Float.MAX_VALUE
+            var teleId: String? = null
+            var teleFocal = 0f
+
             ids.forEach { id ->
                 val ch = manager.getCameraCharacteristics(id)
-                if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) return@forEach
+                if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK)
+                    return@forEach
                 val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: return@forEach
-                val minFocal = focals.minOrNull() ?: return@forEach
-                if (minFocal < bestFocal) {
-                    bestFocal = minFocal
-                    bestId = id
+                val minF = focals.minOrNull() ?: return@forEach
+                val maxF = focals.maxOrNull() ?: return@forEach
+                if (id != backMainId) {
+                    if (minF < mainFocal) { ultraId = id; ultraFocal = minF }
+                    if (maxF > mainFocal + 5f) { teleFocal = maxF; teleId = id }
                 }
             }
-            val finalUltra = bestId
-            if (finalUltra != null && finalUltra != backMainId) {
-                backUltraWideId = finalUltra
-            }
-            Log.d(TAG, "IDs cacheados → main=$backMainId, ultra=$backUltraWideId, front=$frontMainId")
-        } catch (e: Exception) {
-            Log.e(TAG, "cacheCameraIds error", e)
-        }
+            backUltraWideId = ultraId
+            backTeleId      = teleId
+            Log.d(TAG, "IDs → main=$backMainId, ultra=$backUltraWideId, tele=$backTeleId, front=$frontMainId")
+        } catch (e: Exception) { Log.e(TAG, "cacheCameraIds error", e) }
     }
+
+    fun hasTelephoto(): Boolean = backTeleId != null
 
     private fun createPreviewSession() {
         val camera = cameraDevice ?: return
         val surface = previewSurface ?: return
-        if (!surface.isValid) {
-            Log.w(TAG, "Surface inválido al crear sesión")
-            return
-        }
+        if (!surface.isValid) return
         try {
             val ch = cameraManager?.getCameraCharacteristics(currentCameraId)
             val map = ch?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)
-                ?.maxByOrNull { it.width * it.height } ?: Size(1920, 1080)
+                ?.maxByOrNull { it.width.toLong() * it.height } ?: Size(1920, 1080)
 
             imageReader?.close()
             imageReader = ImageReader.newInstance(
@@ -348,9 +406,7 @@ class CameraControlViewModel : ViewModel() {
                 },
                 backgroundHandler
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error createPreviewSession", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error createPreviewSession", e) }
     }
 
     private fun applyBaseSettings(builder: CaptureRequest.Builder) {
@@ -366,6 +422,12 @@ class CameraControlViewModel : ViewModel() {
         builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
         builder.set(CaptureRequest.CONTROL_AE_LOCK, _focusLocked.value)
         builder.set(CaptureRequest.CONTROL_AWB_LOCK, _focusLocked.value)
+
+        // HDR como escena (HDR-scene); en sensores que no lo soportan, ignorado por driver.
+        if (_hdrEnabled.value) {
+            builder.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_HDR)
+            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
+        }
         applyZoom(builder)
     }
 
@@ -379,9 +441,7 @@ class CameraControlViewModel : ViewModel() {
             builder.addTarget(surface)
             applyBaseSettings(builder)
             session.setRepeatingRequest(builder.build(), null, backgroundHandler)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updateRepeatingRequest", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error updateRepeatingRequest", e) }
     }
 
     private fun applyZoom(builder: CaptureRequest.Builder) {
@@ -389,6 +449,7 @@ class CameraControlViewModel : ViewModel() {
             val ch = cameraManager?.getCameraCharacteristics(currentCameraId) ?: return
             val rect = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
             val zoom = _zoomLevel.value.coerceAtLeast(1f)
+            if (zoom == 1f) return
             val cropW = (rect.width() / zoom).toInt()
             val cropH = (rect.height() / zoom).toInt()
             val cropX = (rect.width() - cropW) / 2
@@ -397,9 +458,7 @@ class CameraControlViewModel : ViewModel() {
                 CaptureRequest.SCALER_CROP_REGION,
                 Rect(cropX, cropY, cropX + cropW, cropY + cropH)
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applyZoom", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error applyZoom", e) }
     }
 
     fun takePicture(storage: MediaStorageManager, context: Context) {
@@ -416,11 +475,8 @@ class CameraControlViewModel : ViewModel() {
                 buffer.get(bytes)
                 val uri = storage.saveJpeg(appContext, bytes)
                 if (uri != null) _lastPhotoUri.value = uri
-            } catch (e: Exception) {
-                Log.e(TAG, "Error procesando imagen", e)
-            } finally {
-                image.close()
-            }
+            } catch (e: Exception) { Log.e(TAG, "Error procesando imagen", e) }
+            finally { image.close() }
         }, backgroundHandler)
 
         try {
@@ -436,13 +492,9 @@ class CameraControlViewModel : ViewModel() {
                     session: CameraCaptureSession,
                     request: CaptureRequest,
                     result: TotalCaptureResult
-                ) {
-                    updateRepeatingRequest()
-                }
+                ) { updateRepeatingRequest() }
             }, backgroundHandler)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error takePicture", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error takePicture", e) }
     }
 
     @SuppressLint("MissingPermission")
@@ -454,27 +506,32 @@ class CameraControlViewModel : ViewModel() {
         val appContext = context.applicationContext
 
         try {
-            captureSession?.close()
-            captureSession = null
+            captureSession?.close(); captureSession = null
 
             val uri = storage.createVideoUri(appContext) ?: return
-            val fd = storage.openVideoFd(appContext, uri) ?: return
-            videoUri = uri
-            videoFd = fd
+            val fd  = storage.openVideoFd(appContext, uri) ?: return
+            videoUri = uri; videoFd = fd
+
+            val res  = _videoResolution.value
+            val fps  = _videoFps.value.value
+            val rate = when (res) {
+                VideoResolution.HD  ->  6_000_000
+                VideoResolution.FHD -> 12_000_000
+                VideoResolution.UHD -> 40_000_000
+            }
 
             mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(appContext)
             } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
+                @Suppress("DEPRECATION") MediaRecorder()
             }.apply {
                 setAudioSource(MediaRecorder.AudioSource.MIC)
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setOutputFile(fd.fileDescriptor)
-                setVideoEncodingBitRate(10_000_000)
-                setVideoFrameRate(30)
-                setVideoSize(1920, 1080)
+                setVideoEncodingBitRate(rate)
+                setVideoFrameRate(fps)
+                setVideoSize(res.width, res.height)
                 setVideoEncoder(MediaRecorder.VideoEncoder.H264)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setOrientationHint(if (_isFrontCamera.value) 270 else 90)
@@ -494,25 +551,25 @@ class CameraControlViewModel : ViewModel() {
                             builder.addTarget(surface)
                             builder.addTarget(recorderSurface)
                             applyBaseSettings(builder)
+                            // Forzar FPS objetivo
+                            builder.set(
+                                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                Range(fps, fps)
+                            )
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                             mediaRecorder?.start()
                             _isRecording.value = true
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error iniciando grabación", e)
-                            cleanupRecorder()
+                            Log.e(TAG, "Error iniciando grabación", e); cleanupRecorder()
                         }
                     }
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e(TAG, "Falló sesión de grabación")
-                        cleanupRecorder()
+                        Log.e(TAG, "Falló sesión de grabación"); cleanupRecorder()
                     }
                 },
                 backgroundHandler
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error startVideoRecording", e)
-            cleanupRecorder()
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error startVideoRecording", e); cleanupRecorder() }
     }
 
     fun stopVideoRecording(context: Context, storage: MediaStorageManager) {
@@ -525,9 +582,7 @@ class CameraControlViewModel : ViewModel() {
             videoUri = null
             _isRecording.value = false
             createPreviewSession()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopVideoRecording", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Error stopVideoRecording", e) }
     }
 
     private fun cleanupRecorder() {
@@ -553,21 +608,8 @@ class CameraControlViewModel : ViewModel() {
         cleanupRecorder()
         try { cameraDevice?.close() } catch (_: Exception) {}
         cameraDevice = null
-        isCameraActive = false
-        isStartingCamera = false
+        isCameraActive = false; isStartingCamera = false
     }
-
-    private fun getBackCameraId(manager: CameraManager): String =
-        manager.cameraIdList.firstOrNull {
-            manager.getCameraCharacteristics(it)
-                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-        } ?: manager.cameraIdList.firstOrNull() ?: "0"
-
-    private fun getFrontCameraId(manager: CameraManager): String =
-        manager.cameraIdList.firstOrNull {
-            manager.getCameraCharacteristics(it)
-                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-        } ?: manager.cameraIdList.firstOrNull() ?: "1"
 
     override fun onCleared() {
         super.onCleared()
