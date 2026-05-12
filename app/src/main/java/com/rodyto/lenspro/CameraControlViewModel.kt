@@ -13,7 +13,6 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.media.ImageReader
-import android.media.MediaActionSound
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -139,6 +138,7 @@ class CameraControlViewModel : ViewModel() {
         _currentLens.value = "1x"
         _zoomLevel.value = 1f
         val surface = previewSurface ?: return
+        // ✅ FIX: una sola corrutina que cierra y abre dentro del mismo lock
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock {
                 closeCameraInternal()
@@ -201,16 +201,8 @@ class CameraControlViewModel : ViewModel() {
         try {
             val ch = manager.getCameraCharacteristics(currentCameraId)
             val arr = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-
-            // Mejora: mejor mapeo + compensación básica de cámara frontal (espejo)
-            val isFront = _isFrontCamera.value
             val sensorX = (y / screenHeight * arr.width()).toInt().coerceIn(0, arr.width() - 1)
-            val sensorY = if (isFront) {
-                (x / screenWidth * arr.height()).toInt()  // Espejo horizontal para frontal
-            } else {
-                ((1 - x / screenWidth) * arr.height()).toInt()
-            }
-
+            val sensorY = ((1 - x / screenWidth) * arr.height()).toInt().coerceIn(0, arr.height() - 1)
             val halfSize = max(arr.width(), arr.height()) / 20
             val region = MeteringRectangle(
                 (sensorX - halfSize).coerceAtLeast(0),
@@ -233,6 +225,7 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /** Entry point seguro: si ya hay cámara, sale; si no, abre. */
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
         viewModelScope.launch(Dispatchers.IO) {
             cameraMutex.withLock {
@@ -242,6 +235,7 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /** Debe llamarse SIEMPRE con el mutex tomado. */
     @SuppressLint("MissingPermission")
     private fun openCameraLocked(context: Context, surface: Surface, lens: String) {
         if (!surface.isValid) {
@@ -414,9 +408,6 @@ class CameraControlViewModel : ViewModel() {
         val reader = imageReader ?: return
         val appContext = context.applicationContext
 
-        // Limpieza previa del listener para evitar fugas
-        reader.setOnImageAvailableListener(null, null)
-
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -429,8 +420,6 @@ class CameraControlViewModel : ViewModel() {
                 Log.e(TAG, "Error procesando imagen", e)
             } finally {
                 image.close()
-                // Limpieza del listener después de usar
-                reader.setOnImageAvailableListener(null, null)
             }
         }, backgroundHandler)
 
@@ -453,7 +442,6 @@ class CameraControlViewModel : ViewModel() {
             }, backgroundHandler)
         } catch (e: Exception) {
             Log.e(TAG, "Error takePicture", e)
-            reader.setOnImageAvailableListener(null, null)
         }
     }
 
@@ -466,8 +454,6 @@ class CameraControlViewModel : ViewModel() {
         val appContext = context.applicationContext
 
         try {
-            // Mejora: stopRepeating antes de cerrar
-            try { captureSession?.stopRepeating() } catch (_: Exception) {}
             captureSession?.close()
             captureSession = null
 
@@ -492,9 +478,8 @@ class CameraControlViewModel : ViewModel() {
                 setVideoEncoder(MediaRecorder.VideoEncoder.H264)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setOrientationHint(if (_isFrontCamera.value) 270 else 90)
+                prepare()
             }
-
-            mediaRecorder?.prepare()  // Preparación separada para mejor manejo de errores
 
             val recorderSurface = mediaRecorder!!.surface
 
@@ -549,17 +534,8 @@ class CameraControlViewModel : ViewModel() {
         try { mediaRecorder?.reset() } catch (_: Exception) {}
         try { mediaRecorder?.release() } catch (_: Exception) {}
         mediaRecorder = null
-
-        // Limpieza segura de archivo pendiente si la grabación falló
-        videoUri?.let { uri ->
-            try {
-                // Aquí puedes llamar a un método de MediaStorageManager para eliminar si está pending
-            } catch (_: Exception) {}
-        }
-
         try { videoFd?.close() } catch (_: Exception) {}
         videoFd = null
-        videoUri = null
     }
 
     fun closeCamera() {
