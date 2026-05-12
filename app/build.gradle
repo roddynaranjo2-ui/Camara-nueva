@@ -8,6 +8,9 @@ android {
 
     compileSdk 34
 
+    // === FIX IMPORTANTE: Versión fija de NDK para CI consistente ===
+    ndkVersion "26.1.10909125"
+
     defaultConfig {
         applicationId "com.rodyto.lenspro"
 
