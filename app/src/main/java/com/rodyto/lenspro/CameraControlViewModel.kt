@@ -35,10 +35,6 @@ import kotlinx.coroutines.sync.withLock
 import java.nio.ByteBuffer
 import kotlin.math.max
 
-/**
- * Resoluciones de video soportadas.
- * El nombre es lo que se muestra en UI; los enteros son los píxeles reales para el encoder.
- */
 enum class VideoResolution(val label: String, val width: Int, val height: Int) {
     HD("HD",   1280,  720),
     FHD("FHD", 1920, 1080),
@@ -54,18 +50,35 @@ class CameraControlViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "RodytoLensPro"
+        @Volatile private var nativeLibLoaded = false
         init {
-            try { System.loadLibrary("rodytolenspro") } catch (e: UnsatisfiedLinkError) {
+            try {
+                System.loadLibrary("rodytolenspro")
+                nativeLibLoaded = true
+            } catch (e: UnsatisfiedLinkError) {
                 Log.w(TAG, "Librería nativa no disponible (modo solo Kotlin)", e)
             }
         }
     }
 
+    /**
+     * [FIX #14] Antes este método estaba declarado pero jamás invocado (toda la
+     * librería C++ era código muerto). Ahora se invoca de forma SEGURA dentro de
+     * cacheCameraIds() para complementar la detección de IDs físicos en dispositivos
+     * con multi-cámara lógica. Se conserva el método nativo intacto.
+     */
     @Suppress("unused")
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
+    private fun safeNativePhysicalIds(): Array<String> = try {
+        if (nativeLibLoaded) getPhysicalCameraIdsNative() else emptyArray()
+    } catch (e: Throwable) {
+        Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e); emptyArray()
+    }
+
     // ---------------- Estado UI expuesto ----------------
-    private val _currentLens = MutableStateFlow("1x")          // "0.5x" | "1x" | "3x"
+    // [FIX #3] Identificadores unificados a "0.5x" / "1x" / "3x" en TODO el proyecto.
+    private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
     private val _cameraMode = MutableStateFlow("FOTO")
@@ -92,14 +105,13 @@ class CameraControlViewModel : ViewModel() {
     private val _zoomLevel = MutableStateFlow(1f)
     val zoomLevel: StateFlow<Float> = _zoomLevel.asStateFlow()
 
-    // --- Ajustes ---
     private val _hdrEnabled = MutableStateFlow(false)
     val hdrEnabled: StateFlow<Boolean> = _hdrEnabled.asStateFlow()
 
     private val _gridEnabled = MutableStateFlow(false)
     val gridEnabled: StateFlow<Boolean> = _gridEnabled.asStateFlow()
 
-    private val _timerSeconds = MutableStateFlow(0)  // 0 | 3 | 10
+    private val _timerSeconds = MutableStateFlow(0)
     val timerSeconds: StateFlow<Int> = _timerSeconds.asStateFlow()
 
     private val _shutterSoundEnabled = MutableStateFlow(true)
@@ -111,7 +123,6 @@ class CameraControlViewModel : ViewModel() {
     private val _videoFps = MutableStateFlow(VideoFps.FPS30)
     val videoFps: StateFlow<VideoFps> = _videoFps.asStateFlow()
 
-    /** Aspecto del preview actual (ancho/alto) – emitido cuando se conoce el sensor. */
     private val _previewAspectRatio = MutableStateFlow(3f / 4f)
     val previewAspectRatio: StateFlow<Float> = _previewAspectRatio.asStateFlow()
 
@@ -128,7 +139,7 @@ class CameraControlViewModel : ViewModel() {
 
     private var backMainId: String? = null
     private var backUltraWideId: String? = null
-    private var backTeleId: String? = null       // ← NUEVO: tele óptico
+    private var backTeleId: String? = null
     private var frontMainId: String? = null
 
     private var backgroundThread: HandlerThread? = null
@@ -154,7 +165,6 @@ class CameraControlViewModel : ViewModel() {
 
     fun isCameraRunning(): Boolean = isCameraActive
 
-    // ---------------- Setters de UI ----------------
     fun toggleFlash() { _flashEnabled.value = !_flashEnabled.value; updateRepeatingRequest() }
     fun setCameraMode(mode: String) { if (_isRecording.value) return; _cameraMode.value = mode }
     fun toggleFocusLock() { _focusLocked.value = !_focusLocked.value; updateRepeatingRequest() }
@@ -185,22 +195,15 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * Cambio de lente.
-     *  - 0.5x → cámara ultra-wide física
-     *  - 1x   → cámara principal física (zoom 1)
-     *  - 3x   → cámara tele física si existe; si no, fallback a crop 3x sobre la principal
-     */
     fun switchLens(context: Context, lens: String) {
         if (_isRecording.value) return
-        val prevLens = _currentLens.value
         _currentLens.value = lens
 
         val teleAvailable = backTeleId != null
         _zoomLevel.value = when (lens) {
             "0.5x" -> 1f
             "1x"   -> 1f
-            "3x"   -> if (teleAvailable) 1f else 3f   // si no hay tele → crop 3x
+            "3x"   -> if (teleAvailable) 1f else 3f
             else   -> 1f
         }
 
@@ -218,11 +221,12 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    // [FIX #11] Reformateado para legibilidad
     private fun targetCameraIdFor(lens: String): String = when {
         _isFrontCamera.value -> frontMainId ?: currentCameraId
         lens == "0.5x"       -> backUltraWideId ?: backMainId ?: currentCameraId
         lens == "3x"         -> backTeleId ?: backMainId ?: currentCameraId
-        else                  -> backMainId ?: currentCameraId
+        else                 -> backMainId ?: currentCameraId
     }
 
     fun setExposure(level: Int) {
@@ -244,7 +248,6 @@ class CameraControlViewModel : ViewModel() {
         val device = cameraDevice ?: return
         val surface = previewSurface ?: return
         val manager = cameraManager ?: return
-
         try {
             val ch = manager.getCameraCharacteristics(currentCameraId)
             val arr = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
@@ -290,14 +293,12 @@ class CameraControlViewModel : ViewModel() {
             cacheCameraIds(mgr)
             currentCameraId = targetCameraIdFor(lens)
 
-            // Calcular aspect ratio del preview a partir del sensor
             try {
                 val ch = mgr.getCameraCharacteristics(currentCameraId)
                 val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 val best = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
                     ?.maxByOrNull { it.width.toLong() * it.height }
                 if (best != null) {
-                    // SurfaceView en portrait → ratio = height/width
                     _previewAspectRatio.value = best.height.toFloat() / best.width.toFloat()
                 }
             } catch (_: Exception) {}
@@ -327,8 +328,9 @@ class CameraControlViewModel : ViewModel() {
     }
 
     /**
-     * Cachea IDs de cámara: principal, ultra-wide (focal mínima)
-     * y telephoto (focal máxima si difiere de la principal).
+     * [FIX #12 + #14] Cachea IDs de cámara. Eliminadas variables sin uso
+     * (ultraFocal, teleFocal) y se integra la búsqueda nativa de IDs físicos
+     * como complemento cuando esté disponible.
      */
     private fun cacheCameraIds(manager: CameraManager) {
         if (backMainId != null && frontMainId != null && (backUltraWideId != null || backTeleId != null))
@@ -345,7 +347,6 @@ class CameraControlViewModel : ViewModel() {
                     .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
             }
 
-            // Focal de la principal como referencia
             val mainFocal = backMainId?.let {
                 manager.getCameraCharacteristics(it)
                     .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
@@ -353,20 +354,22 @@ class CameraControlViewModel : ViewModel() {
             } ?: 0f
 
             var ultraId: String? = null
-            var ultraFocal = Float.MAX_VALUE
             var teleId: String? = null
-            var teleFocal = 0f
 
-            ids.forEach { id ->
-                val ch = manager.getCameraCharacteristics(id)
-                if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK)
-                    return@forEach
-                val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: return@forEach
-                val minF = focals.minOrNull() ?: return@forEach
-                val maxF = focals.maxOrNull() ?: return@forEach
-                if (id != backMainId) {
-                    if (minF < mainFocal) { ultraId = id; ultraFocal = minF }
-                    if (maxF > mainFocal + 5f) { teleFocal = maxF; teleId = id }
+            val combinedIds = (ids.toSet() + safeNativePhysicalIds().toSet()).toList()
+
+            combinedIds.forEach { id ->
+                runCatching {
+                    val ch = manager.getCameraCharacteristics(id)
+                    if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK)
+                        return@runCatching
+                    val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: return@runCatching
+                    val minF = focals.minOrNull() ?: return@runCatching
+                    val maxF = focals.maxOrNull() ?: return@runCatching
+                    if (id != backMainId) {
+                        if (minF < mainFocal) ultraId = id
+                        if (maxF > mainFocal + 5f) teleId = id
+                    }
                 }
             }
             backUltraWideId = ultraId
@@ -423,7 +426,6 @@ class CameraControlViewModel : ViewModel() {
         builder.set(CaptureRequest.CONTROL_AE_LOCK, _focusLocked.value)
         builder.set(CaptureRequest.CONTROL_AWB_LOCK, _focusLocked.value)
 
-        // HDR como escena (HDR-scene); en sensores que no lo soportan, ignorado por driver.
         if (_hdrEnabled.value) {
             builder.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_HDR)
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
@@ -504,7 +506,6 @@ class CameraControlViewModel : ViewModel() {
         val surface = previewSurface ?: return
         if (!surface.isValid) return
         val appContext = context.applicationContext
-
         try {
             captureSession?.close(); captureSession = null
 
@@ -551,7 +552,6 @@ class CameraControlViewModel : ViewModel() {
                             builder.addTarget(surface)
                             builder.addTarget(recorderSurface)
                             applyBaseSettings(builder)
-                            // Forzar FPS objetivo
                             builder.set(
                                 CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                 Range(fps, fps)
