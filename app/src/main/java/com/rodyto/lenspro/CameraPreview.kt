@@ -55,7 +55,6 @@ fun CameraPreview(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Fondo negro + SurfaceView centrado con aspect ratio del sensor → preview SIN estirar
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -65,7 +64,7 @@ fun CameraPreview(
         AndroidView(
             modifier = Modifier
                 .fillMaxHeight()
-                .aspectRatio(aspect),                // respeta proporción del sensor
+                .aspectRatio(aspect),
             factory = { ctx ->
                 SurfaceView(ctx).apply {
                     holder.addCallback(object : SurfaceHolder.Callback {
