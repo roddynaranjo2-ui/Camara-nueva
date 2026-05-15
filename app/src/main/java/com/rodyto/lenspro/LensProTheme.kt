@@ -8,34 +8,61 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /* ================================================================
- *  LensPro — Design Tokens iOS 19 Liquid Glass (refinados)
+ * LensPro — tokens visuales glass / liquid glass
  * ================================================================ */
 
-// ---------- Accent system ----------
-val LensAccent       = Color(0xFFFFD60A)   // amarillo iOS (sólo highlights)
-val LensAccentSoft   = Color(0xFFFFE066)
-val LensRecRed       = Color(0xFFFF3B30)
-val LensRecRedSoft   = Color(0xFFFF6A60)
+enum class AccentStyle(
+    val label: String,
+    val accent: Color,
+    val accentSoft: Color,
+    val accentGlow: Color,
+    val onAccent: Color
+) {
+    ICE_BLUE(
+        label = "Azul hielo",
+        accent = Color(0xFF67C6FF),
+        accentSoft = Color(0xFFB9E6FF),
+        accentGlow = Color(0xFF2E8BFF),
+        onAccent = Color(0xFF04111B)
+    ),
+    AURORA(
+        label = "Aurora",
+        accent = Color(0xFF8D7CFF),
+        accentSoft = Color(0xFFD3CBFF),
+        accentGlow = Color(0xFF5A45FF),
+        onAccent = Color(0xFF0B0820)
+    ),
+    JADE(
+        label = "Jade",
+        accent = Color(0xFF61D6B4),
+        accentSoft = Color(0xFFC5F3E5),
+        accentGlow = Color(0xFF23A67F),
+        onAccent = Color(0xFF041711)
+    )
+}
 
-// ---------- Ultra Thin Material (Dark) — refinado iOS 19 ----------
-val UltraThinDarkBase        = Color(0x80101012)   // 50 % opacidad para chips
-val UltraThinDarkSurface     = Color(0x26FFFFFF)   // capa de luz superior 15 %
-val UltraThinDarkStroke      = Color(0x33FFFFFF)
-val UltraThinDarkStrokeInner = Color(0x14FFFFFF)
+val LensAccent = AccentStyle.ICE_BLUE.accent
+val LensAccentSoft = AccentStyle.ICE_BLUE.accentSoft
+val LensRecRed = Color(0xFFFF453A)
+val LensRecRedSoft = Color(0xFFFF8A80)
 
-// ---------- Ultra Thin Material (Light) ----------
-val UltraThinLightBase        = Color(0xCCFFFFFF)
-val UltraThinLightSurface     = Color(0x33FFFFFF)
-val UltraThinLightStroke      = Color(0x33000000)
-val UltraThinLightStrokeInner = Color(0x14000000)
+private val UltraThinDarkBase = Color(0xB2141820)
+private val UltraThinDarkSurface = Color(0x40FFFFFF)
+private val UltraThinDarkStroke = Color(0x5EFFFFFF)
+private val UltraThinDarkStrokeInner = Color(0x1FFFFFFF)
+private val UltraThinDarkShadow = Color(0x66000000)
 
-// ---------- Vibrancy ----------
-val VibrancyDarkPrimary    = Color(0xF2FFFFFF)
-val VibrancyDarkSecondary  = Color(0xB3FFFFFF)
-val VibrancyLightPrimary   = Color(0xF21A1A1A)
-val VibrancyLightSecondary = Color(0xA61A1A1A)
+private val UltraThinLightBase = Color(0xD9FFFFFF)
+private val UltraThinLightSurface = Color(0x8AFFFFFF)
+private val UltraThinLightStroke = Color(0x220D1522)
+private val UltraThinLightStrokeInner = Color(0x12FFFFFF)
+private val UltraThinLightShadow = Color(0x14000000)
 
-/** Paleta Liquid Glass completa para todos los componentes. */
+private val VibrancyDarkPrimary = Color(0xF5FFFFFF)
+private val VibrancyDarkSecondary = Color(0xB8E2EEFF)
+private val VibrancyLightPrimary = Color(0xFF0F1724)
+private val VibrancyLightSecondary = Color(0xB3142133)
+
 data class GlassPalette(
     val bg: Color,
     val bgStrong: Color,
@@ -43,71 +70,108 @@ data class GlassPalette(
     val borderSoft: Color,
     val onGlass: Color,
     val onGlassSecondary: Color,
-    // -- Liquid Glass extensions --
     val ultraBase: Color,
     val ultraSurface: Color,
     val ultraStroke: Color,
     val ultraStrokeInner: Color,
+    val shadow: Color,
     val vibrancyPrimary: Color,
     val vibrancySecondary: Color,
+    val accent: Color,
+    val accentSoft: Color,
+    val accentGlow: Color,
+    val onAccent: Color,
+    val letterboxTop: Color,
+    val letterboxBottom: Color,
     val isDark: Boolean
 )
 
-val GlassDark = GlassPalette(
-    bg               = Color.Black.copy(alpha = 0.32f),
-    bgStrong         = Color.Black.copy(alpha = 0.55f),
-    border           = Color.White.copy(alpha = 0.22f),
-    borderSoft       = Color.White.copy(alpha = 0.10f),
-    onGlass          = Color.White,
-    onGlassSecondary = Color.White.copy(alpha = 0.70f),
-    ultraBase        = UltraThinDarkBase,
-    ultraSurface     = UltraThinDarkSurface,
-    ultraStroke      = UltraThinDarkStroke,
+private fun glassDark(style: AccentStyle) = GlassPalette(
+    bg = Color(0x66131A25),
+    bgStrong = Color(0xCC0A0E14),
+    border = Color(0x52FFFFFF),
+    borderSoft = Color(0x1FFFFFFF),
+    onGlass = VibrancyDarkPrimary,
+    onGlassSecondary = VibrancyDarkSecondary,
+    ultraBase = UltraThinDarkBase,
+    ultraSurface = UltraThinDarkSurface,
+    ultraStroke = UltraThinDarkStroke,
     ultraStrokeInner = UltraThinDarkStrokeInner,
-    vibrancyPrimary  = VibrancyDarkPrimary,
-    vibrancySecondary= VibrancyDarkSecondary,
-    isDark           = true
+    shadow = UltraThinDarkShadow,
+    vibrancyPrimary = VibrancyDarkPrimary,
+    vibrancySecondary = VibrancyDarkSecondary,
+    accent = style.accent,
+    accentSoft = style.accentSoft,
+    accentGlow = style.accentGlow,
+    onAccent = style.onAccent,
+    letterboxTop = Color(0xE0090D13),
+    letterboxBottom = Color(0xE00A0E14),
+    isDark = true
 )
 
-val GlassLight = GlassPalette(
-    bg               = Color.White.copy(alpha = 0.36f),
-    bgStrong         = Color.White.copy(alpha = 0.62f),
-    border           = Color.Black.copy(alpha = 0.18f),
-    borderSoft       = Color.Black.copy(alpha = 0.08f),
-    onGlass          = Color(0xFF101010),
-    onGlassSecondary = Color(0xFF555555),
-    ultraBase        = UltraThinLightBase,
-    ultraSurface     = UltraThinLightSurface,
-    ultraStroke      = UltraThinLightStroke,
+private fun glassLight(style: AccentStyle) = GlassPalette(
+    bg = Color(0x73F7FAFF),
+    bgStrong = Color(0xEAF7F9FC),
+    border = Color(0x260D1522),
+    borderSoft = Color(0x120D1522),
+    onGlass = VibrancyLightPrimary,
+    onGlassSecondary = VibrancyLightSecondary,
+    ultraBase = UltraThinLightBase,
+    ultraSurface = UltraThinLightSurface,
+    ultraStroke = UltraThinLightStroke,
     ultraStrokeInner = UltraThinLightStrokeInner,
-    vibrancyPrimary  = VibrancyLightPrimary,
-    vibrancySecondary= VibrancyLightSecondary,
-    isDark           = false
-)
-
-private val DarkScheme = darkColorScheme(
-    primary = LensAccent, onPrimary = Color.Black,
-    background = Color.Black, surface = Color.Black,
-    onBackground = Color.White, onSurface = Color.White
-)
-
-private val LightScheme = lightColorScheme(
-    primary = LensAccent, onPrimary = Color.Black,
-    background = Color(0xFFF2F2F7), surface = Color.White,
-    onBackground = Color(0xFF101010), onSurface = Color(0xFF101010)
+    shadow = UltraThinLightShadow,
+    vibrancyPrimary = VibrancyLightPrimary,
+    vibrancySecondary = VibrancyLightSecondary,
+    accent = style.accent,
+    accentSoft = style.accentSoft,
+    accentGlow = style.accentGlow,
+    onAccent = style.onAccent,
+    letterboxTop = Color(0xE5F3F7FB),
+    letterboxBottom = Color(0xEAF7FAFD),
+    isDark = false
 )
 
 @Composable
-fun LensProTheme(forceDark: Boolean? = null, content: @Composable () -> Unit) {
+fun LensProTheme(
+    forceDark: Boolean? = null,
+    accentStyle: AccentStyle = AccentStyle.ICE_BLUE,
+    content: @Composable () -> Unit
+) {
     val isDark = forceDark ?: isSystemInDarkTheme()
+    val scheme = if (isDark) {
+        darkColorScheme(
+            primary = accentStyle.accent,
+            onPrimary = accentStyle.onAccent,
+            background = Color.Black,
+            surface = Color.Black,
+            onBackground = Color.White,
+            onSurface = Color.White,
+            secondary = accentStyle.accentSoft
+        )
+    } else {
+        lightColorScheme(
+            primary = accentStyle.accent,
+            onPrimary = accentStyle.onAccent,
+            background = Color(0xFFF3F7FB),
+            surface = Color.White,
+            onBackground = Color(0xFF0F1724),
+            onSurface = Color(0xFF0F1724),
+            secondary = accentStyle.accentSoft
+        )
+    }
+
     MaterialTheme(
-        colorScheme = if (isDark) DarkScheme else LightScheme,
+        colorScheme = scheme,
         content = content
     )
 }
 
 @Composable
-fun glassPalette(forceDark: Boolean? = null): GlassPalette {
+fun glassPalette(
+    forceDark: Boolean? = null,
+    accentStyle: AccentStyle = AccentStyle.ICE_BLUE
+): GlassPalette {
     val isDark = forceDark ?: isSystemInDarkTheme()
-    return if (isDark) GlassDark else GlassLight
+    return if (isDark) glassDark(accentStyle) else glassLight(accentStyle)
 }
