@@ -2,27 +2,24 @@ package com.rodyto.lenspro
 
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.outlined.AspectRatio
-import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Cameraswitch
-import androidx.compose.material.icons.outlined.FlashOff
-import androidx.compose.material.icons.outlined.FlashOn
-import androidx.compose.material.icons.outlined.GridOn
-import androidx.compose.material.icons.outlined.HdrOn
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material.icons.outlined.NightlightRound
-import androidx.compose.material.icons.outlined.Photo
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Timer
-import androidx.compose.material.icons.outlined.Timer10Select
-import androidx.compose.material.icons.outlined.Timer3Select
-import androidx.compose.material.icons.outlined.TimerOff
-import androidx.compose.material.icons.outlined.VolumeOff
-import androidx.compose.material.icons.outlined.VolumeUp
-import androidx.compose.material.icons.outlined.WbSunny
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Cameraswitch
+import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.Exposure
+import androidx.compose.material.icons.rounded.FlashOff
+import androidx.compose.material.icons.rounded.FlashOn
+import androidx.compose.material.icons.rounded.GridOn
+import androidx.compose.material.icons.rounded.HdrAuto
+import androidx.compose.material.icons.rounded.LensBlur
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.TimerOff
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -31,47 +28,26 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/**
- * Catálogo unificado de iconos LensPro.
- *
- * Reemplaza por completo el uso de emojis (⚙ ⟳ ☀ 🖼) que en muchos dispositivos
- * Android se renderizaban como "blobs amarillos" cuando faltaba la fuente emoji,
- * o tomaban el color de tinte (LensAccent amarillo).
- *
- * Estilo: trazo fino "Outlined" similar a SF Symbols / iOS 19.
- *
- * NOTA: El import inválido `Icons.Filled.BoltOutlined` fue eliminado
- *       (no existe en Material Icons Extended). Para el "flash auto" usamos
- *       `Icons.Outlined.Bolt`, que es exactamente el icono pretendido.
- */
 object LensIcons {
-    val Settings:    ImageVector get() = Icons.Outlined.Settings
-    val FlashOn:     ImageVector get() = Icons.Outlined.FlashOn
-    val FlashOff:    ImageVector get() = Icons.Outlined.FlashOff
-    val FlashAuto:   ImageVector get() = Icons.Outlined.Bolt
-    val FlashStrong: ImageVector get() = Icons.Filled.Bolt
-    val Hdr:         ImageVector get() = Icons.Outlined.HdrOn
-    val Grid:        ImageVector get() = Icons.Outlined.GridOn
-    val SoundOn:     ImageVector get() = Icons.Outlined.VolumeUp
-    val SoundOff:    ImageVector get() = Icons.Outlined.VolumeOff
-    val Timer:       ImageVector get() = Icons.Outlined.Timer
-    val TimerOff:    ImageVector get() = Icons.Outlined.TimerOff
-    val Timer3:      ImageVector get() = Icons.Outlined.Timer3Select
-    val Timer10:     ImageVector get() = Icons.Outlined.Timer10Select
-    val Aspect:      ImageVector get() = Icons.Outlined.AspectRatio
-    val Exposure:    ImageVector get() = Icons.Outlined.WbSunny
-    val Flip:        ImageVector get() = Icons.Outlined.Cameraswitch
-    val Gallery:     ImageVector get() = Icons.Outlined.Image
-    val Photo:       ImageVector get() = Icons.Outlined.Photo
-    val Theme:       ImageVector get() = Icons.Outlined.NightlightRound
-    val More:        ImageVector get() = Icons.Outlined.MoreHoriz
-    val Sparkle:     ImageVector get() = Icons.Filled.AutoAwesome
+    val Settings: ImageVector get() = Icons.Rounded.Settings
+    val FlashOn: ImageVector get() = Icons.Rounded.FlashOn
+    val FlashOff: ImageVector get() = Icons.Rounded.FlashOff
+    val Hdr: ImageVector get() = Icons.Rounded.HdrAuto
+    val Grid: ImageVector get() = Icons.Rounded.GridOn
+    val SoundOn: ImageVector get() = Icons.Rounded.VolumeUp
+    val SoundOff: ImageVector get() = Icons.Rounded.VolumeOff
+    val Timer: ImageVector get() = Icons.Rounded.Timer
+    val TimerOff: ImageVector get() = Icons.Rounded.TimerOff
+    val Aspect: ImageVector get() = Icons.Rounded.LensBlur
+    val Exposure: ImageVector get() = Icons.Rounded.Exposure
+    val Flip: ImageVector get() = Icons.Rounded.Cameraswitch
+    val Gallery: ImageVector get() = Icons.Rounded.Collections
+    val Theme: ImageVector get() = Icons.Rounded.Palette
+    val More: ImageVector get() = Icons.Rounded.Tune
+    val Sparkle: ImageVector get() = Icons.Rounded.AutoAwesome
+    val Brightness: ImageVector get() = Icons.Rounded.WbSunny
 }
 
-/**
- * Wrapper estilizado para garantizar consistencia visual (tamaño, color)
- * en todos los iconos de la barra de chips iOS 19.
- */
 @Composable
 fun LensIcon(
     icon: ImageVector,
