@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- ============ PERMISOS ============ -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Storage legacy (≤ Android 9) -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -12,15 +15,17 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Media granular (Android 13+) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
-    <uses-feature android:name="android.hardware.camera"          android:required="true"  />
+    <!-- ============ FEATURES ============ -->
+    <uses-feature android:name="android.hardware.camera"           android:required="true"  />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-    <uses-feature android:name="android.hardware.camera.any"      android:required="true"  />
-    <uses-feature android:name="android.hardware.camera.front"    android:required="false" />
-    <uses-feature android:name="android.hardware.microphone"      android:required="true"  />
+    <uses-feature android:name="android.hardware.camera.any"       android:required="true"  />
+    <uses-feature android:name="android.hardware.camera.front"     android:required="false" />
+    <uses-feature android:name="android.hardware.microphone"       android:required="true"  />
 
     <application
         android:allowBackup="true"
@@ -30,14 +35,18 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="LensPro"
-        android:theme="@style/Theme.LensPro">
+        android:theme="@style/Theme.LensPro"
+        android:enableOnBackInvokedCallback="true"
+        tools:targetApi="35">
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode|smallestScreenSize|screenLayout|density"
             android:exported="true"
+            android:resizeableActivity="false"
             android:screenOrientation="portrait"
-            android:theme="@style/Theme.LensPro">
+            android:theme="@style/Theme.LensPro"
+            android:windowSoftInputMode="adjustNothing">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
