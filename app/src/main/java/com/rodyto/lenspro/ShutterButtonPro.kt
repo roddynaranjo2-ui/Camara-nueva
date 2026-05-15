@@ -3,17 +3,21 @@ package com.rodyto.lenspro
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -28,33 +32,37 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /**
- * Botón obturador "Liquid Glass" con física Squishy & Morphing.
+ * Botón obturador premium estilo iOS 19.
  *
- *  - Encogimiento a 0.95× al tocar (spring crítico amortiguado).
- *  - Morphing: círculo amarillo (FOTO) → rectángulo redondeado rojo (VIDEO grabando).
- *  - Drag horizontal a la derecha (> umbral) cambia a modo VIDEO y dispara
- *    el cambio en el ViewModel via [onSwipeToVideo]. Drag a la izquierda → FOTO.
+ *  ╭─────────────────╮      ╭─────────────────╮
+ *  │   ◯ blanco      │  →   │   ◯ rojo morph  │
+ *  │   anillo white  │      │  cuadrado rec   │
+ *  ╰─────────────────╯      ╰─────────────────╯
+ *      FOTO (idle)              VIDEO (rec)
  *
- *  Las animaciones son spring para sensación orgánica (no lineal).
+ *  - Anillo exterior siempre BLANCO (no amarillo).
+ *  - Núcleo interior: blanco en FOTO, rojo en VIDEO.
+ *  - Squish a 0.92× al presionar (spring crítico).
+ *  - Pulso lento durante grabación (anillo respira).
+ *  - Drag horizontal cambia FOTO ↔ VIDEO.
  */
 @Composable
 fun ShutterButtonPro(
     isRecording: Boolean,
-    mode: String,              // "FOTO" / "VIDEO"
+    mode: String,
     onTap: () -> Unit,
     onSwipeToVideo: () -> Unit,
     onSwipeToPhoto: () -> Unit,
     onPressFeedback: () -> Unit = {},
-    size: Dp = 82.dp
+    size: Dp = 76.dp
 ) {
     val scaleAnim = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
-    // Tamaño del núcleo: círculo grande (FOTO) ↔ rectángulo pequeño (REC)
     val innerSize by animateDpAsState(
         targetValue = when {
-            isRecording -> 28.dp
-            mode == "VIDEO" -> 56.dp
+            isRecording -> 26.dp
+            mode == "VIDEO" -> 54.dp
             else -> 60.dp
         },
         animationSpec = spring(
@@ -65,26 +73,38 @@ fun ShutterButtonPro(
     )
 
     val innerColor = when {
-        isRecording -> LensRecRed
+        isRecording     -> LensRecRed
         mode == "VIDEO" -> LensRecRed
-        else -> LensAccent
+        else            -> Color.White
     }
-    val ringColor = if (mode == "VIDEO") LensRecRedSoft else LensAccent
+    val ringColor = Color.White
     val innerShape = if (isRecording) RoundedCornerShape(8.dp) else CircleShape
 
-    // Acumulador de drag para detección "swipe to video"
+    // Pulso "respiración" durante grabación
+    val pulse = rememberInfiniteTransition(label = "rec_pulse")
+    val pulseAlpha by pulse.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900)),
+        label = "rec_pulse_alpha"
+    )
+
+    val ringFinalColor = if (isRecording)
+        ringColor.copy(alpha = pulseAlpha)
+    else ringColor
+
     val dragThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 48.dp.toPx() }
 
     Box(
         modifier = Modifier
-            .size(size)
+            .size(size + 8.dp)
             .graphicsLayer { scaleX = scaleAnim.value; scaleY = scaleAnim.value }
             .pointerInput(isRecording, mode) {
                 detectTapGestures(
                     onPress = {
                         onPressFeedback()
                         scaleAnim.animateTo(
-                            0.95f,
+                            0.92f,
                             spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessHigh)
                         )
                         try { tryAwaitRelease() } finally {
@@ -127,8 +147,12 @@ fun ShutterButtonPro(
         Box(
             Modifier
                 .size(size)
-                .border(3.5.dp, ringColor, CircleShape)
-        )
+                .border(3.5.dp, ringFinalColor, CircleShape)
+                .padding(3.dp)
+        ) {
+            // Espacio interior (transparente)
+            Box(Modifier.size(size - 6.dp))
+        }
         // Núcleo morphing
         Box(
             Modifier
