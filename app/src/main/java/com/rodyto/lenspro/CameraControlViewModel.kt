@@ -465,7 +465,16 @@ class CameraControlViewModel : ViewModel() {
                 val codecLabel = CameraTuning.preferredCodecLabel(_hevcEnabled.value)
                 val bitrate = VideoBitrateCalculator.preset(res, fps, codecLabel)
 
-                val rec = MediaRecorder().apply {
+                // FIX: MediaRecorder(Context) fue introducido en API 29 (Q).
+                // En APIs 26-28 (Oreo / Pie) se usa el constructor sin argumento
+                // (deprecated pero funcional). En API 29+ se prefiere el constructor
+                // con Context para una gestión de recursos más correcta.
+                val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    MediaRecorder(context)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }.apply {
                     setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
                     setVideoSource(MediaRecorder.VideoSource.SURFACE)
                     setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
