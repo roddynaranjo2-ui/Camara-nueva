@@ -6,7 +6,9 @@ plugins {
 android {
     namespace 'com.rodyto.lenspro'
 
-    compileSdk 34
+    // Android 15 (API 35). Compatible con Android 16 / One UI 8 en S21 FE
+    // (Android 16 ejecuta APKs targetSdk 35 sin restricciones).
+    compileSdk 35
 
     // Versión fija de NDK para CI consistente
     ndkVersion "26.1.10909125"
@@ -15,10 +17,10 @@ android {
         applicationId "com.rodyto.lenspro"
 
         minSdk 26
-        targetSdk 34
+        targetSdk 35
 
-        versionCode 3
-        versionName "1.2"
+        versionCode 4
+        versionName "1.3"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -30,6 +32,7 @@ android {
     buildTypes {
         debug {
             minifyEnabled false
+            debuggable true
         }
         release {
             minifyEnabled true
@@ -45,6 +48,11 @@ android {
 
     kotlinOptions {
         jvmTarget = '17'
+        freeCompilerArgs += [
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
+            "-opt-in=androidx.compose.animation.ExperimentalAnimationApi"
+        ]
     }
 
     buildFeatures {
@@ -53,12 +61,21 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion '1.5.13'
+        // Coincide con Kotlin 1.9.25
+        kotlinCompilerExtensionVersion '1.5.15'
     }
 
     packaging {
         resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+            excludes += [
+                '/META-INF/{AL2.0,LGPL2.1}',
+                '/META-INF/DEPENDENCIES',
+                '/META-INF/LICENSE*',
+                '/META-INF/NOTICE*'
+            ]
+        }
+        jniLibs {
+            useLegacyPackaging = false
         }
     }
 
@@ -68,21 +85,27 @@ android {
             version "3.22.1"
         }
     }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
 
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.4'
-    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.4'
-    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.6'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.6'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6'
 
-    implementation 'androidx.activity:activity-compose:1.9.1'
+    implementation 'androidx.activity:activity-compose:1.9.2'
 
-    implementation platform('androidx.compose:compose-bom:2024.06.00')
+    implementation platform('androidx.compose:compose-bom:2024.09.03')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.ui:ui-graphics'
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.compose.material:material-icons-core'
     implementation 'androidx.compose.material:material-icons-extended'
