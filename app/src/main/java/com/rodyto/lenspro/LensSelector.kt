@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
+// ─── FIX ──────────────────────────────────────────────────────────────────────
+// rememberRipple fue deprecado a nivel ERROR en Compose Foundation 1.7.x
+// (BOM 2024.09.03). Reemplazado por ripple() de Material3 1.3.0+.
+import androidx.compose.material3.ripple
+// ──────────────────────────────────────────────────────────────────────────────
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -122,7 +126,8 @@ private fun LensBubblePro(
             )
             .clickable(
                 interactionSource = interaction,
-                indication = rememberRipple(bounded = false, radius = 22.dp),
+                // FIX: ripple() reemplaza a rememberRipple() (Compose Foundation 1.7+)
+                indication = ripple(bounded = false, radius = 22.dp),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
