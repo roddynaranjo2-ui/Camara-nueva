@@ -8,35 +8,32 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /* ================================================================
- *  LensPro — Tokens iOS 16 Liquid Glass / Ultra Thin Material
+ *  LensPro — Design Tokens iOS 19 Liquid Glass (refinados)
  * ================================================================ */
 
 // ---------- Accent system ----------
-val LensAccent       = Color(0xFFFFD60A)
+val LensAccent       = Color(0xFFFFD60A)   // amarillo iOS (sólo highlights)
 val LensAccentSoft   = Color(0xFFFFE066)
 val LensRecRed       = Color(0xFFFF3B30)
 val LensRecRedSoft   = Color(0xFFFF6A60)
 
-// ---------- Ultra Thin Material (Dark) ----------
-// Replicamos UIVisualEffectView .systemUltraThinMaterialDark con tinte translúcido,
-// stroke con vibrancia y sombra interior.
-val UltraThinDarkBase     = Color(0xCC0E0E10)  // negro casi opaco para chrome
-val UltraThinDarkSurface  = Color(0x33FFFFFF)  // capa de luz superior 20 % blanco
-val UltraThinDarkStroke   = Color(0x40FFFFFF)  // contorno suave 25 %
+// ---------- Ultra Thin Material (Dark) — refinado iOS 19 ----------
+val UltraThinDarkBase        = Color(0x80101012)   // 50 % opacidad para chips
+val UltraThinDarkSurface     = Color(0x26FFFFFF)   // capa de luz superior 15 %
+val UltraThinDarkStroke      = Color(0x33FFFFFF)
 val UltraThinDarkStrokeInner = Color(0x14FFFFFF)
 
 // ---------- Ultra Thin Material (Light) ----------
-val UltraThinLightBase    = Color(0xCCF6F6F8)
-val UltraThinLightSurface = Color(0x33FFFFFF)
-val UltraThinLightStroke  = Color(0x33000000)
+val UltraThinLightBase        = Color(0xCCFFFFFF)
+val UltraThinLightSurface     = Color(0x33FFFFFF)
+val UltraThinLightStroke      = Color(0x33000000)
 val UltraThinLightStrokeInner = Color(0x14000000)
 
 // ---------- Vibrancy ----------
-// Capa que multiplica/saturará iconos sobre el cristal — extrae color del fondo.
-val VibrancyDarkPrimary   = Color(0xF2FFFFFF)
-val VibrancyDarkSecondary = Color(0xB3FFFFFF)
-val VibrancyLightPrimary  = Color(0xF21A1A1A)
-val VibrancyLightSecondary= Color(0xA61A1A1A)
+val VibrancyDarkPrimary    = Color(0xF2FFFFFF)
+val VibrancyDarkSecondary  = Color(0xB3FFFFFF)
+val VibrancyLightPrimary   = Color(0xF21A1A1A)
+val VibrancyLightSecondary = Color(0xA61A1A1A)
 
 /** Paleta Liquid Glass completa para todos los componentes. */
 data class GlassPalette(
