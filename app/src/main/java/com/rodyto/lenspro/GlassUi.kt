@@ -1,8 +1,5 @@
 package com.rodyto.lenspro
 
-import android.graphics.RenderEffect
-import android.graphics.Shader
-import android.os.Build
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -29,9 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Stroke
-import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -112,19 +107,21 @@ fun GlassBubble(
             }
             .liquidGlass(palette, shape, blurRadius = 0f, strong = strong)
             .drawWithCache {
+                // Use 'this.size' (DrawScope.size: Size) to avoid shadowing the Dp parameter 'size'
+                val drawSize = this.size
                 onDrawWithContent {
                     drawContent()
                     drawCircle(
                         color = Color.White.copy(alpha = if (palette.isDark) 0.06f else 0.03f),
-                        radius = size.minDimension * 0.32f,
-                        center = Offset(size.width * 0.28f, size.height * 0.28f),
-                        style = Stroke(width = this.size.minDimension * 0.04f)
+                        radius = drawSize.minDimension * 0.32f,
+                        center = Offset(drawSize.width * 0.28f, drawSize.height * 0.28f),
+                        style = Stroke(width = drawSize.minDimension * 0.04f)
                     )
                 }
             }
             .let {
                 if (onClick != null) {
-                     it.clickable(
+                    it.clickable(
                         interactionSource = interaction,
                         indication = ripple(bounded = false, radius = size / 2),
                         onClick = onClick
