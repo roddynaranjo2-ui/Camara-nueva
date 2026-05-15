@@ -8,10 +8,15 @@ import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 
+/**
+ * Persistencia en MediaStore (DCIM/LensPro).
+ *  - Usa `IS_PENDING` en API 29+ para evitar archivos parciales visibles.
+ *  - Limpia el Uri si la escritura falla a mitad.
+ */
 class MediaStorageManager {
 
     companion object {
-        private const val TAG = "RodytoLensPro"
+        private const val TAG    = "RodytoLensPro"
         private const val FOLDER = "LensPro"
     }
 
@@ -19,8 +24,8 @@ class MediaStorageManager {
     fun saveJpeg(context: Context, bytes: ByteArray): Uri? {
         if (bytes.isEmpty()) return null
 
-        val filename = "IMG_${System.currentTimeMillis()}.jpg"
         val resolver = context.contentResolver
+        val filename = "IMG_${System.currentTimeMillis()}.jpg"
 
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
@@ -30,12 +35,10 @@ class MediaStorageManager {
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
+        else
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        }
 
         var uri: Uri? = null
         return try {
@@ -43,8 +46,7 @@ class MediaStorageManager {
                 ?: throw IllegalStateException("MediaStore insert returned null")
 
             resolver.openOutputStream(uri)?.use { out ->
-                out.write(bytes)
-                out.flush()
+                out.write(bytes); out.flush()
             } ?: throw IllegalStateException("OutputStream null for $uri")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -52,8 +54,7 @@ class MediaStorageManager {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
             }
-
-            Log.d(TAG, "JPEG guardado: $uri")
+            Log.d(TAG, "JPEG guardado: $uri (${bytes.size / 1024} KB)")
             uri
         } catch (e: Exception) {
             Log.e(TAG, "Error guardando JPEG", e)
@@ -73,26 +74,20 @@ class MediaStorageManager {
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
+        else
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        }
         return try {
             context.contentResolver.insert(collection, values)
         } catch (e: Exception) {
-            Log.e(TAG, "Error creando Uri de video", e)
-            null
+            Log.e(TAG, "Error creando Uri de video", e); null
         }
     }
 
-    fun openVideoFd(context: Context, uri: Uri): ParcelFileDescriptor? =
-        try {
-            context.contentResolver.openFileDescriptor(uri, "w")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error abriendo FD de video", e)
-            null
-        }
+    fun openVideoFd(context: Context, uri: Uri): ParcelFileDescriptor? = try {
+        context.contentResolver.openFileDescriptor(uri, "w")
+    } catch (e: Exception) { Log.e(TAG, "Error abriendo FD de video", e); null }
 
     fun finalizeVideo(context: Context, uri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -100,9 +95,7 @@ class MediaStorageManager {
                 context.contentResolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error finalizando video", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "Error finalizando video", e) }
         }
     }
 }
