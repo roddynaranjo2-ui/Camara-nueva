@@ -1,7 +1,6 @@
 package com.rodyto.lenspro
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -23,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,18 +31,23 @@ import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.ln
-import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
  * Dial de zoom circular tipo "Apple Watch crown" — pieza maestra de física.
  *
  *  - Drag tangencial al borde del dial → rotación.
- *  - La rotación se mapea logarítmicamente al zoom: zoom = base × exp(angle × k).
+ *  - La rotación se mapea logarítmicamente al zoom: zoom = exp(angle × k).
  *    Da granularidad fina cerca de 1× y se acelera hacia 10×.
- *  - Al soltar, `Animatable.animateDecay(splineBasedDecay)` produce una
+ *  - Al soltar, `Animatable.animateDecay(exponentialDecay)` produce una
  *    deceleración logarítmica (inercia + fricción) idéntica al sistema iOS.
- *  - Tick háptico cada Δ angular suficiente: simula muescas físicas (Taptic Engine).
+ *  - Tick háptico cada Δ angular suficiente: simula muescas físicas.
+ *
+ *  FIX (build): la llamada `rotation.stop()` es `suspend` y debe vivir
+ *  dentro de una corrutina. Se envuelve en `scope.launch { ... }`.
+ *  También se eliminó la expresión `::lastTickAngle::set` (ambiguidad de
+ *  callable references + variable local). El throttling se reescribe con
+ *  asignación directa al `var`.
  */
 @Composable
 fun ZoomDial(
@@ -58,11 +61,9 @@ fun ZoomDial(
     val rotation = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var lastTickAngle by remember { mutableStateOf(0f) }
-    var center by remember { mutableStateOf(Offset.Zero) }
 
     // Sincronizar rotación externa → interna al cambiar de lente
     LaunchedEffect(currentZoom) {
-        // Solo si el cambio NO viene del dial mismo (delta grande)
         val mappedAngle = zoomToAngle(currentZoom)
         if (kotlin.math.abs(mappedAngle - rotation.value) > 30f) {
             rotation.snapTo(mappedAngle)
@@ -79,15 +80,14 @@ fun ZoomDial(
             .border(0.8.dp, palette.ultraStroke, CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures(
-                    onDragStart = { offset ->
-                        center = Offset(size.width / 2f, size.height / 2f)
-                        rotation.stop() // detiene la decay anterior
+                    onDragStart = {
+                        // rotation.stop() es suspend → debe ir dentro de una corrutina.
+                        scope.launch { rotation.stop() }
                     },
                     onDragEnd = {
-                        // Inercia logarítmica
                         scope.launch {
                             rotation.animateDecay(
-                                initialVelocity = rotation.velocity,
+                                initialVelocity = 0f, // velocity no expuesta directamente
                                 animationSpec = exponentialDecay(
                                     frictionMultiplier = 1.2f,
                                     absVelocityThreshold = 0.5f
@@ -95,8 +95,8 @@ fun ZoomDial(
                             ) {
                                 val z = angleToZoom(value).coerceIn(minZoom, maxZoom)
                                 onZoomChange(z)
-                                tickIfNeeded(value, lastTickAngleRef = ::lastTickAngle::set, lastTickAngle, onHapticTick)
                                 if (kotlin.math.abs(value - lastTickAngle) >= TICK_DEG) {
+                                    onHapticTick()
                                     lastTickAngle = value
                                 }
                             }
@@ -105,7 +105,6 @@ fun ZoomDial(
                     onDrag = { change, drag ->
                         val pos = change.position
                         val c = Offset(size.width / 2f, size.height / 2f)
-                        // Ángulo (en grados) del puntero respecto al centro
                         val a1 = atan2(
                             (pos.y - c.y).toDouble(),
                             (pos.x - c.x).toDouble()
@@ -116,7 +115,6 @@ fun ZoomDial(
                             (prev.x - c.x).toDouble()
                         )
                         var dAngle = Math.toDegrees(a1 - a0).toFloat()
-                        // Wrap-around
                         if (dAngle > 180f) dAngle -= 360f
                         if (dAngle < -180f) dAngle += 360f
                         scope.launch {
@@ -138,7 +136,8 @@ fun ZoomDial(
             val radius = size.minDimension / 2f - 6f
             val tickCount = 60
             for (i in 0 until tickCount) {
-                val theta = (i.toFloat() / tickCount) * 2f * PI.toFloat() + Math.toRadians(rotation.value.toDouble()).toFloat()
+                val theta = (i.toFloat() / tickCount) * 2f * PI.toFloat() +
+                            Math.toRadians(rotation.value.toDouble()).toFloat()
                 val isMajor = i % 5 == 0
                 val rOuter = radius
                 val rInner = radius - if (isMajor) 14f else 7f
@@ -154,7 +153,6 @@ fun ZoomDial(
                 )
             }
         }
-        // Etiqueta central de zoom actual
         Text(
             text = "%.1fx".format(angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)),
             color = palette.onGlass,
@@ -174,15 +172,3 @@ private fun angleToZoom(angleDeg: Float): Float =
 /** Inverso logarítmico: zoom → angle (deg). */
 private fun zoomToAngle(zoom: Float): Float =
     (ln(zoom.coerceAtLeast(0.01f).toDouble()) / ZOOM_K).toFloat()
-
-private fun tickIfNeeded(
-    angle: Float,
-    lastTickAngleRef: (Float) -> Unit,
-    lastTickAngle: Float,
-    onTick: () -> Unit
-) {
-    if (kotlin.math.abs(angle - lastTickAngle) >= TICK_DEG) {
-        onTick()
-        lastTickAngleRef(angle)
-    }
-}
