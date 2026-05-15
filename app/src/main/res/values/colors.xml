@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Color principal corporativo Rodyto Lens Pro -->
+    <color name="lens_accent">#FFD60A</color>
+    <color name="lens_accent_dark">#E6B800</color>
+    <color name="lens_background">#000000</color>
+
+    <!-- Color de fondo del icono adaptativo (degradado lo damos via vector) -->
+    <color name="ic_launcher_background">#0A0A0F</color>
+</resources>
