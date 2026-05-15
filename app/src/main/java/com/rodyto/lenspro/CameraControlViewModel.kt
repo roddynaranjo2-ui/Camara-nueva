@@ -21,7 +21,6 @@ import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.Range
-import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -35,44 +34,32 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.math.abs
 import kotlin.math.max
 
-/* ================================================================
- *  ENUMS de configuración
- * ================================================================ */
-
 enum class VideoResolution(val label: String, val width: Int, val height: Int) {
-    HD ("HD" , 1280,  720),
+    HD("HD", 1280, 720),
     FHD("FHD", 1920, 1080),
-    UHD("4K" , 3840, 2160);
+    UHD("4K", 3840, 2160)
 }
 
 enum class VideoFps(val label: String, val value: Int) {
     FPS30("30", 30),
-    FPS60("60", 60);
+    FPS60("60", 60)
 }
 
-/**
- * Modos de relación de aspecto del preview.
- * - RATIO_3_4  → predeterminado en FOTO
- * - RATIO_9_16 → predeterminado en VIDEO
- * - RATIO_1_1  → cuadrado
- * - RATIO_FULL → fill (sensor completo, puede recortar)
- */
 enum class PreviewAspect(val label: String, val ratio: Float) {
-    RATIO_3_4 ("3:4",  3f  / 4f),
-    RATIO_9_16("9:16", 9f  / 16f),
-    RATIO_1_1 ("1:1",  1f),
-    RATIO_FULL("FULL", 9f  / 19.5f);
+    RATIO_3_4("3:4", 3f / 4f),
+    RATIO_9_16("9:16", 9f / 16f),
+    RATIO_1_1("1:1", 1f),
+    RATIO_FULL("FULL", 9f / 19.5f)
 }
 
-/* ================================================================
- *  CameraControlViewModel
- *  Motor Camera2 + Samsung HAL hybrid (S21 FE — Snapdragon 888)
- * ================================================================ */
 class CameraControlViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "RodytoLensPro"
-        @Volatile private var nativeLibLoaded = false
+
+        @Volatile
+        private var nativeLibLoaded = false
+
         init {
             try {
                 System.loadLibrary("rodytolenspro")
@@ -83,16 +70,29 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    private data class CameraCandidate(
+        val id: String,
+        val facing: Int,
+        val focal: Float,
+        val isLogicalMultiCamera: Boolean,
+        val sensorArea: Rect?
+    )
+
+    private data class CameraSelection(
+        val cameraId: String,
+        val opticalBaseZoom: Float
+    )
+
     @Suppress("unused")
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
     private fun safeNativePhysicalIds(): Array<String> = try {
         if (nativeLibLoaded) getPhysicalCameraIdsNative() else emptyArray()
     } catch (e: Throwable) {
-        Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e); emptyArray()
+        Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e)
+        emptyArray()
     }
 
-    // ---------------- Estado UI expuesto ----------------
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -147,13 +147,15 @@ class CameraControlViewModel : ViewModel() {
     private val _darkTheme = MutableStateFlow<Boolean?>(null)
     val darkTheme: StateFlow<Boolean?> = _darkTheme.asStateFlow()
 
+    private val _accentStyle = MutableStateFlow(AccentStyle.ICE_BLUE)
+    val accentStyle: StateFlow<AccentStyle> = _accentStyle.asStateFlow()
+
     private val _hapticsEnabled = MutableStateFlow(true)
     val hapticsEnabled: StateFlow<Boolean> = _hapticsEnabled.asStateFlow()
 
     private val _hevcEnabled = MutableStateFlow(false)
     val hevcEnabled: StateFlow<Boolean> = _hevcEnabled.asStateFlow()
 
-    // ---------------- Estado interno Camera2 ----------------
     private var cameraManager: CameraManager? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -167,17 +169,15 @@ class CameraControlViewModel : ViewModel() {
     private var currentCameraId: String = ""
     private var sensorArea: Rect? = null
     private var maxZoom: Float = 1f
+    private var currentOpticalBaseZoom: Float = 1f
 
-    // Thread dedicado para Camera2 (evita bloqueos en el main thread)
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
 
     private val sessionMutex = Mutex()
-    @Volatile private var cameraRunning = false
 
-    // ============================================================
-    //   API PÚBLICA — control de cámara
-    // ============================================================
+    @Volatile
+    private var cameraRunning = false
 
     fun isCameraRunning(): Boolean = cameraRunning
 
@@ -190,27 +190,33 @@ class CameraControlViewModel : ViewModel() {
                 try {
                     ensureThread()
                     cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                    val cameraId = pickCameraId(cameraManager!!, _isFrontCamera.value, lens)
-                    currentCameraId = cameraId
-                    currentCharacteristics = cameraManager!!.getCameraCharacteristics(cameraId)
-                    sensorArea = currentCharacteristics
-                        ?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-                    maxZoom = currentCharacteristics
-                        ?.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+                    val selection = pickCameraSelection(cameraManager!!, _isFrontCamera.value, lens)
+                    currentCameraId = selection.cameraId
+                    currentOpticalBaseZoom = selection.opticalBaseZoom
+                    currentCharacteristics = cameraManager!!.getCameraCharacteristics(selection.cameraId)
+                    sensorArea = currentCharacteristics?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                    maxZoom = currentCharacteristics?.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+                    safeNativePhysicalIds()
 
                     cameraManager!!.openCamera(
-                        cameraId,
+                        selection.cameraId,
                         object : CameraDevice.StateCallback() {
                             override fun onOpened(device: CameraDevice) {
                                 cameraDevice = device
                                 createPreviewSession()
                             }
+
                             override fun onDisconnected(device: CameraDevice) {
-                                device.close(); cameraDevice = null; cameraRunning = false
+                                device.close()
+                                cameraDevice = null
+                                cameraRunning = false
                             }
+
                             override fun onError(device: CameraDevice, error: Int) {
-                                Log.e(TAG, "openCamera error=$error")
-                                device.close(); cameraDevice = null; cameraRunning = false
+                                Log.e(TAG, "openCamera error=$error cameraId=${selection.cameraId}")
+                                device.close()
+                                cameraDevice = null
+                                cameraRunning = false
                             }
                         },
                         cameraHandler
@@ -229,11 +235,16 @@ class CameraControlViewModel : ViewModel() {
             sessionMutex.withLock {
                 try {
                     if (_isRecording.value) safeStopMediaRecorder()
-                    captureSession?.close(); captureSession = null
-                    cameraDevice?.close();    cameraDevice = null
-                    imageReader?.close();     imageReader = null
-                    mediaRecorder?.release(); mediaRecorder = null
-                    recordSurface?.release(); recordSurface = null
+                    captureSession?.close()
+                    captureSession = null
+                    cameraDevice?.close()
+                    cameraDevice = null
+                    imageReader?.close()
+                    imageReader = null
+                    mediaRecorder?.release()
+                    mediaRecorder = null
+                    recordSurface?.release()
+                    recordSurface = null
                 } catch (e: Throwable) {
                     Log.w(TAG, "closeCamera warn", e)
                 } finally {
@@ -251,28 +262,53 @@ class CameraControlViewModel : ViewModel() {
         cameraHandler = null
     }
 
-    // ============================================================
-    //   Toggles UI
-    // ============================================================
+    fun toggleFlash() {
+        _flashEnabled.value = !_flashEnabled.value
+        applyRepeatingPreview()
+    }
 
-    fun toggleFlash()         { _flashEnabled.value = !_flashEnabled.value; applyRepeatingPreview() }
-    fun toggleHdr()           { _hdrEnabled.value   = !_hdrEnabled.value;   applyRepeatingPreview() }
-    fun toggleGrid()          { _gridEnabled.value  = !_gridEnabled.value }
-    fun toggleShutterSound()  { _shutterSoundEnabled.value = !_shutterSoundEnabled.value }
-    fun toggleHaptics()       { _hapticsEnabled.value = !_hapticsEnabled.value }
-    fun toggleHevc()          { _hevcEnabled.value = !_hevcEnabled.value }
+    fun toggleHdr() {
+        _hdrEnabled.value = !_hdrEnabled.value
+        applyRepeatingPreview()
+    }
+
+    fun toggleGrid() {
+        _gridEnabled.value = !_gridEnabled.value
+    }
+
+    fun toggleShutterSound() {
+        _shutterSoundEnabled.value = !_shutterSoundEnabled.value
+    }
+
+    fun toggleHaptics() {
+        _hapticsEnabled.value = !_hapticsEnabled.value
+    }
+
+    fun toggleHevc() {
+        _hevcEnabled.value = !_hevcEnabled.value
+    }
 
     fun cycleTimer() {
         _timerSeconds.value = when (_timerSeconds.value) {
-            0 -> 3; 3 -> 10; else -> 0
+            0 -> 3
+            3 -> 10
+            else -> 0
         }
     }
 
     fun cycleTheme() {
         _darkTheme.value = when (_darkTheme.value) {
-            null  -> true
-            true  -> false
+            null -> true
+            true -> false
             false -> null
+        }
+    }
+
+    fun cycleAccentStyle() {
+        _accentStyle.value = when (_accentStyle.value) {
+            AccentStyle.ICE_BLUE -> AccentStyle.AURORA
+            AccentStyle.AURORA -> AccentStyle.JADE
+            AccentStyle.JADE -> AccentStyle.ICE_BLUE
         }
     }
 
@@ -280,29 +316,35 @@ class CameraControlViewModel : ViewModel() {
         if (mode !in listOf("FOTO", "VIDEO")) return
         _cameraMode.value = mode
         if (_manualAspect.value == null) {
-            _previewAspectRatio.value = if (mode == "VIDEO") 9f/16f else 3f/4f
+            _previewAspectRatio.value = if (mode == "VIDEO") 9f / 16f else 3f / 4f
         }
         applyRepeatingPreview()
     }
 
     fun setManualAspect(aspect: PreviewAspect?) {
         _manualAspect.value = aspect
-        _previewAspectRatio.value = aspect?.ratio
-            ?: if (_cameraMode.value == "VIDEO") 9f/16f else 3f/4f
+        _previewAspectRatio.value = aspect?.ratio ?: if (_cameraMode.value == "VIDEO") 9f / 16f else 3f / 4f
     }
 
-    fun setVideoResolution(r: VideoResolution) { _videoResolution.value = r }
-    fun setVideoFps(f: VideoFps)               { _videoFps.value = f }
+    fun setVideoResolution(r: VideoResolution) {
+        _videoResolution.value = r
+    }
+
+    fun setVideoFps(f: VideoFps) {
+        _videoFps.value = f
+    }
 
     fun toggleFrontCamera(context: Context) {
         _isFrontCamera.value = !_isFrontCamera.value
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                val s = previewSurface ?: return@withLock
-                captureSession?.close(); captureSession = null
-                cameraDevice?.close();   cameraDevice = null
+                val surface = previewSurface ?: return@withLock
+                captureSession?.close()
+                captureSession = null
+                cameraDevice?.close()
+                cameraDevice = null
                 cameraRunning = false
-                startCameraSession(context, s, _currentLens.value)
+                startCameraSession(context, surface, _currentLens.value)
             }
         }
     }
@@ -311,71 +353,65 @@ class CameraControlViewModel : ViewModel() {
         if (_currentLens.value == lens) return
         _currentLens.value = lens
         _zoomLevel.value = when (lens) {
-            "0.5x" -> 0.5f; "1x" -> 1f; "2x" -> 2f; "3x" -> 3f
+            "0.5x" -> 0.5f
+            "1x" -> 1f
+            "2x" -> 2f
+            "3x" -> 3f
             else -> 1f
         }
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                val s = previewSurface ?: return@withLock
-                captureSession?.close(); captureSession = null
-                cameraDevice?.close();   cameraDevice = null
+                val surface = previewSurface ?: return@withLock
+                captureSession?.close()
+                captureSession = null
+                cameraDevice?.close()
+                cameraDevice = null
                 cameraRunning = false
-                startCameraSession(context, s, lens)
+                startCameraSession(context, surface, lens)
             }
         }
     }
 
-    /** Zoom continuo (usado por ZoomDial). */
     fun setZoom(ratio: Float) {
-        val clamped = ratio.coerceIn(0.5f, max(maxZoom, 10f))
+        val clamped = ratio.coerceIn(0.5f, max(maxZoom * currentOpticalBaseZoom, 10f))
         _zoomLevel.value = clamped
         applyRepeatingPreview()
     }
-
-    // ============================================================
-    //   Exposición
-    // ============================================================
 
     fun getExposureRange(): Range<Int>? = currentCharacteristics
         ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
 
     fun setExposure(level: Int) {
-        val r = getExposureRange() ?: return
-        _exposureLevel.value = level.coerceIn(r.lower, r.upper)
+        val range = getExposureRange() ?: return
+        _exposureLevel.value = level.coerceIn(range.lower, range.upper)
         applyRepeatingPreview()
     }
-
-    // ============================================================
-    //   Tap to focus + lock
-    // ============================================================
 
     fun tapToFocus(x: Float, y: Float, screenW: Int, screenH: Int) {
         val area = sensorArea ?: return
         val session = captureSession ?: return
-        val device  = cameraDevice  ?: return
+        val device = cameraDevice ?: return
         try {
-            // Map viewport coords → sensor coords
             val sx = (x / screenW.toFloat() * area.width()).toInt().coerceIn(0, area.width() - 1)
             val sy = (y / screenH.toFloat() * area.height()).toInt().coerceIn(0, area.height() - 1)
             val half = 150
             val rect = Rect(
                 (sx - half).coerceAtLeast(0),
                 (sy - half).coerceAtLeast(0),
-                (sx + half).coerceAtMost(area.width()  - 1),
+                (sx + half).coerceAtMost(area.width() - 1),
                 (sy + half).coerceAtMost(area.height() - 1)
             )
-            val mr = MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1)
+            val metering = MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1)
 
-            val b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            previewSurface?.let { b.addTarget(it) }
-            b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(mr))
-            b.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(mr))
-            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-            b.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            applyCommon(b)
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            previewSurface?.let { builder.addTarget(it) }
+            builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(metering))
+            builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(metering))
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            applyCommon(builder)
 
-            session.capture(b.build(), null, cameraHandler)
-            // Volver a repeating tras un instante
+            session.capture(builder.build(), null, cameraHandler)
             applyRepeatingPreview()
         } catch (e: Exception) {
             Log.w(TAG, "tapToFocus error", e)
@@ -387,55 +423,51 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
-    // ============================================================
-    //   Captura JPEG
-    // ============================================================
-
     fun takePicture(storage: MediaStorageManager, context: Context) {
-        val device  = cameraDevice  ?: return
+        val device = cameraDevice ?: return
         val session = captureSession ?: return
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ensureImageReader()
                 val targetSurface = imageReader?.surface ?: return@launch
-                val b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-                b.addTarget(targetSurface)
-                applyCommon(b)
-                CameraTuning.applyImageQuality(b, "FOTO")
-                CameraTuning.applyJpegQuality(b)
-                SamsungVendorTags.applyCaptureSnapshotHint(b)
-                SamsungVendorTags.applyHdr(b, _hdrEnabled.value)
-                SamsungVendorTags.applyProTone(b, _hdrEnabled.value)
+                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                builder.addTarget(targetSurface)
+                applyCommon(builder)
+                CameraTuning.applyImageQuality(builder, "FOTO")
+                CameraTuning.applyJpegQuality(builder)
+                SamsungVendorTags.applyCaptureSnapshotHint(builder)
+                SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
+                SamsungVendorTags.applyProTone(builder, _hdrEnabled.value)
 
                 if (_flashEnabled.value) {
-                    b.set(CaptureRequest.CONTROL_AE_MODE,
-                        CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-                    b.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+                    builder.set(
+                        CaptureRequest.CONTROL_AE_MODE,
+                        CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+                    )
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
                 }
 
                 imageReader?.setOnImageAvailableListener({ reader ->
-                    val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                     try {
-                        val plane = img.planes[0]
-                        val buf = plane.buffer
-                        val bytes = ByteArray(buf.remaining())
-                        buf.get(bytes)
+                        val buffer = image.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
                         val uri = storage.saveJpeg(context, bytes)
                         if (uri != null) _lastPhotoUri.value = uri
                     } catch (e: Throwable) {
                         Log.e(TAG, "Procesar JPEG fallo", e)
                     } finally {
-                        img.close()
+                        image.close()
                     }
                 }, cameraHandler)
 
-                session.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
+                session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
                         session: CameraCaptureSession,
                         request: CaptureRequest,
                         result: TotalCaptureResult
                     ) {
-                        // Restaurar preview
                         applyRepeatingPreview()
                     }
                 }, cameraHandler)
@@ -444,10 +476,6 @@ class CameraControlViewModel : ViewModel() {
             }
         }
     }
-
-    // ============================================================
-    //   Grabación de video
-    // ============================================================
 
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
@@ -459,17 +487,13 @@ class CameraControlViewModel : ViewModel() {
                 videoUri = uri
                 videoPfd = pfd
 
-                val res = _videoResolution.value
+                val resolution = _videoResolution.value
                 val fps = _videoFps.value.value
                 val codec = CameraTuning.preferredEncoder(_hevcEnabled.value)
                 val codecLabel = CameraTuning.preferredCodecLabel(_hevcEnabled.value)
-                val bitrate = VideoBitrateCalculator.preset(res, fps, codecLabel)
+                val bitrate = VideoBitrateCalculator.preset(resolution, fps, codecLabel)
 
-                // FIX: MediaRecorder(Context) fue introducido en API 29 (Q).
-                // En APIs 26-28 (Oreo / Pie) se usa el constructor sin argumento
-                // (deprecated pero funcional). En API 29+ se prefiere el constructor
-                // con Context para una gestión de recursos más correcta.
-                val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     MediaRecorder(context)
                 } else {
                     @Suppress("DEPRECATION")
@@ -481,42 +505,42 @@ class CameraControlViewModel : ViewModel() {
                     setOutputFile(pfd.fileDescriptor)
                     setVideoEncodingBitRate(bitrate)
                     setVideoFrameRate(fps)
-                    setVideoSize(res.width, res.height)
+                    setVideoSize(resolution.width, resolution.height)
                     setVideoEncoder(codec)
                     setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                     setAudioEncodingBitRate(192_000)
                     setAudioSamplingRate(48_000)
                     prepare()
                 }
-                mediaRecorder = rec
-                recordSurface = rec.surface
+                mediaRecorder = recorder
+                recordSurface = recorder.surface
 
-                val previewS = previewSurface ?: return@launch
-                val recS = recordSurface ?: return@launch
-
-                val outputs = listOf(previewS, recS)
+                val preview = previewSurface ?: return@launch
+                val recording = recordSurface ?: return@launch
 
                 @Suppress("DEPRECATION")
                 device.createCaptureSession(
-                    outputs,
+                    listOf(preview, recording),
                     object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(session: CameraCaptureSession) {
                             captureSession = session
-                            val b = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                            b.addTarget(previewS); b.addTarget(recS)
-                            applyCommon(b)
-                            CameraTuning.applyImageQuality(b, "VIDEO")
-                            SamsungVendorTags.applyBase(b, "VIDEO", isRecording = true)
-                            SamsungVendorTags.applyRecordingFps(b, fps)
-                            SamsungVendorTags.applyHdr(b, _hdrEnabled.value)
+                            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                            builder.addTarget(preview)
+                            builder.addTarget(recording)
+                            applyCommon(builder)
+                            CameraTuning.applyImageQuality(builder, "VIDEO")
+                            SamsungVendorTags.applyBase(builder, "VIDEO", isRecording = true)
+                            SamsungVendorTags.applyRecordingFps(builder, fps)
+                            SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
                             try {
-                                session.setRepeatingRequest(b.build(), null, cameraHandler)
-                                rec.start()
+                                session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                                recorder.start()
                                 _isRecording.value = true
                             } catch (e: Exception) {
                                 Log.e(TAG, "Repeating record fail", e)
                             }
                         }
+
                         override fun onConfigureFailed(session: CameraCaptureSession) {
                             Log.e(TAG, "Record session config FAILED")
                         }
@@ -535,8 +559,8 @@ class CameraControlViewModel : ViewModel() {
                 safeStopMediaRecorder()
                 _isRecording.value = false
                 videoUri?.let { storage.finalizeVideo(context, it) }
-                videoPfd?.close(); videoPfd = null
-                // Reabrir preview-only
+                videoPfd?.close()
+                videoPfd = null
                 createPreviewSession()
             } catch (e: Exception) {
                 Log.e(TAG, "stopVideoRecording fallo", e)
@@ -547,19 +571,19 @@ class CameraControlViewModel : ViewModel() {
     private fun safeStopMediaRecorder() {
         try {
             mediaRecorder?.let {
-                try { it.stop() } catch (_: Throwable) {}
+                try {
+                    it.stop()
+                } catch (_: Throwable) {
+                }
                 it.reset()
                 it.release()
             }
-        } catch (_: Throwable) {}
+        } catch (_: Throwable) {
+        }
         mediaRecorder = null
         recordSurface?.release()
         recordSurface = null
     }
-
-    // ============================================================
-    //   Helpers internos
-    // ============================================================
 
     private fun ensureThread() {
         if (cameraThread == null) {
@@ -570,29 +594,27 @@ class CameraControlViewModel : ViewModel() {
 
     private fun ensureImageReader() {
         if (imageReader != null) return
-        val ch = currentCharacteristics ?: return
-        val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
+        val characteristics = currentCharacteristics ?: return
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
         val sizes = map.getOutputSizes(ImageFormat.JPEG) ?: return
         val largest = sizes.maxByOrNull { it.width.toLong() * it.height } ?: return
-        imageReader = ImageReader.newInstance(
-            largest.width, largest.height, ImageFormat.JPEG, 2
-        )
+        imageReader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2)
     }
 
     private fun createPreviewSession() {
         val device = cameraDevice ?: return
-        val s = previewSurface ?: return
+        val surface = previewSurface ?: return
         try {
             ensureImageReader()
-            val outputs = listOfNotNull(s, imageReader?.surface)
             @Suppress("DEPRECATION")
             device.createCaptureSession(
-                outputs,
+                listOfNotNull(surface, imageReader?.surface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         applyRepeatingPreview()
                     }
+
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e(TAG, "Preview session config FAILED")
                     }
@@ -605,117 +627,139 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private fun applyRepeatingPreview() {
-        val device  = cameraDevice  ?: return
+        val device = cameraDevice ?: return
         val session = captureSession ?: return
-        val s = previewSurface ?: return
+        val surface = previewSurface ?: return
         try {
-            val b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            b.addTarget(s)
-            applyCommon(b)
-            CameraTuning.applyImageQuality(b, _cameraMode.value)
-            SamsungVendorTags.applyBase(b, _cameraMode.value, _isRecording.value)
-            SamsungVendorTags.applyHdr(b, _hdrEnabled.value)
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(surface)
+            applyCommon(builder)
+            CameraTuning.applyImageQuality(builder, _cameraMode.value)
+            SamsungVendorTags.applyBase(builder, _cameraMode.value, _isRecording.value)
+            SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
             if (_focusLocked.value) {
-                b.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
-            session.setRepeatingRequest(b.build(), null, cameraHandler)
+            session.setRepeatingRequest(builder.build(), null, cameraHandler)
         } catch (e: Exception) {
             Log.w(TAG, "applyRepeatingPreview error", e)
         }
     }
 
-    private fun applyCommon(b: CaptureRequest.Builder) {
-        // AE / AF / AWB modes
-        b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        b.set(CaptureRequest.CONTROL_AF_MODE,
-            if (_cameraMode.value == "VIDEO")
+    private fun applyCommon(builder: CaptureRequest.Builder) {
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        builder.set(
+            CaptureRequest.CONTROL_AF_MODE,
+            if (_cameraMode.value == "VIDEO") {
                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            else
-                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-        b.set(CaptureRequest.CONTROL_AE_MODE,
-            if (_flashEnabled.value)
-                CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
-            else
-                CaptureRequest.CONTROL_AE_MODE_ON)
-        b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            } else {
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            }
+        )
+        builder.set(
+            CaptureRequest.CONTROL_AE_MODE,
+            if (_flashEnabled.value) CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
+            else CaptureRequest.CONTROL_AE_MODE_ON
+        )
+        builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
 
-        // Exposición
         if (_exposureLevel.value != 0) {
-            b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
+            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
         }
 
-        // Zoom: preferimos vendor tag Samsung; si no, crop region
-        val zoom = _zoomLevel.value
-        if (abs(zoom - 1f) > 0.001f) {
-            val applied = SamsungVendorTags.applyZoomRatio(b, zoom)
+        val requestedZoom = _zoomLevel.value
+        val sensorZoom = (requestedZoom / currentOpticalBaseZoom)
+            .coerceIn(1f, max(maxZoom, 10f))
+
+        if (abs(sensorZoom - 1f) > 0.001f) {
+            val applied = SamsungVendorTags.applyZoomRatio(builder, sensorZoom)
             if (!applied) {
                 sensorArea?.let { area ->
-                    val newW = (area.width()  / zoom).toInt().coerceAtLeast(1)
-                    val newH = (area.height() / zoom).toInt().coerceAtLeast(1)
-                    val left = (area.width()  - newW) / 2 + area.left
-                    val top  = (area.height() - newH) / 2 + area.top
-                    b.set(CaptureRequest.SCALER_CROP_REGION,
-                        Rect(left, top, left + newW, top + newH))
+                    val newW = (area.width() / sensorZoom).toInt().coerceAtLeast(1)
+                    val newH = (area.height() / sensorZoom).toInt().coerceAtLeast(1)
+                    val left = (area.width() - newW) / 2 + area.left
+                    val top = (area.height() - newH) / 2 + area.top
+                    builder.set(
+                        CaptureRequest.SCALER_CROP_REGION,
+                        Rect(left, top, left + newW, top + newH)
+                    )
                 }
             }
         }
 
-        // FPS range coherente con video
         if (_cameraMode.value == "VIDEO") {
             val fps = _videoFps.value.value
-            b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
         }
     }
 
-    /**
-     * Selecciona la cámara física más adecuada para el lens solicitado.
-     * Estrategia:
-     *  - Front cámara → primer ID con LENS_FACING_FRONT
-     *  - 0.5x  → cámara con focal mínima (ultra-wide)
-     *  - 3x    → cámara con focal máxima (tele)
-     *  - 1x/2x → cámara lógica principal (BACKWARD_COMPATIBLE primaria)
-     */
-    private fun pickCameraId(mgr: CameraManager, front: Boolean, lens: String): String {
+    private fun pickCameraSelection(mgr: CameraManager, front: Boolean, lens: String): CameraSelection {
         val ids = mgr.cameraIdList
         if (front) {
-            for (id in ids) {
-                val ch = mgr.getCameraCharacteristics(id)
-                if (ch.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
-                    return id
+            ids.forEach { id ->
+                val characteristics = mgr.getCameraCharacteristics(id)
+                if (characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
+                    return CameraSelection(id, 1f)
                 }
             }
         }
 
-        val backIds = ids.filter {
-            mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) ==
-                CameraCharacteristics.LENS_FACING_BACK
-        }
-        if (backIds.isEmpty()) return ids.firstOrNull() ?: "0"
-
-        // En caso de multi-cámara lógica, devolvemos la principal y aplicamos zoom ratio
-        val logical = backIds.firstOrNull {
-            val ch = mgr.getCameraCharacteristics(it)
-            CameraTuning.isLogicalMultiCamera(ch)
-        }
-        if (logical != null) {
-            _zoomLevel.value = when (lens) {
-                "0.5x" -> 0.5f
-                "2x"   -> 2f
-                "3x"   -> 3f
-                else   -> 1f
-            }
-            return logical
+        val backCandidates = ids.mapNotNull { id ->
+            val characteristics = mgr.getCameraCharacteristics(id)
+            val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                ?: return@mapNotNull null
+            if (facing != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
+            val focal = characteristics
+                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.minOrNull() ?: return@mapNotNull null
+            CameraCandidate(
+                id = id,
+                facing = facing,
+                focal = focal,
+                isLogicalMultiCamera = CameraTuning.isLogicalMultiCamera(characteristics),
+                sensorArea = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            )
         }
 
-        // Sin multi-cámara lógica, picking heurístico por focal
-        val sorted = backIds.sortedBy { id ->
-            val ch = mgr.getCameraCharacteristics(id)
-            ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+        if (backCandidates.isEmpty()) {
+             return CameraSelection(ids.firstOrNull() ?: "0", 1f)
         }
+
+        val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera }
+        val widePhysical = backCandidates.minByOrNull { candidate ->
+            kotlin.math.abs(candidate.focal - 5f) + if (candidate.isLogicalMultiCamera) 0.7f else 0f
+        } ?: backCandidates.first()
+        val ultraPhysical = backCandidates.minByOrNull { it.focal }
+        val telePhysical = backCandidates.maxByOrNull { it.focal }
+
+        val hasDedicatedTele = telePhysical != null && ultraPhysical != null &&
+            telePhysical.id != widePhysical.id &&
+            telePhysical.focal >= widePhysical.focal * 1.8f
+
+        val hasDedicatedUltra = ultraPhysical != null &&
+            ultraPhysical.id != widePhysical.id &&
+            ultraPhysical.focal <= widePhysical.focal * 0.75f
+
         return when (lens) {
-            "0.5x" -> sorted.firstOrNull() ?: backIds.first()
-            "3x"   -> sorted.lastOrNull()  ?: backIds.first()
-            else   -> backIds.first()
+            "0.5x" -> {
+                if (hasDedicatedUltra && ultraPhysical != null) {
+                    CameraSelection(ultraPhysical.id, 0.5f)
+                } else {
+                    CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+                }
+            }
+
+            "3x" -> {
+                if (hasDedicatedTele && telePhysical != null) {
+                    Log.d(TAG, "Usando tele física para 3x: ${telePhysical.id}")
+                    CameraSelection(telePhysical.id, 3f)
+                } else {
+                    Log.d(TAG, "Tele física no disponible; usando cámara lógica/principal con zoom")
+                    CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+                }
+            }
+
+            else -> CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
         }
     }
 }
