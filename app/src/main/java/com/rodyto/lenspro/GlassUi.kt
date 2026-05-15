@@ -14,7 +14,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
+// ─── FIX ──────────────────────────────────────────────────────────────────────
+// rememberRipple fue deprecado a nivel ERROR en Compose Foundation 1.7.x
+// (BOM 2024.09.03). Reemplazado por ripple() de Material3 1.3.0+.
+import androidx.compose.material3.ripple
+// ──────────────────────────────────────────────────────────────────────────────
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -102,7 +106,8 @@ fun GlassBubble(
             .let {
                 if (onClick != null) it.clickable(
                     interactionSource = interaction,
-                    indication = rememberRipple(bounded = false, radius = size / 2),
+                    // FIX: ripple() reemplaza a rememberRipple() (Compose Foundation 1.7+)
+                    indication = ripple(bounded = false, radius = size / 2),
                     onClick = onClick
                 ) else it
             },
