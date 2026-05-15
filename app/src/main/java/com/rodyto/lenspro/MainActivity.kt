@@ -3,8 +3,6 @@ package com.rodyto.lenspro
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -37,7 +35,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -45,7 +42,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,7 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  RODYTO LENS PRO  —  Glassmorphism iOS / Dark+Light + Hápticos
+ *  RODYTO LENS PRO  —  iOS 19 Liquid Glass Camera (PREMIUM REDESIGN)
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -79,7 +75,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     val context = LocalContext.current
-
     val required = remember {
         buildList {
             add(Manifest.permission.CAMERA)
@@ -114,7 +109,6 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
                 Text(
                     "LensPro necesita acceso a la cámara y al micrófono.",
                     color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 24.dp)
                 )
                 Button(
@@ -169,6 +163,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     var settingsIconRotation by remember { mutableStateOf(0f) }
     var countdown by remember { mutableStateOf(0) }
     var recordingSeconds by remember { mutableStateOf(0L) }
+    var blinkKey by remember { mutableStateOf(0) }
 
     LaunchedEffect(focusPoint) {
         if (focusPoint != null) { delay(2500L); focusPoint = null }
@@ -191,6 +186,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
         when {
             mode == "FOTO" -> {
                 if (soundOn) fx.shutter()
+                blinkKey++
                 vm.takePicture(storage, context)
             }
             mode == "VIDEO" && !isRecording -> {
@@ -233,6 +229,9 @@ fun CameraScreen(vm: CameraControlViewModel) {
                     )
                 }
         )
+
+        // Blink overlay (50 ms al disparar)
+        ShutterBlinkOverlay(triggerKey = blinkKey)
 
         // -------- Grid 3×3 --------
         AnimatedVisibility(
@@ -278,22 +277,26 @@ fun CameraScreen(vm: CameraControlViewModel) {
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 18.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Botón ajustes (izquierda)
-            GlassCircleButton(
+            // Botón ajustes (izquierda) — ICONO VECTORIAL
+            GlassBubble(
+                size = 40.dp,
+                palette = palette,
                 onClick = {
                     settingsOpen = true
                     settingsIconRotation += 180f
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                },
-                palette = palette,
-                size = 44.dp
+                }
             ) {
-                Text("⚙", color = palette.onGlass, fontSize = 22.sp,
-                    modifier = Modifier.rotate(settingsRotationAnim))
+                LensIcon(
+                    icon = LensIcons.Settings,
+                    tint = palette.onGlass,
+                    size = 20.dp,
+                    modifier = Modifier.rotate(settingsRotationAnim)
+                )
             }
 
             // Badge de grabación (centro)
@@ -305,8 +308,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
-                        .background(palette.bgStrong)
-                        .border(0.5.dp, palette.borderSoft, RoundedCornerShape(20.dp))
+                        .liquidGlass(palette, RoundedCornerShape(20.dp), 18f)
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -319,17 +321,18 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 }
             }
 
-            // Indicador Res/FPS (esquina superior derecha) – sólo modo VIDEO
+            // Indicador Res/FPS (esquina superior derecha) – sólo VIDEO
             AnimatedVisibility(
                 visible = mode == "VIDEO" && !isFront && !isRecording,
                 enter = fadeIn() + slideInHorizontally { it },
                 exit  = fadeOut() + slideOutHorizontally { it }
             ) {
-                Column(horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    GlassChip(
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    PillButton(
                         text = videoRes.label,
-                        selected = true,
                         palette = palette,
                         onClick = {
                             Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
@@ -341,9 +344,8 @@ fun CameraScreen(vm: CameraControlViewModel) {
                             vm.setVideoResolution(next)
                         }
                     )
-                    GlassChip(
+                    PillButton(
                         text = "${videoFps.label} fps",
-                        selected = true,
                         palette = palette,
                         onClick = {
                             Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
@@ -357,9 +359,9 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 }
             }
 
-            // Cuando no estamos en modo VIDEO mostramos un placeholder vacío para mantener el SpaceBetween
+            // Placeholder para mantener SpaceBetween
             if (!(mode == "VIDEO" && !isFront && !isRecording) && !isRecording) {
-                Spacer(Modifier.size(44.dp))
+                Spacer(Modifier.size(40.dp))
             }
         }
 
@@ -380,77 +382,108 @@ fun CameraScreen(vm: CameraControlViewModel) {
 
         // -------- Controles inferiores --------
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 22.dp),
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Lentes – reducidos a la mitad de tamaño
-            Row(
-                Modifier.padding(bottom = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                LensBubble(
-                    text = ".5",
-                    selected = lens == "0.5x",
-                    palette = palette,
-                    onClick = {
-                        Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
-                        vm.switchLens(context, "0.5x")
-                    }
-                )
-                LensBubble(
-                    text = "1×",
-                    selected = lens == "1x",
-                    palette = palette,
-                    onClick = {
-                        Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
-                        vm.switchLens(context, "1x")
-                    }
-                )
-                LensBubble(
-                    text = "3×",
-                    selected = lens == "3x",
-                    palette = palette,
-                    onClick = {
-                        Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
-                        vm.switchLens(context, "3x")
-                    }
-                )
-            }
 
-            // Botón shutter grande
-            ShutterButton(
-                isRecording = isRecording,
-                onClick = {
-                    Haptics.perform(view,
-                        if (isRecording) Haptics.Kind.WARN else Haptics.Kind.SUCCESS,
-                        hapticsOn)
-                    coroutineScope.launchSafe { doShutter() }
-                }
+            // (1) PILL de zoom estilo iOS — el grupo dentro de un sólo contenedor glass
+            LensSelectorRow(
+                currentLens = lens,
+                palette = palette,
+                onSelect = { selected ->
+                    Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
+                    vm.switchLens(context, selected)
+                },
+                modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            // Fila inferior — Galería (izq) / Modo / Flip (der)
+            // (2) BARRA DE CHIPS DE ACCIÓN iOS 19 (flash / hdr / timer / sonido / aspecto / más)
+            ActionChipBar(
+                palette = palette,
+                flashOn = flashOn,
+                onToggleFlash = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn); vm.toggleFlash()
+                },
+                hdrOn = hdrOn,
+                onToggleHdr = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn); vm.toggleHdr()
+                },
+                timerSec = timerSec,
+                onCycleTimer = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn); vm.cycleTimer()
+                },
+                soundOn = soundOn,
+                onToggleSound = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn); vm.toggleShutterSound()
+                },
+                aspectLabel = when (manualAspect) {
+                    PreviewAspect.RATIO_3_4  -> "3:4"
+                    PreviewAspect.RATIO_9_16 -> "9:16"
+                    PreviewAspect.RATIO_1_1  -> "1:1"
+                    PreviewAspect.RATIO_FULL -> "Full"
+                    null -> "Auto"
+                },
+                onCycleAspect = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                    val next = when (manualAspect) {
+                        null                     -> PreviewAspect.RATIO_3_4
+                        PreviewAspect.RATIO_3_4  -> PreviewAspect.RATIO_9_16
+                        PreviewAspect.RATIO_9_16 -> PreviewAspect.RATIO_1_1
+                        PreviewAspect.RATIO_1_1  -> PreviewAspect.RATIO_FULL
+                        PreviewAspect.RATIO_FULL -> null
+                    }
+                    vm.setManualAspect(next)
+                },
+                onOpenMore = {
+                    settingsOpen = true
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                },
+                modifier = Modifier.padding(bottom = 18.dp)
+            )
+
+            // (3) MODE SELECTOR iOS 19 (FOTO / VIDEO)
+            ModeSelectorIos(
+                mode = mode,
+                palette = palette,
+                onModeChange = {
+                    Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
+                    vm.setCameraMode(it)
+                },
+                modifier = Modifier.padding(bottom = 14.dp)
+            )
+
+            // (4) FILA INFERIOR: Galería ← Shutter → Flip
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(top = 20.dp, start = 24.dp, end = 24.dp),
+                    .padding(start = 28.dp, end = 28.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // [LAYOUT FIX] Círculo de galería → IZQUIERDA
-                Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                    lastUri?.let { uri ->
+                // GALERÍA (izquierda) — square thumbnail estilo iOS
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.ultraBase)
+                        .border(0.6.dp, palette.ultraStroke, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (lastUri != null) {
                         AsyncImage(
-                            model = uri,
+                            model = lastUri,
                             contentDescription = "Última captura",
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .border(1.dp, palette.border, CircleShape)
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(12.dp))
                                 .clickable {
                                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
                                     runCatching {
                                         val intent = Intent(Intent.ACTION_VIEW).apply {
-                                            setDataAndType(uri, "image/*")
+                                            setDataAndType(lastUri, "image/*")
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(intent)
@@ -458,35 +491,52 @@ fun CameraScreen(vm: CameraControlViewModel) {
                                 },
                             contentScale = ContentScale.Crop
                         )
-                    } ?: GlassCircleButton(
-                        onClick = { /* sin foto aún */ },
-                        palette = palette,
-                        size = 44.dp
-                    ) {
-                        Text("🖼", color = palette.onGlass, fontSize = 18.sp)
+                    } else {
+                        LensIcon(
+                            icon = LensIcons.Gallery,
+                            tint = palette.onGlassSecondary,
+                            size = 22.dp
+                        )
                     }
                 }
 
-                ModeToggle(
+                // SHUTTER (centro) — blanco premium
+                ShutterButtonPro(
+                    isRecording = isRecording,
                     mode = mode,
-                    palette = palette,
-                    onModeChange = {
+                    onTap = {
+                        Haptics.perform(view,
+                            if (isRecording) Haptics.Kind.WARN else Haptics.Kind.SUCCESS,
+                            hapticsOn)
+                        coroutineScope.launchSafe { doShutter() }
+                    },
+                    onSwipeToVideo = {
                         Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
-                        vm.setCameraMode(it)
+                        vm.setCameraMode("VIDEO")
+                    },
+                    onSwipeToPhoto = {
+                        Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
+                        vm.setCameraMode("FOTO")
+                    },
+                    onPressFeedback = {
+                        Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
                     }
                 )
 
-                // [LAYOUT FIX] Botón Flip → DERECHA
-                GlassCircleButton(
+                // FLIP (derecha) — icono vectorial Cameraswitch
+                GlassBubble(
+                    size = 52.dp,
+                    palette = palette,
                     onClick = {
                         Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
                         vm.toggleFrontCamera(context)
-                    },
-                    palette = palette,
-                    size = 48.dp
+                    }
                 ) {
-                    Text("⟳", color = palette.onGlass, fontSize = 22.sp,
-                        fontWeight = FontWeight.SemiBold)
+                    LensIcon(
+                        icon = LensIcons.Flip,
+                        tint = palette.onGlass,
+                        size = 24.dp
+                    )
                 }
             }
         }
@@ -494,8 +544,8 @@ fun CameraScreen(vm: CameraControlViewModel) {
         // -------- Panel de ajustes --------
         AnimatedVisibility(
             visible = settingsOpen,
-            enter = fadeIn(tween(220)),
-            exit = fadeOut(tween(220))
+            enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.95f, animationSpec = tween(220)),
+            exit  = fadeOut(tween(180)) + scaleOut(targetScale = 0.95f, animationSpec = tween(180))
         ) {
             SettingsPanel(
                 palette = palette,
@@ -519,118 +569,16 @@ fun CameraScreen(vm: CameraControlViewModel) {
  * ================================================================ */
 
 @Composable
-private fun ShutterButton(isRecording: Boolean, onClick: () -> Unit) {
-    val innerSize by animateDpAsState(
-        targetValue = if (isRecording) 28.dp else 60.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "shutter_size"
-    )
-    val innerShape = if (isRecording) RoundedCornerShape(8.dp) else CircleShape
-
-    Box(
-        modifier = Modifier
-            .size(82.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = rememberRipple(bounded = false, radius = 48.dp),
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            Modifier
-                .size(82.dp)
-                .border(3.5.dp, if (isRecording) LensRecRed else LensAccent, CircleShape)
-        )
-        Box(
-            Modifier
-                .size(innerSize)
-                .clip(innerShape)
-                .background(if (isRecording) LensRecRed else LensAccent)
-        )
-    }
-}
-
-@Composable
-fun LensBubble(
-    text: String,
-    selected: Boolean,
-    palette: GlassPalette,
-    onClick: () -> Unit
-) {
-    // Tamaño reducido a la mitad (≈29-30dp vs anteriores 58dp)
-    val baseSize = 30.dp
-    val animSize by animateDpAsState(
-        targetValue = if (selected) 34.dp else baseSize,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "lens_size"
-    )
-    val bg = if (selected) LensAccent else palette.bg
-    val fg = if (selected) Color.Black else palette.onGlass
-    Box(
-        modifier = Modifier
-            .size(animSize)
-            .clip(CircleShape)
-            .background(bg)
-            .border(0.6.dp, palette.borderSoft, CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text, color = fg, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-    }
-}
-
-@Composable
-fun GlassCircleButton(
-    onClick: () -> Unit,
-    palette: GlassPalette,
-    size: Dp = 48.dp,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
-) {
-    Box(
-        modifier = modifier
-            .size(size)
-            .clip(CircleShape)
-            .glassBlur()
-            .background(palette.bg)
-            .border(1.dp, palette.border, CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) { content() }
-}
-
-@Composable
-fun ModeToggle(mode: String, palette: GlassPalette, onModeChange: (String) -> Unit) {
-    val isPhoto = mode == "FOTO"
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(30.dp))
-            .glassBlur()
-            .background(palette.bgStrong)
-            .border(0.6.dp, palette.borderSoft, RoundedCornerShape(30.dp))
-            .padding(4.dp)
-    ) {
-        ModeChip("FOTO",  isPhoto,  palette) { onModeChange("FOTO") }
-        ModeChip("VIDEO", !isPhoto, palette) { onModeChange("VIDEO") }
-    }
-}
-
-@Composable
-fun ModeChip(text: String, selected: Boolean, palette: GlassPalette, onClick: () -> Unit) {
-    val bg by animateColorAsState(
-        if (selected) LensAccent else Color.Transparent, label = "seg_bg"
-    )
-    val fg by animateColorAsState(
-        if (selected) Color.Black else palette.onGlass, label = "seg_fg"
-    )
+fun PillButton(text: String, palette: GlassPalette, onClick: () -> Unit) {
     Box(
         Modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(bg)
+            .liquidGlass(palette, RoundedCornerShape(18.dp), 18f)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) { Text(text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(text, color = palette.onGlass, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 @Composable
@@ -655,10 +603,7 @@ fun GridOverlay() {
 }
 
 /**
- * Slider de exposición — fluido y de mayor rango.
- *  - Drag continuo (Float) → cuantizado al rango entero soportado por la cámara.
- *  - Step refinado (≈ 1 unidad cada 8 px) en lugar de los 12 px anteriores.
- *  - Animación suave del marker.
+ * Slider vertical de exposición — drag continuo, cuantizado al rango entero.
  */
 @Composable
 fun ExposureSlider(
@@ -671,7 +616,6 @@ fun ExposureSlider(
     modifier: Modifier = Modifier
 ) {
     val range = (max - min).coerceAtLeast(1).toFloat()
-    // Acumulador continuo para gestos fluidos
     var accumulator by remember { mutableStateOf(0f) }
 
     Column(
@@ -679,9 +623,7 @@ fun ExposureSlider(
             .height(190.dp)
             .width(40.dp)
             .clip(RoundedCornerShape(20.dp))
-            .glassBlur()
-            .background(palette.bg)
-            .border(0.6.dp, palette.borderSoft, RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), 18f)
             .pointerInput(min, max) {
                 detectVerticalDragGestures(
                     onDragStart = { accumulator = 0f }
@@ -701,7 +643,7 @@ fun ExposureSlider(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("☀", color = LensAccent, fontSize = 18.sp)
+        LensIcon(LensIcons.Exposure, tint = LensAccent, size = 18.dp)
         Spacer(Modifier.size(6.dp))
         Text(
             if (value > 0) "+$value" else "$value",
@@ -730,23 +672,6 @@ fun ExposureSlider(
     }
 }
 
-@Composable
-fun GlassChip(text: String, selected: Boolean, palette: GlassPalette, onClick: () -> Unit) {
-    val bg = if (selected) LensAccent.copy(alpha = 0.92f) else palette.bg
-    val fg = if (selected) Color.Black else palette.onGlass
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .glassBlur()
-            .background(bg)
-            .border(0.6.dp, palette.borderSoft, RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Text(text, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
 /* ----------------- Panel de Ajustes ----------------- */
 @Composable
 fun SettingsPanel(
@@ -772,29 +697,26 @@ fun SettingsPanel(
         Column(
             modifier = Modifier
                 .padding(24.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .glassBlur(strong = true)
-                .background(palette.bgStrong)
-                .border(0.6.dp, palette.border, RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .liquidGlass(palette, RoundedCornerShape(28.dp), 28f, strong = true)
                 .padding(22.dp)
                 .clickable(enabled = false, onClick = {}),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text("Ajustes", color = palette.onGlass, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
-            SettingsRow("Flash",            flashOn,    palette) { onAnyAction(); onToggleFlash() }
-            SettingsRow("HDR",              hdrOn,      palette) { onAnyAction(); onToggleHdr() }
-            SettingsRow("Cuadrícula 3×3",   gridOn,     palette) { onAnyAction(); onToggleGrid() }
-            SettingsRow("Sonido obturador", soundOn,    palette) { onAnyAction(); onToggleSound() }
-            SettingsRow("Vibración háptica",hapticsOn,  palette) { onAnyAction(); onToggleHaptics() }
+            SettingsRow("Flash",             flashOn,   palette) { onAnyAction(); onToggleFlash() }
+            SettingsRow("HDR",               hdrOn,     palette) { onAnyAction(); onToggleHdr() }
+            SettingsRow("Cuadrícula 3×3",    gridOn,    palette) { onAnyAction(); onToggleGrid() }
+            SettingsRow("Sonido obturador",  soundOn,   palette) { onAnyAction(); onToggleSound() }
+            SettingsRow("Vibración háptica", hapticsOn, palette) { onAnyAction(); onToggleHaptics() }
 
             // Temporizador
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("Temporizador", color = palette.onGlass, fontSize = 15.sp,
                     modifier = Modifier.weight(1f))
-                GlassChip(
+                PillButton(
                     text = when (timerSec) { 0 -> "Off"; 3 -> "3s"; 10 -> "10s"; else -> "Off" },
-                    selected = timerSec > 0,
                     palette = palette,
                     onClick = { onAnyAction(); onCycleTimer() }
                 )
@@ -803,9 +725,8 @@ fun SettingsPanel(
             // Tema
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("Tema", color = palette.onGlass, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                GlassChip(
+                PillButton(
                     text = when (darkPref) { true -> "Oscuro"; false -> "Claro"; null -> "Sistema" },
-                    selected = true,
                     palette = palette,
                     onClick = { onAnyAction(); onCycleTheme() }
                 )
@@ -825,19 +746,34 @@ fun SettingsPanel(
                         "Full" to PreviewAspect.RATIO_FULL
                     )
                     opts.forEach { (label, value) ->
-                        GlassChip(
-                            text = label,
-                            selected = manualAspect == value,
-                            palette = palette,
-                            onClick = { onAnyAction(); onAspectChange(value) }
-                        )
+                        val selected = manualAspect == value
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(if (selected) LensAccent else Color.Transparent)
+                                .border(
+                                    0.6.dp,
+                                    if (selected) Color.Transparent else palette.borderSoft,
+                                    RoundedCornerShape(18.dp)
+                                )
+                                .clickable { onAnyAction(); onAspectChange(value) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                label,
+                                color = if (selected) Color.Black else palette.onGlass,
+                                fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
 
             Button(
                 onClick = onClose,
-                colors = ButtonDefaults.buttonColors(containerColor = LensAccent, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = LensAccent, contentColor = Color.Black
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Cerrar", fontWeight = FontWeight.Bold) }
         }
@@ -880,19 +816,3 @@ private fun CoroutineScope.launchSafe(block: suspend () -> Unit) {
         try { block() } catch (e: Exception) { e.printStackTrace() }
     }
 }
-
-/**
- * Modifier que aplica un RenderEffect Blur real cuando se ejecuta en Android 12+,
- * imitando el efecto Glassmorphism iOS. En APIs inferiores se omite (queda sólo
- * el color translúcido + borde, que sigue dando aspecto "vidrio").
- */
-private fun Modifier.glassBlur(strong: Boolean = false): Modifier = this.then(
-    Modifier.graphicsLayer {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val r = if (strong) 28f else 18f
-            renderEffect = RenderEffect
-                .createBlurEffect(r, r, Shader.TileMode.CLAMP)
-                .asComposeRenderEffect()
-        }
-    }
-)
