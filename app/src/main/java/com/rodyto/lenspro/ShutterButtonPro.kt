@@ -4,7 +4,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -28,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -35,22 +35,11 @@ import kotlinx.coroutines.launch
 /**
  * Botón obturador premium estilo iOS 19.
  *
- *  ╭─────────────────╮      ╭─────────────────╮
- *  │   ◯ blanco      │  →   │   ◯ rojo morph  │
- *  │   anillo white  │      │  cuadrado rec   │
- *  ╰─────────────────╯      ╰─────────────────╯
- *      FOTO (idle)              VIDEO (rec)
- *
- *  - Anillo exterior siempre BLANCO (no amarillo).
- *  - Núcleo interior: blanco en FOTO, rojo en VIDEO.
+ *  - Anillo exterior siempre BLANCO.
+ *  - Núcleo: blanco en FOTO, rojo en VIDEO; cuadrado al grabar.
  *  - Squish a 0.92× al presionar (spring crítico).
  *  - Pulso lento durante grabación (anillo respira).
  *  - Drag horizontal cambia FOTO ↔ VIDEO.
- *
- *  FIX (build): se añadió el import explícito de
- *  `androidx.compose.animation.core.animateFloat` — la función extensión que
- *  permite `InfiniteTransition.animateFloat(...)`. Sin él el compilador
- *  reportaba "Unresolved reference: animateFloat" en la línea 85.
  */
 @Composable
 fun ShutterButtonPro(
@@ -67,9 +56,9 @@ fun ShutterButtonPro(
 
     val innerSize by animateDpAsState(
         targetValue = when {
-            isRecording -> 26.dp
+            isRecording     -> 26.dp
             mode == "VIDEO" -> 54.dp
-            else -> 60.dp
+            else            -> 60.dp
         },
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -99,7 +88,7 @@ fun ShutterButtonPro(
         ringColor.copy(alpha = pulseAlpha)
     else ringColor
 
-    val dragThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 48.dp.toPx() }
+    val dragThreshold = with(LocalDensity.current) { 48.dp.toPx() }
 
     Box(
         modifier = Modifier
@@ -127,7 +116,7 @@ fun ShutterButtonPro(
                 var totalDx = 0f
                 detectHorizontalDragGestures(
                     onDragStart = { totalDx = 0f },
-                    onDragEnd = { totalDx = 0f },
+                    onDragEnd   = { totalDx = 0f },
                     onDragCancel = { totalDx = 0f }
                 ) { _, dx ->
                     if (isRecording) return@detectHorizontalDragGestures
@@ -156,7 +145,6 @@ fun ShutterButtonPro(
                 .border(3.5.dp, ringFinalColor, CircleShape)
                 .padding(3.dp)
         ) {
-            // Espacio interior (transparente)
             Box(Modifier.size(size - 6.dp))
         }
         // Núcleo morphing
@@ -168,7 +156,3 @@ fun ShutterButtonPro(
         )
     }
 }
-
-// Suppress lint, ensures animateFloat extension is referenced (no-op).
-@Suppress("unused")
-private val _animateFloatRefHolder = ::animateFloat
