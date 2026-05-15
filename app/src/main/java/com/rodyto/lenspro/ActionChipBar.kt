@@ -22,7 +22,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
+// ─── FIX ──────────────────────────────────────────────────────────────────────
+// rememberRipple fue deprecado a nivel ERROR en Compose Foundation 1.7.x
+// (BOM 2024.09.03). La API de reemplazo oficial es ripple() de Material3 1.3.0+.
+// No necesita `remember {}` cuando se llama dentro de un @Composable.
+import androidx.compose.material3.ripple
+// ──────────────────────────────────────────────────────────────────────────────
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -143,7 +148,8 @@ private fun ActionChip(
             .background(bg)
             .clickable(
                 interactionSource = interaction,
-                indication = rememberRipple(bounded = false, radius = 24.dp),
+                // FIX: ripple() reemplaza a rememberRipple() (Compose Foundation 1.7+)
+                indication = ripple(bounded = false, radius = 24.dp),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
@@ -188,7 +194,8 @@ private fun ActionChipText(
             .background(bg)
             .clickable(
                 interactionSource = interaction,
-                indication = rememberRipple(bounded = true),
+                // FIX: ripple() reemplaza a rememberRipple() (Compose Foundation 1.7+)
+                indication = ripple(bounded = true),
                 onClick = onClick
             )
             .padding(horizontal = 10.dp, vertical = 8.dp),
