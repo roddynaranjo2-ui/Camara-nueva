@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+        Logo Rodyto Lens Pro:
+        Anillo amarillo (objetivo) con centro oscuro y reflejo blanco — estilo cámara DSLR.
+        Diseñado para encajar dentro del safe-zone central del icono adaptativo (72dp / 108vp).
+        Viewport 108x108; centro en (54,54).
+    -->
+
+    <!-- Anillo exterior amarillo grueso -->
+    <path
+        android:strokeColor="#FFD60A"
+        android:strokeWidth="9"
+        android:pathData="M54,54 m-24,0 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0" />
+
+    <!-- Aro fino interior negro (separador) -->
+    <path
+        android:strokeColor="#0A0A0F"
+        android:strokeWidth="2"
+        android:pathData="M54,54 m-18,0 a18,18 0 1,0 36,0 a18,18 0 1,0 -36,0" />
+
+    <!-- Centro del objetivo: círculo amarillo + núcleo oscuro -->
+    <path
+        android:fillColor="#FFD60A"
+        android:pathData="M54,54 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0" />
+    <path
+        android:fillColor="#0A0A0F"
+        android:pathData="M54,54 m-11,0 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0" />
+
+    <!-- Reflejo (brillo) arriba-izquierda del núcleo -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.75"
+        android:pathData="M48,49 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+
+    <!-- Pequeño botón de disparo arriba-derecha del anillo -->
+    <path
+        android:fillColor="#FFD60A"
+        android:pathData="M78,32 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>
