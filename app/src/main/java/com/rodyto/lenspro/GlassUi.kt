@@ -11,72 +11,76 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-// ─── FIX ──────────────────────────────────────────────────────────────────────
-// rememberRipple fue deprecado a nivel ERROR en Compose Foundation 1.7.x
-// (BOM 2024.09.03). Reemplazado por ripple() de Material3 1.3.0+.
 import androidx.compose.material3.ripple
-// ──────────────────────────────────────────────────────────────────────────────
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Stroke
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /* ================================================================
- *  Liquid Glass / Ultra Thin Material — primitivas reutilizables
+ * Primitivas reusable glass morphing sin difuminar iconos/texto
  * ================================================================ */
 
-/**
- * Aplica un desenfoque Gaussiano de hardware (GPU) sobre la capa.
- * Soportado en Android 12+ (API 31). En APIs anteriores se omite (sólo color).
- */
-fun Modifier.gaussianBlur(radius: Float = 18f, strong: Boolean = false): Modifier =
-    this.then(Modifier.graphicsLayer {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val r = if (strong) (radius * 1.6f) else radius
-            renderEffect = RenderEffect
-                .createBlurEffect(r, r, Shader.TileMode.CLAMP)
-                .asComposeRenderEffect()
-        }
-    })
+fun Modifier.gaussianBlur(radius: Float = 18f, strong: Boolean = false): Modifier = this
 
-/**
- * Modifier helper para aplicar el "Liquid Glass" completo a cualquier surface.
- * Combina base translúcida + gradient highlight + doble borde (outer + inner stroke).
- */
 fun Modifier.liquidGlass(
     palette: GlassPalette,
     shape: androidx.compose.ui.graphics.Shape,
-    blurRadius: Float = 18f,
+    blurRadius: Float = 0f,
     strong: Boolean = false
 ): Modifier = this
     .clip(shape)
-    .gaussianBlur(blurRadius, strong)
     .background(palette.ultraBase, shape)
-    .background(
-        brush = Brush.verticalGradient(
-            0f to palette.ultraSurface,
-            0.6f to Color.Transparent,
-            1f to palette.ultraStrokeInner
-        ),
-        shape = shape
-    )
+    .drawWithCache {
+        val topGlow = Brush.verticalGradient(
+            colors = listOf(
+                palette.ultraSurface,
+                palette.accentSoft.copy(alpha = if (palette.isDark) 0.08f else 0.05f),
+                Color.Transparent,
+                palette.shadow.copy(alpha = if (strong) 0.45f else 0.25f)
+            )
+        )
+        val sideSheen = Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = if (palette.isDark) 0.18f else 0.12f),
+                Color.Transparent,
+                palette.accent.copy(alpha = if (palette.isDark) 0.07f else 0.04f)
+            ),
+            start = Offset.Zero,
+            end = Offset(size.width, size.height)
+        )
+        onDrawBehind {
+            drawRect(topGlow)
+            drawRect(sideSheen)
+            drawRect(
+                color = palette.shadow.copy(alpha = if (strong) 0.30f else 0.16f),
+                topLeft = Offset(0f, size.height * 0.68f),
+                size = Size(size.width, size.height * 0.32f)
+            )
+        }
+    }
     .border(0.8.dp, palette.ultraStroke, shape)
-    .border(0.4.dp, palette.ultraStrokeInner, shape)
+    .border(0.5.dp, palette.ultraStrokeInner, shape)
 
-/**
- * Burbuja Liquid Glass circular con press-scale (squishy iOS).
- */
 @Composable
 fun GlassBubble(
     modifier: Modifier = Modifier,
@@ -85,7 +89,7 @@ fun GlassBubble(
     strong: Boolean = false,
     shape: androidx.compose.ui.graphics.Shape = CircleShape,
     onClick: (() -> Unit)? = null,
-    pressedScale: Float = 0.93f,
+    pressedScale: Float = 0.95f,
     content: @Composable () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -96,26 +100,47 @@ fun GlassBubble(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
-        label = "bubble_press"
+        label = "glass_bubble_scale"
     )
+
     Box(
         modifier = modifier
             .size(size)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .liquidGlass(palette, shape, if (strong) 22f else 16f, strong)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .liquidGlass(palette, shape, blurRadius = 0f, strong = strong)
+            .drawWithCache {
+                onDrawWithContent {
+                    drawContent()
+                    drawCircle(
+                        color = Color.White.copy(alpha = if (palette.isDark) 0.06f else 0.03f),
+                        radius = size.minDimension * 0.32f,
+                        center = Offset(size.width * 0.28f, size.height * 0.28f),
+                        style = Stroke(width = this.size.minDimension * 0.04f)
+                    )
+                }
+            }
             .let {
-                if (onClick != null) it.clickable(
-                    interactionSource = interaction,
-                    // FIX: ripple() reemplaza a rememberRipple() (Compose Foundation 1.7+)
-                    indication = ripple(bounded = false, radius = size / 2),
-                    onClick = onClick
-                ) else it
+                if (onClick != null) {
+                     it.clickable(
+                        interactionSource = interaction,
+                        indication = ripple(bounded = false, radius = size / 2),
+                        onClick = onClick
+                    )
+                } else {
+                    it
+                }
             },
         contentAlignment = Alignment.Center
-    ) { content() }
+    ) {
+        Box(Modifier.offset(y = (-1).dp), contentAlignment = Alignment.Center) {
+            content()
+        }
+    }
 }
 
-/** Panel de Ultra Thin Material con esquinas redondeadas. */
 @Composable
 fun UltraThinPanel(
     modifier: Modifier = Modifier,
@@ -125,22 +150,21 @@ fun UltraThinPanel(
     content: @Composable () -> Unit
 ) {
     val shape = RoundedCornerShape(cornerRadius)
-    Box(modifier = modifier.liquidGlass(palette, shape, 28f, strong)) { content() }
+    Box(modifier = modifier.liquidGlass(palette, shape, blurRadius = 0f, strong = strong)) {
+        content()
+    }
 }
 
-/**
- * Estado "press" portátil — devuelve true mientras haya una PressInteraction activa.
- */
 @Composable
 private fun MutableInteractionSource.collectIsPressedAsStateCompat(): androidx.compose.runtime.State<Boolean> {
-    val isPressed = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(this) {
+    val isPressed = remember { mutableStateOf(false) }
+    LaunchedEffect(this) {
         val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
         interactions.collect { interaction ->
             when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press   -> active.add(interaction)
+                is androidx.compose.foundation.interaction.PressInteraction.Press -> active.add(interaction)
                 is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel  -> active.remove(interaction.press)
+                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> active.remove(interaction.press)
             }
             isPressed.value = active.isNotEmpty()
         }
