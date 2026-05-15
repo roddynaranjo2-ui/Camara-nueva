@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.BoltOutlined
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cameraswitch
@@ -40,12 +39,17 @@ import androidx.compose.ui.unit.dp
  * o tomaban el color de tinte (LensAccent amarillo).
  *
  * Estilo: trazo fino "Outlined" similar a SF Symbols / iOS 19.
+ *
+ * NOTA: El import inválido `Icons.Filled.BoltOutlined` fue eliminado
+ *       (no existe en Material Icons Extended). Para el "flash auto" usamos
+ *       `Icons.Outlined.Bolt`, que es exactamente el icono pretendido.
  */
 object LensIcons {
     val Settings:    ImageVector get() = Icons.Outlined.Settings
     val FlashOn:     ImageVector get() = Icons.Outlined.FlashOn
     val FlashOff:    ImageVector get() = Icons.Outlined.FlashOff
     val FlashAuto:   ImageVector get() = Icons.Outlined.Bolt
+    val FlashStrong: ImageVector get() = Icons.Filled.Bolt
     val Hdr:         ImageVector get() = Icons.Outlined.HdrOn
     val Grid:        ImageVector get() = Icons.Outlined.GridOn
     val SoundOn:     ImageVector get() = Icons.Outlined.VolumeUp
