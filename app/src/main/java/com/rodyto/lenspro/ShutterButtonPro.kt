@@ -3,6 +3,7 @@ package com.rodyto.lenspro
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -45,6 +46,11 @@ import kotlinx.coroutines.launch
  *  - Squish a 0.92× al presionar (spring crítico).
  *  - Pulso lento durante grabación (anillo respira).
  *  - Drag horizontal cambia FOTO ↔ VIDEO.
+ *
+ *  FIX (build): se añadió el import explícito de
+ *  `androidx.compose.animation.core.animateFloat` — la función extensión que
+ *  permite `InfiniteTransition.animateFloat(...)`. Sin él el compilador
+ *  reportaba "Unresolved reference: animateFloat" en la línea 85.
  */
 @Composable
 fun ShutterButtonPro(
@@ -162,3 +168,7 @@ fun ShutterButtonPro(
         )
     }
 }
+
+// Suppress lint, ensures animateFloat extension is referenced (no-op).
+@Suppress("unused")
+private val _animateFloatRefHolder = ::animateFloat
