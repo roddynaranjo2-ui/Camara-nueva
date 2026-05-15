@@ -16,11 +16,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Surface
@@ -35,14 +33,12 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -54,7 +50,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  RODYTO LENS PRO  —  iOS 19 Liquid Glass Camera (PREMIUM REDESIGN)
+ *  RODYTO LENS PRO — iOS 19 Liquid Glass Camera (PREMIUM REDESIGN)
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -146,10 +142,12 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val hdrOn         by vm.hdrEnabled.collectAsStateWithLifecycle()
     val soundOn       by vm.shutterSoundEnabled.collectAsStateWithLifecycle()
     val hapticsOn     by vm.hapticsEnabled.collectAsStateWithLifecycle()
+    val hevcOn        by vm.hevcEnabled.collectAsStateWithLifecycle()
     val videoRes      by vm.videoResolution.collectAsStateWithLifecycle()
     val videoFps      by vm.videoFps.collectAsStateWithLifecycle()
     val manualAspect  by vm.manualAspect.collectAsStateWithLifecycle()
     val darkPref      by vm.darkTheme.collectAsStateWithLifecycle()
+    val zoomLevel     by vm.zoomLevel.collectAsStateWithLifecycle()
 
     val palette = glassPalette(darkPref)
 
@@ -160,6 +158,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     // -- UI LOCAL --
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var zoomDialOpen by remember { mutableStateOf(false) }
     var settingsIconRotation by remember { mutableStateOf(0f) }
     var countdown by remember { mutableStateOf(0) }
     var recordingSeconds by remember { mutableStateOf(0L) }
@@ -230,10 +229,8 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 }
         )
 
-        // Blink overlay (50 ms al disparar)
         ShutterBlinkOverlay(triggerKey = blinkKey)
 
-        // -------- Grid 3×3 --------
         AnimatedVisibility(
             visible = gridOn,
             enter = fadeIn(tween(220)),
@@ -281,7 +278,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Botón ajustes (izquierda) — ICONO VECTORIAL
             GlassBubble(
                 size = 40.dp,
                 palette = palette,
@@ -299,7 +295,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 )
             }
 
-            // Badge de grabación (centro)
             AnimatedVisibility(
                 visible = isRecording,
                 enter = fadeIn() + slideInVertically { -it },
@@ -321,47 +316,63 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 }
             }
 
-            // Indicador Res/FPS (esquina superior derecha) – sólo VIDEO
-            AnimatedVisibility(
-                visible = mode == "VIDEO" && !isFront && !isRecording,
-                enter = fadeIn() + slideInHorizontally { it },
-                exit  = fadeOut() + slideOutHorizontally { it }
+            // Indicador Res/FPS + NUEVO botón Zoom Dial (esquina superior derecha)
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                // NUEVO: botón Zoom Dial — conecta la función ZoomDial existente
+                GlassBubble(
+                    size = 40.dp,
+                    palette = palette,
+                    onClick = {
+                        Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                        zoomDialOpen = true
+                    }
                 ) {
-                    PillButton(
-                        text = videoRes.label,
-                        palette = palette,
-                        onClick = {
-                            Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                            val next = when (videoRes) {
-                                VideoResolution.HD  -> VideoResolution.FHD
-                                VideoResolution.FHD -> VideoResolution.UHD
-                                VideoResolution.UHD -> VideoResolution.HD
-                            }
-                            vm.setVideoResolution(next)
-                        }
-                    )
-                    PillButton(
-                        text = "${videoFps.label} fps",
-                        palette = palette,
-                        onClick = {
-                            Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                            val nextFps = when (videoFps) {
-                                VideoFps.FPS30 -> VideoFps.FPS60
-                                VideoFps.FPS60 -> VideoFps.FPS30
-                            }
-                            vm.setVideoFps(nextFps)
-                        }
+                    LensIcon(
+                        icon = LensIcons.Sparkle,
+                        tint = LensAccent,
+                        size = 18.dp
                     )
                 }
-            }
 
-            // Placeholder para mantener SpaceBetween
-            if (!(mode == "VIDEO" && !isFront && !isRecording) && !isRecording) {
-                Spacer(Modifier.size(40.dp))
+                AnimatedVisibility(
+                    visible = mode == "VIDEO" && !isFront && !isRecording,
+                    enter = fadeIn() + slideInHorizontally { it },
+                    exit  = fadeOut() + slideOutHorizontally { it }
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        PillButton(
+                            text = videoRes.label,
+                            palette = palette,
+                            onClick = {
+                                Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                                val next = when (videoRes) {
+                                    VideoResolution.HD  -> VideoResolution.FHD
+                                    VideoResolution.FHD -> VideoResolution.UHD
+                                    VideoResolution.UHD -> VideoResolution.HD
+                                }
+                                vm.setVideoResolution(next)
+                            }
+                        )
+                        PillButton(
+                            text = "${videoFps.label} fps",
+                            palette = palette,
+                            onClick = {
+                                Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                                val nextFps = when (videoFps) {
+                                    VideoFps.FPS30 -> VideoFps.FPS60
+                                    VideoFps.FPS60 -> VideoFps.FPS30
+                                }
+                                vm.setVideoFps(nextFps)
+                            }
+                        )
+                    }
+                }
             }
         }
 
@@ -388,8 +399,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 .padding(bottom = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-
-            // (1) PILL de zoom estilo iOS — el grupo dentro de un sólo contenedor glass
             LensSelectorRow(
                 currentLens = lens,
                 palette = palette,
@@ -400,7 +409,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            // (2) BARRA DE CHIPS DE ACCIÓN iOS 19 (flash / hdr / timer / sonido / aspecto / más)
             ActionChipBar(
                 palette = palette,
                 flashOn = flashOn,
@@ -444,7 +452,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 modifier = Modifier.padding(bottom = 18.dp)
             )
 
-            // (3) MODE SELECTOR iOS 19 (FOTO / VIDEO)
             ModeSelectorIos(
                 mode = mode,
                 palette = palette,
@@ -455,7 +462,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 modifier = Modifier.padding(bottom = 14.dp)
             )
 
-            // (4) FILA INFERIOR: Galería ← Shutter → Flip
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -463,7 +469,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // GALERÍA (izquierda) — square thumbnail estilo iOS
                 Box(
                     modifier = Modifier
                         .size(52.dp)
@@ -500,7 +505,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                     }
                 }
 
-                // SHUTTER (centro) — blanco premium
                 ShutterButtonPro(
                     isRecording = isRecording,
                     mode = mode,
@@ -523,7 +527,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                     }
                 )
 
-                // FLIP (derecha) — icono vectorial Cameraswitch
                 GlassBubble(
                     size = 52.dp,
                     palette = palette,
@@ -541,6 +544,44 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
+        // -------- Overlay: ZoomDial --------
+        AnimatedVisibility(
+            visible = zoomDialOpen,
+            enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.9f, animationSpec = tween(220)),
+            exit  = fadeOut(tween(180)) + scaleOut(targetScale = 0.9f, animationSpec = tween(180))
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { zoomDialOpen = false },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "Zoom de precisión",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    ZoomDial(
+                        currentZoom = zoomLevel,
+                        palette = palette,
+                        onZoomChange = { vm.setZoom(it) },
+                        onHapticTick = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) }
+                    )
+                    Spacer(Modifier.size(24.dp))
+                    Button(
+                        onClick = { zoomDialOpen = false },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = LensAccent, contentColor = Color.Black
+                        )
+                    ) { Text("Cerrar", fontWeight = FontWeight.Bold) }
+                }
+            }
+        }
+
         // -------- Panel de ajustes --------
         AnimatedVisibility(
             visible = settingsOpen,
@@ -554,6 +595,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 gridOn = gridOn, onToggleGrid = { vm.toggleGrid() },
                 soundOn = soundOn, onToggleSound = { vm.toggleShutterSound() },
                 hapticsOn = hapticsOn, onToggleHaptics = { vm.toggleHaptics() },
+                hevcOn = hevcOn, onToggleHevc = { vm.toggleHevc() },
                 timerSec = timerSec, onCycleTimer = { vm.cycleTimer() },
                 darkPref = darkPref, onCycleTheme = { vm.cycleTheme() },
                 manualAspect = manualAspect, onAspectChange = { vm.setManualAspect(it) },
@@ -602,9 +644,6 @@ fun GridOverlay() {
     }
 }
 
-/**
- * Slider vertical de exposición — drag continuo, cuantizado al rango entero.
- */
 @Composable
 fun ExposureSlider(
     value: Int,
@@ -681,6 +720,7 @@ fun SettingsPanel(
     gridOn: Boolean, onToggleGrid: () -> Unit,
     soundOn: Boolean, onToggleSound: () -> Unit,
     hapticsOn: Boolean, onToggleHaptics: () -> Unit,
+    hevcOn: Boolean, onToggleHevc: () -> Unit,
     timerSec: Int, onCycleTimer: () -> Unit,
     darkPref: Boolean?, onCycleTheme: () -> Unit,
     manualAspect: PreviewAspect?, onAspectChange: (PreviewAspect?) -> Unit,
@@ -710,8 +750,8 @@ fun SettingsPanel(
             SettingsRow("Cuadrícula 3×3",    gridOn,    palette) { onAnyAction(); onToggleGrid() }
             SettingsRow("Sonido obturador",  soundOn,   palette) { onAnyAction(); onToggleSound() }
             SettingsRow("Vibración háptica", hapticsOn, palette) { onAnyAction(); onToggleHaptics() }
+            SettingsRow("Codec HEVC (H.265)", hevcOn,  palette) { onAnyAction(); onToggleHevc() }
 
-            // Temporizador
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("Temporizador", color = palette.onGlass, fontSize = 15.sp,
                     modifier = Modifier.weight(1f))
@@ -722,7 +762,6 @@ fun SettingsPanel(
                 )
             }
 
-            // Tema
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("Tema", color = palette.onGlass, fontSize = 15.sp, modifier = Modifier.weight(1f))
                 PillButton(
@@ -732,7 +771,6 @@ fun SettingsPanel(
                 )
             }
 
-            // Relación de aspecto manual
             Column {
                 Text("Relación de aspecto", color = palette.onGlass, fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold)
