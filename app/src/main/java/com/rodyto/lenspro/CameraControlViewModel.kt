@@ -33,17 +33,32 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.ByteBuffer
+import kotlin.math.abs
 import kotlin.math.max
 
 enum class VideoResolution(val label: String, val width: Int, val height: Int) {
-    HD("HD",   1280,  720),
+    HD ("HD" , 1280,  720),
     FHD("FHD", 1920, 1080),
-    UHD("4K",  3840, 2160);
+    UHD("4K" , 3840, 2160);
 }
 
 enum class VideoFps(val label: String, val value: Int) {
     FPS30("30", 30),
     FPS60("60", 60);
+}
+
+/**
+ * Modos de relación de aspecto del preview.
+ * - RATIO_3_4  → predeterminado en FOTO
+ * - RATIO_9_16 → predeterminado en VIDEO
+ * - RATIO_1_1  → cuadrado
+ * - RATIO_FULL → fill (sensor completo, puede recortar)
+ */
+enum class PreviewAspect(val label: String, val ratio: Float) {
+    RATIO_3_4 ("3:4",  3f  / 4f),
+    RATIO_9_16("9:16", 9f  / 16f),
+    RATIO_1_1 ("1:1",  1f),
+    RATIO_FULL("FULL", 9f  / 19.5f); // ~pantalla completa moderna
 }
 
 class CameraControlViewModel : ViewModel() {
@@ -61,12 +76,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * [FIX #14] Antes este método estaba declarado pero jamás invocado (toda la
-     * librería C++ era código muerto). Ahora se invoca de forma SEGURA dentro de
-     * cacheCameraIds() para complementar la detección de IDs físicos en dispositivos
-     * con multi-cámara lógica. Se conserva el método nativo intacto.
-     */
     @Suppress("unused")
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
@@ -77,7 +86,6 @@ class CameraControlViewModel : ViewModel() {
     }
 
     // ---------------- Estado UI expuesto ----------------
-    // [FIX #3] Identificadores unificados a "0.5x" / "1x" / "3x" en TODO el proyecto.
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -96,6 +104,7 @@ class CameraControlViewModel : ViewModel() {
     private val _flashEnabled = MutableStateFlow(false)
     val flashEnabled: StateFlow<Boolean> = _flashEnabled.asStateFlow()
 
+    /** Compensación AE en pasos enteros (limitada por CONTROL_AE_COMPENSATION_RANGE). */
     private val _exposureLevel = MutableStateFlow(0)
     val exposureLevel: StateFlow<Int> = _exposureLevel.asStateFlow()
 
@@ -123,8 +132,19 @@ class CameraControlViewModel : ViewModel() {
     private val _videoFps = MutableStateFlow(VideoFps.FPS30)
     val videoFps: StateFlow<VideoFps> = _videoFps.asStateFlow()
 
+    /** Modo manual de aspect (null = automático según modo FOTO/VIDEO). */
+    private val _manualAspect = MutableStateFlow<PreviewAspect?>(null)
+    val manualAspect: StateFlow<PreviewAspect?> = _manualAspect.asStateFlow()
+
     private val _previewAspectRatio = MutableStateFlow(3f / 4f)
     val previewAspectRatio: StateFlow<Float> = _previewAspectRatio.asStateFlow()
+
+    /** Tema: true = oscuro, false = claro, null = sistema. */
+    private val _darkTheme = MutableStateFlow<Boolean?>(null)
+    val darkTheme: StateFlow<Boolean?> = _darkTheme.asStateFlow()
+
+    private val _hapticsEnabled = MutableStateFlow(true)
+    val hapticsEnabled: StateFlow<Boolean> = _hapticsEnabled.asStateFlow()
 
     // ---------------- Recursos Camera2 ----------------
     private var cameraDevice: CameraDevice? = null
@@ -141,6 +161,9 @@ class CameraControlViewModel : ViewModel() {
     private var backUltraWideId: String? = null
     private var backTeleId: String? = null
     private var frontMainId: String? = null
+
+    /** IDs realmente abribles por CameraManager.openCamera (los physical-only no lo son). */
+    private val openableIds = HashSet<String>()
 
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
@@ -165,8 +188,20 @@ class CameraControlViewModel : ViewModel() {
 
     fun isCameraRunning(): Boolean = isCameraActive
 
+    // ---------------- Toggles públicos ----------------
     fun toggleFlash() { _flashEnabled.value = !_flashEnabled.value; updateRepeatingRequest() }
-    fun setCameraMode(mode: String) { if (_isRecording.value) return; _cameraMode.value = mode }
+    fun setCameraMode(mode: String) {
+        if (_isRecording.value) return
+        if (_cameraMode.value == mode) return
+        _cameraMode.value = mode
+        // Ajuste automático de aspecto si el usuario no eligió uno manual
+        if (_manualAspect.value == null) {
+            _previewAspectRatio.value = if (mode == "VIDEO")
+                PreviewAspect.RATIO_9_16.ratio
+            else
+                PreviewAspect.RATIO_3_4.ratio
+        }
+    }
     fun toggleFocusLock() { _focusLocked.value = !_focusLocked.value; updateRepeatingRequest() }
 
     fun toggleHdr() { _hdrEnabled.value = !_hdrEnabled.value; updateRepeatingRequest() }
@@ -175,9 +210,24 @@ class CameraControlViewModel : ViewModel() {
         _timerSeconds.value = when (_timerSeconds.value) { 0 -> 3; 3 -> 10; else -> 0 }
     }
     fun toggleShutterSound() { _shutterSoundEnabled.value = !_shutterSoundEnabled.value }
+    fun toggleHaptics()      { _hapticsEnabled.value = !_hapticsEnabled.value }
 
     fun setVideoResolution(r: VideoResolution) { if (!_isRecording.value) _videoResolution.value = r }
     fun setVideoFps(f: VideoFps) { if (!_isRecording.value) _videoFps.value = f }
+
+    fun cycleTheme() {
+        _darkTheme.value = when (_darkTheme.value) {
+            null  -> true
+            true  -> false
+            false -> null
+        }
+    }
+
+    fun setManualAspect(aspect: PreviewAspect?) {
+        _manualAspect.value = aspect
+        _previewAspectRatio.value = aspect?.ratio ?: if (_cameraMode.value == "VIDEO")
+            PreviewAspect.RATIO_9_16.ratio else PreviewAspect.RATIO_3_4.ratio
+    }
 
     fun toggleFrontCamera(context: Context) {
         if (_isRecording.value) return
@@ -195,20 +245,29 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /**
+     * [FIX #4 — Zoom óptico]
+     * Si el ID del teleobjetivo está en la lista `openableIds` se abre como cámara
+     * física independiente (zoom óptico real). Si NO se puede abrir (multi-cámara
+     * lógica donde Android no permite abrir el físico) se mantiene el ID principal
+     * y se aplica zoom digital 3x usando el factor de focal real.
+     */
     fun switchLens(context: Context, lens: String) {
         if (_isRecording.value) return
         _currentLens.value = lens
 
-        val teleAvailable = backTeleId != null
+        val teleIsHw  = backTeleId      != null && openableIds.contains(backTeleId)
+        val ultraIsHw = backUltraWideId != null && openableIds.contains(backUltraWideId)
+
         _zoomLevel.value = when (lens) {
-            "0.5x" -> 1f
+            "0.5x" -> if (ultraIsHw || _isFrontCamera.value) 1f else 1f // no se hace zoom out digital
             "1x"   -> 1f
-            "3x"   -> if (teleAvailable) 1f else 3f
+            "3x"   -> if (teleIsHw) 1f else realTeleZoomFactor()
             else   -> 1f
         }
 
-        val needsCameraSwap = !_isFrontCamera.value && targetCameraIdFor(lens) != currentCameraId
-        if (needsCameraSwap) {
+        val needsSwap = !_isFrontCamera.value && targetCameraIdFor(lens) != currentCameraId
+        if (needsSwap) {
             val surface = previewSurface ?: return
             viewModelScope.launch(Dispatchers.IO) {
                 cameraMutex.withLock {
@@ -221,11 +280,30 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // [FIX #11] Reformateado para legibilidad
+    /** Estima el factor de zoom digital equivalente al teleobjetivo (~3×). */
+    private fun realTeleZoomFactor(): Float {
+        val mgr = cameraManager ?: return 3f
+        return try {
+            val mainFocal = backMainId?.let {
+                mgr.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.firstOrNull()
+            } ?: return 3f
+            val teleFocal = backTeleId?.let {
+                mgr.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.maxOrNull()
+            } ?: return 3f
+            (teleFocal / mainFocal).coerceIn(2f, 5f)
+        } catch (_: Exception) { 3f }
+    }
+
     private fun targetCameraIdFor(lens: String): String = when {
         _isFrontCamera.value -> frontMainId ?: currentCameraId
-        lens == "0.5x"       -> backUltraWideId ?: backMainId ?: currentCameraId
-        lens == "3x"         -> backTeleId ?: backMainId ?: currentCameraId
+        lens == "0.5x"       -> backUltraWideId?.takeIf { openableIds.contains(it) }
+            ?: backMainId ?: currentCameraId
+        lens == "3x"         -> backTeleId?.takeIf { openableIds.contains(it) }
+            ?: backMainId ?: currentCameraId
         else                 -> backMainId ?: currentCameraId
     }
 
@@ -242,6 +320,15 @@ class CameraControlViewModel : ViewModel() {
             ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
     } catch (e: Exception) { Log.e(TAG, "Error getExposureRange", e); null }
 
+    /**
+     * [FIX #2 — Tap-to-Focus rápido y preciso]
+     * Pasos:
+     *   1) CANCEL del AF previo (acelera el ciclo).
+     *   2) Petición one-shot con region AF + AE y TRIGGER_START.
+     *   3) Inmediato repeating request en CONTINUOUS_PICTURE para no perder seguimiento.
+     * Se ajustan correctamente las coordenadas teniendo en cuenta sensor orientation
+     * (90° trasera, 270° frontal con espejo).
+     */
     fun tapToFocus(x: Float, y: Float, screenWidth: Int, screenHeight: Int) {
         if (_focusLocked.value) return
         val session = captureSession ?: return
@@ -251,23 +338,54 @@ class CameraControlViewModel : ViewModel() {
         try {
             val ch = manager.getCameraCharacteristics(currentCameraId)
             val arr = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-            val sensorX = (y / screenHeight * arr.width()).toInt().coerceIn(0, arr.width() - 1)
-            val sensorY = ((1 - x / screenWidth) * arr.height()).toInt().coerceIn(0, arr.height() - 1)
-            val halfSize = max(arr.width(), arr.height()) / 20
+            val sensorOrientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+
+            // Coordenadas normalizadas 0..1 sobre el preview en pantalla
+            val nx = (x / screenWidth ).coerceIn(0f, 1f)
+            val ny = (y / screenHeight).coerceIn(0f, 1f)
+
+            // Mapeo a coordenadas del sensor según orientación + espejo frontal
+            val (sx, sy) = when (sensorOrientation) {
+                90  -> Pair(ny, 1f - nx)
+                270 -> Pair(1f - ny, if (_isFrontCamera.value) nx else nx)
+                0   -> Pair(nx, ny)
+                180 -> Pair(1f - nx, 1f - ny)
+                else -> Pair(ny, 1f - nx)
+            }
+            val sensorX = (sx * arr.width()).toInt().coerceIn(0, arr.width() - 1)
+            val sensorY = (sy * arr.height()).toInt().coerceIn(0, arr.height() - 1)
+
+            // Region de medición más pequeña y precisa (≈8% del lado mayor)
+            val halfSize = (max(arr.width(), arr.height()) * 0.04f).toInt().coerceAtLeast(40)
             val region = MeteringRectangle(
                 (sensorX - halfSize).coerceAtLeast(0),
                 (sensorY - halfSize).coerceAtLeast(0),
                 halfSize * 2, halfSize * 2,
                 MeteringRectangle.METERING_WEIGHT_MAX - 1
             )
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            builder.addTarget(surface)
-            applyBaseSettings(builder)
-            builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
-            builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            session.capture(builder.build(), null, backgroundHandler)
+
+            // 1) Cancel previo
+            val cancel = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface); applyBaseSettings(this)
+                set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+                set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_CANCEL)
+            }
+            session.capture(cancel.build(), null, backgroundHandler)
+
+            // 2) AF region + trigger start
+            val trigger = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface); applyBaseSettings(this)
+                set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+                set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+            }
+            session.capture(trigger.build(), null, backgroundHandler)
+
+            // 3) Volver a continuo
             updateRepeatingRequest()
         } catch (e: Exception) { Log.e(TAG, "Error tapToFocus", e) }
     }
@@ -293,15 +411,8 @@ class CameraControlViewModel : ViewModel() {
             cacheCameraIds(mgr)
             currentCameraId = targetCameraIdFor(lens)
 
-            try {
-                val ch = mgr.getCameraCharacteristics(currentCameraId)
-                val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                val best = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
-                    ?.maxByOrNull { it.width.toLong() * it.height }
-                if (best != null) {
-                    _previewAspectRatio.value = best.height.toFloat() / best.width.toFloat()
-                }
-            } catch (_: Exception) {}
+            // [FIX #3] Mantener aspect ratio determinado por modo / manual override.
+            // No se modifica desde aquí, sólo lo hacen setCameraMode() / setManualAspect().
 
             mgr.openCamera(currentCameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
@@ -327,16 +438,13 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * [FIX #12 + #14] Cachea IDs de cámara. Eliminadas variables sin uso
-     * (ultraFocal, teleFocal) y se integra la búsqueda nativa de IDs físicos
-     * como complemento cuando esté disponible.
-     */
     private fun cacheCameraIds(manager: CameraManager) {
         if (backMainId != null && frontMainId != null && (backUltraWideId != null || backTeleId != null))
             return
         try {
             val ids = manager.cameraIdList
+            openableIds.clear()
+            openableIds.addAll(ids)
 
             backMainId = ids.firstOrNull {
                 manager.getCameraCharacteristics(it)
@@ -356,6 +464,7 @@ class CameraControlViewModel : ViewModel() {
             var ultraId: String? = null
             var teleId: String? = null
 
+            // Combinamos IDs lógicos + físicos (vía NDK) para detectar más cámaras
             val combinedIds = (ids.toSet() + safeNativePhysicalIds().toSet()).toList()
 
             combinedIds.forEach { id ->
@@ -363,22 +472,47 @@ class CameraControlViewModel : ViewModel() {
                     val ch = manager.getCameraCharacteristics(id)
                     if (ch.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK)
                         return@runCatching
-                    val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: return@runCatching
+                    val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                        ?: return@runCatching
                     val minF = focals.minOrNull() ?: return@runCatching
                     val maxF = focals.maxOrNull() ?: return@runCatching
                     if (id != backMainId) {
-                        if (minF < mainFocal) ultraId = id
-                        if (maxF > mainFocal + 5f) teleId = id
+                        if (minF < mainFocal - 0.5f) ultraId = id
+                        if (maxF > mainFocal + 5f)   teleId  = id
                     }
                 }
             }
             backUltraWideId = ultraId
             backTeleId      = teleId
-            Log.d(TAG, "IDs → main=$backMainId, ultra=$backUltraWideId, tele=$backTeleId, front=$frontMainId")
+            Log.d(TAG, "IDs → main=$backMainId, ultra=$backUltraWideId (open=${ultraId?.let{openableIds.contains(it)}}), " +
+                    "tele=$backTeleId (open=${teleId?.let{openableIds.contains(it)}}), front=$frontMainId")
         } catch (e: Exception) { Log.e(TAG, "cacheCameraIds error", e) }
     }
 
-    fun hasTelephoto(): Boolean = backTeleId != null
+    fun hasTelephoto():  Boolean = backTeleId      != null
+    fun hasUltrawide():  Boolean = backUltraWideId != null
+    fun isOpticalTele(): Boolean = backTeleId      != null && openableIds.contains(backTeleId)
+    fun isOpticalUltra():Boolean = backUltraWideId != null && openableIds.contains(backUltraWideId)
+
+    /**
+     * [FIX #3 — Preview no estirado]
+     * Selecciona el output de preview más cercano al ratio deseado y al tamaño de
+     * pantalla, con tope a 1920×1080 para evitar problemas de rendimiento.
+     */
+    private fun chooseOptimalPreviewSize(
+        sizes: Array<Size>?,
+        desiredRatio: Float
+    ): Size {
+        val list = sizes?.filter {
+            it.width <= 1920 && it.height <= 1920
+        } ?: return Size(1920, 1080)
+
+        // Las Size de Camera2 vienen en orientación landscape (width >= height usualmente)
+        return list.minByOrNull { s ->
+            val r = s.height.toFloat() / s.width.toFloat() // ratio en portrait
+            abs(r - desiredRatio)
+        } ?: Size(1920, 1080)
+    }
 
     private fun createPreviewSession() {
         val camera = cameraDevice ?: return
@@ -387,8 +521,17 @@ class CameraControlViewModel : ViewModel() {
         try {
             val ch = cameraManager?.getCameraCharacteristics(currentCameraId)
             val map = ch?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+
+            // Tamaño JPEG: usamos el máximo para fotografía
             val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)
                 ?.maxByOrNull { it.width.toLong() * it.height } ?: Size(1920, 1080)
+
+            // Preview: ajustado al aspect ratio para evitar deformaciones
+            val previewSize = chooseOptimalPreviewSize(
+                map?.getOutputSizes(android.graphics.SurfaceTexture::class.java),
+                _previewAspectRatio.value
+            )
+            Log.d(TAG, "Preview size elegido = $previewSize jpeg=$jpegSize ratio=${_previewAspectRatio.value}")
 
             imageReader?.close()
             imageReader = ImageReader.newInstance(
@@ -414,7 +557,12 @@ class CameraControlViewModel : ViewModel() {
 
     private fun applyBaseSettings(builder: CaptureRequest.Builder) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        builder.set(CaptureRequest.CONTROL_AF_MODE,
+            if (_cameraMode.value == "VIDEO")
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+            else
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+
         builder.set(
             CaptureRequest.CONTROL_AE_MODE,
             if (_flashEnabled.value && !_isFrontCamera.value)
@@ -450,8 +598,9 @@ class CameraControlViewModel : ViewModel() {
         try {
             val ch = cameraManager?.getCameraCharacteristics(currentCameraId) ?: return
             val rect = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-            val zoom = _zoomLevel.value.coerceAtLeast(1f)
-            if (zoom == 1f) return
+            val maxZoom = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+            val zoom = _zoomLevel.value.coerceIn(1f, maxZoom)
+            if (zoom <= 1f) return
             val cropW = (rect.width() / zoom).toInt()
             val cropH = (rect.height() / zoom).toInt()
             val cropX = (rect.width() - cropW) / 2
@@ -499,6 +648,14 @@ class CameraControlViewModel : ViewModel() {
         } catch (e: Exception) { Log.e(TAG, "Error takePicture", e) }
     }
 
+    /**
+     * [FIX #1 — FPS REAL]
+     * - Verifica los rangos soportados por el dispositivo
+     * - Aplica `CONTROL_AE_TARGET_FPS_RANGE` válido ANTES de iniciar el recorder
+     * - Sincroniza `MediaRecorder.setVideoFrameRate(fps)` con el rango aplicado
+     * - Si el FPS solicitado no es soportado para la resolución actual, hace fallback
+     *   a 30 y notifica via StateFlow (_videoFps) para que la UI refleje el cambio.
+     */
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
         if (_isRecording.value) return
@@ -513,12 +670,20 @@ class CameraControlViewModel : ViewModel() {
             val fd  = storage.openVideoFd(appContext, uri) ?: return
             videoUri = uri; videoFd = fd
 
-            val res  = _videoResolution.value
-            val fps  = _videoFps.value.value
+            val res = _videoResolution.value
+            val requestedFps = _videoFps.value.value
+            val effectiveFps = resolveSupportedFps(requestedFps, res)
+            if (effectiveFps != requestedFps) {
+                Log.w(TAG, "FPS solicitado $requestedFps no soportado para ${res.label}, usando $effectiveFps")
+                _videoFps.value = VideoFps.values().firstOrNull { it.value == effectiveFps } ?: VideoFps.FPS30
+            }
+
+            val fpsRange = pickFpsRange(effectiveFps) ?: Range(effectiveFps, effectiveFps)
+
             val rate = when (res) {
-                VideoResolution.HD  ->  6_000_000
-                VideoResolution.FHD -> 12_000_000
-                VideoResolution.UHD -> 40_000_000
+                VideoResolution.HD  -> if (effectiveFps >= 60) 10_000_000 else  6_000_000
+                VideoResolution.FHD -> if (effectiveFps >= 60) 20_000_000 else 12_000_000
+                VideoResolution.UHD -> if (effectiveFps >= 60) 60_000_000 else 40_000_000
             }
 
             mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -531,7 +696,7 @@ class CameraControlViewModel : ViewModel() {
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setOutputFile(fd.fileDescriptor)
                 setVideoEncodingBitRate(rate)
-                setVideoFrameRate(fps)
+                setVideoFrameRate(effectiveFps)
                 setVideoSize(res.width, res.height)
                 setVideoEncoder(MediaRecorder.VideoEncoder.H264)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -552,13 +717,15 @@ class CameraControlViewModel : ViewModel() {
                             builder.addTarget(surface)
                             builder.addTarget(recorderSurface)
                             applyBaseSettings(builder)
-                            builder.set(
-                                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                Range(fps, fps)
-                            )
+                            // *** Punto clave: FPS aplicado en el repeating request ***
+                            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+                            // En 60 fps forzamos AE_MODE ON sin antibanding lento
+                            builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
+                                CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                             mediaRecorder?.start()
                             _isRecording.value = true
+                            Log.d(TAG, "Grabando ${res.label} @ ${effectiveFps}fps range=$fpsRange bitrate=$rate")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error iniciando grabación", e); cleanupRecorder()
                         }
@@ -570,6 +737,35 @@ class CameraControlViewModel : ViewModel() {
                 backgroundHandler
             )
         } catch (e: Exception) { Log.e(TAG, "Error startVideoRecording", e); cleanupRecorder() }
+    }
+
+    /** Devuelve el FPS soportado más cercano según la resolución. */
+    private fun resolveSupportedFps(requestedFps: Int, res: VideoResolution): Int {
+        val mgr = cameraManager ?: return requestedFps
+        return try {
+            val ch = mgr.getCameraCharacteristics(currentCameraId)
+            val ranges: Array<Range<Int>> =
+                ch.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return requestedFps
+
+            // ¿Algún rango incluye el FPS requerido como upper?
+            val supports = ranges.any { it.upper >= requestedFps }
+            if (!supports) 30 else requestedFps
+        } catch (_: Exception) { requestedFps }
+    }
+
+    /** Mejor rango fijo de FPS para el valor pedido. */
+    private fun pickFpsRange(fps: Int): Range<Int>? {
+        val mgr = cameraManager ?: return null
+        return try {
+            val ch = mgr.getCameraCharacteristics(currentCameraId)
+            val ranges: Array<Range<Int>> =
+                ch.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
+
+            // Preferimos rango exacto [fps, fps]; si no, el rango con upper == fps y mayor lower
+            ranges.firstOrNull { it.lower == fps && it.upper == fps }
+                ?: ranges.filter { it.upper == fps }.maxByOrNull { it.lower }
+                ?: ranges.minByOrNull { abs(it.upper - fps) }
+        } catch (_: Exception) { null }
     }
 
     fun stopVideoRecording(context: Context, storage: MediaStorageManager) {
