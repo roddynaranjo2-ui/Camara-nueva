@@ -2,24 +2,20 @@ package com.rodyto.lenspro
 
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
-import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
 
 /**
- * CameraTuning
+ * CameraTuning — Perfil de Image-Quality + Codec helpers.
  *
- * Perfil de Image-Quality optimizado para Qualcomm Snapdragon 888 (S21 FE):
- *   - Noise reduction: HIGH_QUALITY en FOTO, FAST en VIDEO
- *   - Edge sharpening: HIGH_QUALITY en FOTO, FAST en VIDEO
- *   - Tonemap:         HIGH_QUALITY siempre (el ISP del 888 lo absorbe sin lag)
- *   - JPEG quality:    97 (igual que Samsung en modo Pro)
- *   - AE antibanding:  AUTO
- *   - VSTAB:           PREVIEW para video estándar
- *
- * Además expone helpers para HEVC/H264 con detección dinámica.
+ *  - Noise reduction: HIGH_QUALITY en FOTO, FAST en VIDEO
+ *  - Edge sharpening: HIGH_QUALITY en FOTO, FAST en VIDEO
+ *  - Tonemap:         HIGH_QUALITY en FOTO, FAST en VIDEO (evita lag 4K/60)
+ *  - JPEG quality:    97 (Samsung Pro mode)
+ *  - VSTAB:           PREVIEW para video estándar, solo si soportado
  */
 object CameraTuning {
 
@@ -32,17 +28,20 @@ object CameraTuning {
                     CaptureRequest.NOISE_REDUCTION_MODE_FAST)
                 b.set(CaptureRequest.EDGE_MODE,
                     CaptureRequest.EDGE_MODE_FAST)
+                // FIX: en video, TONEMAP_FAST evita drops de FPS en 4K/60
+                b.set(CaptureRequest.TONEMAP_MODE,
+                    CaptureRequest.TONEMAP_MODE_FAST)
             } else {
                 b.set(CaptureRequest.NOISE_REDUCTION_MODE,
                     CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
                 b.set(CaptureRequest.EDGE_MODE,
                     CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+                b.set(CaptureRequest.TONEMAP_MODE,
+                    CaptureRequest.TONEMAP_MODE_HIGH_QUALITY)
             }
-            b.set(CaptureRequest.TONEMAP_MODE,
-                CaptureRequest.TONEMAP_MODE_HIGH_QUALITY)
             b.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
                 CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
-            // VSTAB de Camera2 estándar (complementa al OIS samsung)
+            // VSTAB de Camera2 estándar
             b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                 if (mode == "VIDEO")
                     CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
@@ -57,6 +56,22 @@ object CameraTuning {
         try { b.set(CaptureRequest.JPEG_QUALITY, 97) } catch (_: Throwable) {}
     }
 
+    /**
+     * Orientación EXIF de la foto. El device se asume portrait (la activity
+     * está locked a portrait).
+     */
+    fun applyJpegOrientation(b: CaptureRequest.Builder, sensorOrientation: Int, isFront: Boolean) {
+        try {
+            val deviceRotation = 0 // portrait fijo
+            val jpegOrientation = if (isFront) {
+                (sensorOrientation + deviceRotation) % 360
+            } else {
+                (sensorOrientation - deviceRotation + 360) % 360
+            }
+            b.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
+        } catch (_: Throwable) {}
+    }
+
     fun supportsHevcEncoder(): Boolean {
         return try {
             val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
@@ -66,7 +81,6 @@ object CameraTuning {
         } catch (_: Throwable) { false }
     }
 
-    /** Codec preferido considerando soporte real del dispositivo. */
     fun preferredEncoder(allowHevc: Boolean): Int {
         return if (allowHevc && supportsHevcEncoder())
             MediaRecorder.VideoEncoder.HEVC
@@ -80,11 +94,36 @@ object CameraTuning {
         else
             VideoBitrateCalculator.Codec.H264
 
-    /**
-     * Detecta si el sensor activo soporta `LOGICAL_MULTI_CAMERA` (zoom continuo)
-     * — pista útil para el Snapdragon 888 (Galaxy S21 FE tiene la cámara
-     * trasera principal como lógica multi-cámara).
-     */
+    /** Profile para setVideoEncodingProfileLevel(). */
+    fun preferredProfile(allowHevc: Boolean): Int {
+        return if (allowHevc && supportsHevcEncoder()) {
+            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+        } else {
+            // High elimina lag del Baseline en algunos Samsung
+            MediaCodecInfo.CodecProfileLevel.AVCProfileHigh
+        }
+    }
+
+    /** Level adecuado según resolución/fps. */
+    fun preferredLevel(res: VideoResolution, fps: Int, allowHevc: Boolean): Int {
+        if (allowHevc && supportsHevcEncoder()) {
+            return when {
+                res == VideoResolution.UHD && fps >= 60 -> MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel52
+                res == VideoResolution.UHD -> MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel51
+                res == VideoResolution.FHD && fps >= 60 -> MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel42
+                res == VideoResolution.FHD -> MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel4
+                else -> MediaCodecInfo.CodecProfileLevel.HEVCMainTierLevel31
+            }
+        }
+        return when {
+            res == VideoResolution.UHD && fps >= 60 -> MediaCodecInfo.CodecProfileLevel.AVCLevel52
+            res == VideoResolution.UHD -> MediaCodecInfo.CodecProfileLevel.AVCLevel51
+            res == VideoResolution.FHD && fps >= 60 -> MediaCodecInfo.CodecProfileLevel.AVCLevel42
+            res == VideoResolution.FHD -> MediaCodecInfo.CodecProfileLevel.AVCLevel4
+            else -> MediaCodecInfo.CodecProfileLevel.AVCLevel31
+        }
+    }
+
     fun isLogicalMultiCamera(ch: CameraCharacteristics?): Boolean {
         ch ?: return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
