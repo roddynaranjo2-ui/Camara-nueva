@@ -54,6 +54,8 @@ fun CameraPreview(
         label = "preview_aspect"
     )
 
+    // FIX ①: activeSurface se guarda como referencia estable para que el
+    // LifecycleObserver siempre use la superficie actual (no un snapshot viejo).
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
     DisposableEffect(lifecycleOwner) {
@@ -61,7 +63,10 @@ fun CameraPreview(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     val surface = activeSurface
-                    if (surface != null && surface.isValid) {
+                    // FIX ①: Solo iniciamos si la cámara no está ya corriendo
+                    // y la surface es válida. Evita el doble-start que causaba
+                    // pantalla negra al volver de background.
+                    if (surface != null && surface.isValid && !viewModel.isCameraRunning()) {
                         viewModel.startCameraSession(
                             context = context,
                             surface = surface,
@@ -106,18 +111,21 @@ fun CameraPreview(
                 factory = { ctx ->
                     SurfaceView(ctx).apply {
                         setZOrderOnTop(false)
-
                         holder.setKeepScreenOn(true)
 
                         holder.addCallback(object : SurfaceHolder.Callback {
 
                             override fun surfaceCreated(holder: SurfaceHolder) {
-                                activeSurface = holder.surface
-
-                                if (holder.surface.isValid) {
+                                val surface = holder.surface
+                                activeSurface = surface
+                                // FIX ①: surfaceCreated es el único lugar donde
+                                // iniciamos la cámara desde el callback de Surface.
+                                // El guard isCameraRunning() evita duplicar el open
+                                // si el LifecycleObserver ya lo arrancó.
+                                if (surface.isValid && !viewModel.isCameraRunning()) {
                                     viewModel.startCameraSession(
-                                        context = context,
-                                        surface = holder.surface,
+                                        context = ctx,
+                                        surface = surface,
                                         lens = latestLens
                                     )
                                 }
@@ -129,6 +137,10 @@ fun CameraPreview(
                                 width: Int,
                                 height: Int
                             ) {
+                                // FIX ①: surfaceChanged puede llegar después de
+                                // surfaceCreated con un nuevo buffer; solo
+                                // actualizamos la referencia, no reiniciamos la
+                                // sesión para evitar flashes de pantalla negra.
                                 activeSurface = holder.surface
                             }
 
@@ -139,8 +151,11 @@ fun CameraPreview(
                         })
                     }
                 },
-                update = {
-                    activeSurface = it.holder.surface
+                update = { view ->
+                    // FIX ①: update se llama en recomposiciones; solo
+                    // actualizamos la referencia sin re-abrir la cámara.
+                    val surface = view.holder.surface
+                    activeSurface = surface
                 }
             )
         }
