@@ -11,13 +11,8 @@ import android.util.Range
 import android.util.Size
 
 /**
- * CameraTuning v2 — perfil de Image-Quality + Codec helpers + FPS hardening.
- *
- * Mejoras vs v1:
- *  • bestFpsRange ahora es DEFINITIVAMENTE robusto (fix 60fps).
- *  • pickOptimalRecordingSize → escoge el size que coincide con el aspect ratio
- *    del recording target sin superar la resolución pedida (donante: Google Camera2Video).
- *  • supportsHighFps consulta el sensor antes de comprometerse a 60.
+ * CameraTuning v2.1 — perfil de Image-Quality + Codec helpers + FPS hardening
+ *  + orientación EXIF dinámica.
  */
 object CameraTuning {
 
@@ -51,13 +46,36 @@ object CameraTuning {
         try { b.set(CaptureRequest.JPEG_QUALITY, 97) } catch (_: Throwable) {}
     }
 
+    /**
+     * Backward-compat: si no se pasa rotation, asume 0 (mantengo firma por compatibilidad).
+     * Recomendado: usar applyJpegOrientationDynamic().
+     */
     fun applyJpegOrientation(b: CaptureRequest.Builder, sensorOrientation: Int, isFront: Boolean) {
+        applyJpegOrientationDynamic(b, sensorOrientation, isFront, 0)
+    }
+
+    /**
+     * FIX A8: orientación EXIF DINÁMICA — usa la rotación real del display.
+     * En CameraControlViewModel guardamos `deviceDisplayRotation` y MainActivity
+     * lo alimenta vía `notifyDeviceRotation()`.
+     *
+     * Tabla de display rotations (Android):
+     *   Surface.ROTATION_0   → 0°
+     *   Surface.ROTATION_90  → 90°
+     *   Surface.ROTATION_180 → 180°
+     *   Surface.ROTATION_270 → 270°
+     */
+    fun applyJpegOrientationDynamic(
+        b: CaptureRequest.Builder,
+        sensorOrientation: Int,
+        isFront: Boolean,
+        deviceRotationDeg: Int
+    ) {
         try {
-            val deviceRotation = 0
             val jpegOrientation = if (isFront) {
-                (sensorOrientation + deviceRotation) % 360
+                (sensorOrientation + deviceRotationDeg) % 360
             } else {
-                (sensorOrientation - deviceRotation + 360) % 360
+                (sensorOrientation - deviceRotationDeg + 360) % 360
             }
             b.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
         } catch (_: Throwable) {}
@@ -121,50 +139,19 @@ object CameraTuning {
         }
     }
 
-    /**
-     * ▼ FIX 60 FPS DEFINITIVO ▼
-     *
-     * Estrategia (orden de prioridad):
-     *   1. Rango EXACTO [fps,fps] → óptimo (HAL bloqueado a fps fijo).
-     *   2. Rango [fps, fps] dentro de los reported → fallback exacto.
-     *   3. Rango con upper==fps y lower lo más alto posible → fps fijo virtual.
-     *   4. Rango variable que cubre fps en su parte alta.
-     *   5. Último recurso: rango con mayor upper (puede ser < fps → graceful degradation).
-     *
-     * El donante Google Camera2Video usa `Range(fps,fps)` directamente: lo replico
-     * cuando es factible y caigo a variables sólo si no hay otro modo.
-     */
     fun bestFpsRange(ranges: Array<Range<Int>>, fps: Int): Range<Int> {
         if (ranges.isEmpty()) return Range(fps, fps)
-
-        // 1) Rango fijo exacto
         ranges.firstOrNull { it.lower == fps && it.upper == fps }?.let { return it }
-
-        // 2) Upper == fps con lower lo más alto posible (preferimos casi-fijo)
-        ranges.filter { it.upper == fps }
-            .maxByOrNull { it.lower }
-            ?.let { return it }
-
-        // 3) Rangos que CUBREN fps (lower<=fps<=upper); preferimos el más estrecho
+        ranges.filter { it.upper == fps }.maxByOrNull { it.lower }?.let { return it }
         ranges.filter { it.lower <= fps && it.upper >= fps }
-            .minByOrNull { it.upper - it.lower }
-            ?.let { return it }
-
-        // 4) Rango con upper >= fps; minimiza la diferencia con fps
+            .minByOrNull { it.upper - it.lower }?.let { return it }
         ranges.filter { it.upper >= fps }
-            .minByOrNull { kotlin.math.abs(it.upper - fps) }
-            ?.let { return it }
-
-        // 5) Sin opción → mayor upper disponible (warning)
+            .minByOrNull { kotlin.math.abs(it.upper - fps) }?.let { return it }
         val fallback = ranges.maxByOrNull { it.upper } ?: Range(fps, fps)
         Log.w(TAG, "bestFpsRange: no fps=$fps disponible. Usando $fallback")
         return fallback
     }
 
-    /**
-     * ▼ NUEVO ▼  Indica si el dispositivo puede REALMENTE alcanzar el fps pedido
-     * en la resolución solicitada.
-     */
     fun supportsFpsAtResolution(
         characteristics: CameraCharacteristics?,
         res: VideoResolution,
@@ -172,28 +159,21 @@ object CameraTuning {
     ): Boolean {
         val map = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return false
-        // Para 60 fps en 4K hace falta CONSTRAINED_HIGH_SPEED o un sensor full-speed.
-        val durations = map.getOutputMinFrameDuration(android.media.MediaRecorder::class.java,
+        val durations = map.getOutputMinFrameDuration(MediaRecorder::class.java,
             Size(res.width, res.height))
         if (durations <= 0L) return false
         val maxFps = (1_000_000_000.0 / durations).toInt()
-        return maxFps + 2 >= fps  // margen 2fps de tolerancia
+        return maxFps + 2 >= fps
     }
 
-    /**
-     * ▼ NUEVO ▼  Selección inteligente de la mejor resolución de grabación.
-     * (extracción del patrón de chooseOptimalSize en Camera2Video — Google)
-     */
     fun pickOptimalRecordingSize(
         characteristics: CameraCharacteristics?,
         target: VideoResolution
     ): Size {
         val map = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return Size(target.width, target.height)
-        val sizes = map.getOutputSizes(android.media.MediaRecorder::class.java) ?: return Size(target.width, target.height)
-        // Coincidencia exacta primero
+        val sizes = map.getOutputSizes(MediaRecorder::class.java) ?: return Size(target.width, target.height)
         sizes.firstOrNull { it.width == target.width && it.height == target.height }?.let { return it }
-        // El más cercano por área sin pasarse
         val targetArea = target.width.toLong() * target.height
         return sizes
             .filter { it.width.toLong() * it.height <= targetArea }
