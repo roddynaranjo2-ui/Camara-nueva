@@ -13,9 +13,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
-import android.media.CamcorderProfile
 import android.media.ImageReader
-import android.media.MediaCodecInfo
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -78,6 +76,8 @@ class CameraControlViewModel : ViewModel() {
         const val MAX_DIGITAL_ZOOM = 30f
         // Punto en que conmutamos de CROP-only → CROP + upscale GPU.
         const val HYBRID_ZOOM_THRESHOLD = 10f
+        // Mínimo zoom que la UI permite (ultra-wide simulada).
+        const val MIN_ZOOM = 0.5f
 
         @Volatile
         private var nativeLibLoaded = false
@@ -213,6 +213,7 @@ class CameraControlViewModel : ViewModel() {
     private var maxHwZoom: Float = 1f
     private var currentOpticalBaseZoom: Float = 1f
     private var supportedFpsRanges: Array<Range<Int>> = emptyArray()
+    private var supportsVideoStabilization: Boolean = false
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -223,6 +224,9 @@ class CameraControlViewModel : ViewModel() {
     private var cameraRunning = false
 
     fun isCameraRunning(): Boolean = cameraRunning
+
+    fun getZoomMaxValue(): Float = _zoomMax.value
+    fun getZoomMinValue(): Float = MIN_ZOOM
 
     // ─── Ciclo de vida principal ──────────────────────────────────────────────
 
@@ -254,6 +258,13 @@ class CameraControlViewModel : ViewModel() {
                 ?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
             supportedFpsRanges = currentCharacteristics
                 ?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
+
+            // FIX: detectar si VSTAB está realmente soportado para no forzarla en HALs que la fingen
+            val vstabModes = currentCharacteristics
+                ?.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: IntArray(0)
+            supportsVideoStabilization = vstabModes.any {
+                it == CameraCharacteristics.CONTROL_VIDEO_STABILIZATION_MODE_ON
+            }
 
             // FIX: zoom máximo dinámico clamped al tope 30x global.
             val hwBased = maxHwZoom * currentOpticalBaseZoom
@@ -406,6 +417,7 @@ class CameraControlViewModel : ViewModel() {
         val previous = _cameraMode.value
         _cameraMode.value = mode
         if (_manualAspect.value == null) {
+            // FIX: Foto = 3:4 (vertical), Video = 9:16 (vertical 16:9 tradicional)
             _previewAspectRatio.value = if (mode == "VIDEO") 9f / 16f else 3f / 4f
         }
         // Si cambia entre modos, re-aplicar repeating para tomar el modo correcto de AE/AF
@@ -457,7 +469,18 @@ class CameraControlViewModel : ViewModel() {
 
     /** Zoom continuo: respeta el clamp dinámico (hasta 30x). */
     fun setZoom(ratio: Float) {
-        val clamped = ratio.coerceIn(0.5f, _zoomMax.value)
+        val clamped = ratio.coerceIn(MIN_ZOOM, _zoomMax.value)
+        _zoomLevel.value = clamped
+        applyRepeatingPreview()
+    }
+
+    /**
+     * NUEVO: Zoom continuo optimizado para slider/pinch.
+     * No re-arma toda la sesión, solo actualiza repeating request.
+     */
+    fun setZoomContinuous(ratio: Float) {
+        val clamped = ratio.coerceIn(MIN_ZOOM, _zoomMax.value)
+        if (abs(clamped - _zoomLevel.value) < 0.01f) return
         _zoomLevel.value = clamped
         applyRepeatingPreview()
     }
@@ -525,7 +548,8 @@ class CameraControlViewModel : ViewModel() {
 
             val sx = (finalX * area.width()).toInt().coerceIn(0, area.width() - 1)
             val sy = (ry * area.height()).toInt().coerceIn(0, area.height() - 1)
-            val half = (min(area.width(), area.height()) * 0.06f).toInt().coerceAtLeast(120)
+            // Tamaño de la zona de medición un poco más pequeño = enfoque más preciso
+            val half = (min(area.width(), area.height()) * 0.05f).toInt().coerceAtLeast(100)
             val rect = Rect(
                 (sx - half).coerceAtLeast(0),
                 (sy - half).coerceAtLeast(0),
@@ -540,15 +564,17 @@ class CameraControlViewModel : ViewModel() {
 
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { builder.addTarget(it) }
+            applyCommon(builder)
+            // OVERRIDE: estos van DESPUÉS de applyCommon para no ser sobrescritos
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(metering))
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(metering))
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                 CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
-            applyCommon(builder)
 
             session.capture(builder.build(), null, cameraHandler)
+            // Después del trigger, restablecer repeating con AF continuo
             applyRepeatingPreview()
         } catch (e: Exception) {
             Log.w(TAG, "tapToFocus error", e)
@@ -602,13 +628,14 @@ class CameraControlViewModel : ViewModel() {
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(targetSurface)
                 applyCommon(builder)
-                CameraTuning.applyImageQuality(builder, "FOTO")
+                CameraTuning.applyImageQuality(builder, "FOTO", supportsVideoStabilization)
                 CameraTuning.applyJpegQuality(builder)
                 CameraTuning.applyJpegOrientation(builder, sensorOrientation, _isFrontCamera.value)
                 SamsungVendorTags.applyCaptureSnapshotHint(builder)
                 SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
                 SamsungVendorTags.applyProTone(builder, _hdrEnabled.value)
 
+                // FIX FLASH: estos overrides van DESPUÉS de applyCommon
                 when (_flashMode.value) {
                     FlashMode.ON -> {
                         builder.set(CaptureRequest.CONTROL_AE_MODE,
@@ -643,7 +670,10 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /** Lanza pre-capture trigger y espera hasta que AE converja (max 800 ms). */
+    /**
+     * FIX FLASH: Lanza pre-capture trigger y espera hasta que AE converja (max 1500 ms).
+     * NO llama a applyCommon ni sobrescribe AE_MODE — eso rompía la convergencia con flash.
+     */
     private suspend fun runPrecaptureAndAwait(
         device: CameraDevice,
         session: CameraCaptureSession
@@ -651,15 +681,44 @@ class CameraControlViewModel : ViewModel() {
         try {
             val precaptureBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { precaptureBuilder.addTarget(it) }
-            applyCommon(precaptureBuilder)
+
+            // Configuración mínima coherente con el modo de flash deseado.
+            // No usamos applyCommon porque sobrescribe CONTROL_AE_MODE y mata la convergencia.
+            precaptureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            precaptureBuilder.set(
+                CaptureRequest.CONTROL_AF_MODE,
+                if (_cameraMode.value == "VIDEO")
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                else
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+            )
+            precaptureBuilder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+
+            // FIX clave: AE_MODE acorde al flash deseado (esto faltaba)
+            when (_flashMode.value) {
+                FlashMode.ON -> precaptureBuilder.set(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+                )
+                FlashMode.AUTO -> precaptureBuilder.set(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
+                )
+                FlashMode.OFF -> precaptureBuilder.set(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON
+                )
+            }
+
             precaptureBuilder.set(
                 CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                 CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
             )
-            // Esperamos a CONVERGED o timeout
+
+            // Esperamos a CONVERGED o timeout (1.5s — flash AUTO necesita más tiempo)
             suspendCancellableCoroutine<Unit> { cont ->
                 var resolved = false
-                val deadline = System.currentTimeMillis() + 800L
+                val deadline = System.currentTimeMillis() + 1500L
                 val callback = object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
                         s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
@@ -771,7 +830,7 @@ class CameraControlViewModel : ViewModel() {
                     builder.addTarget(preview)
                     builder.addTarget(recording)
                     applyCommon(builder)
-                    CameraTuning.applyImageQuality(builder, "VIDEO")
+                    CameraTuning.applyImageQuality(builder, "VIDEO", supportsVideoStabilization)
                     SamsungVendorTags.applyBase(builder, "VIDEO", isRecording = true)
                     SamsungVendorTags.applyRecordingFps(builder, fps)
                     SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
@@ -784,24 +843,63 @@ class CameraControlViewModel : ViewModel() {
                     // TORCH durante grabación si el usuario tiene flash ON o AUTO con baja luz.
                     applyFlashForRecording(builder)
 
-                    configured.setRepeatingRequest(builder.build(), null, cameraHandler)
-
-                    // FIX: dejar que la cámara llene la cola del encoder con 2-3 frames
-                    // antes de arrancar el recorder para evitar drops iniciales.
-                    delay(120)
-
-                    recorder.start()
+                    // FIX VIDEO LAG: Esperar a que la pipeline esté caliente (primer onCaptureCompleted)
+                    // antes de arrancar el recorder. Esto elimina los drops iniciales que causaban
+                    // 6 fps efectivos en la mayoría de dispositivos.
+                    waitFirstFrameThenStart(configured, builder.build(), recorder)
                     _isRecording.value = true
 
                 } catch (e: Exception) {
                     Log.e(TAG, "startVideoRecording fallo", e)
                     try { safeStopMediaRecorder() } catch (_: Throwable) {}
+                    try { videoPfd?.close() } catch (_: Throwable) {}
+                    videoPfd = null
+                    videoUri = null
                     // Restaurar preview en caso de error
                     val dev = cameraDevice
                     if (dev != null) createPreviewSessionSuspending(dev)
                 }
             }
         }
+    }
+
+    /**
+     * NUEVO — Warm-up del pipeline: arranca repeating, espera primer frame, luego recorder.start().
+     * Esto evita los frames-drop iniciales que provocaban grabación a 6 FPS en muchos dispositivos.
+     */
+    private suspend fun waitFirstFrameThenStart(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        recorder: MediaRecorder
+    ) {
+        suspendCancellableCoroutine<Unit> { cont ->
+            var armed = false
+            val cb = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
+                ) {
+                    if (armed) return
+                    armed = true
+                    try {
+                        recorder.start()
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "recorder.start() falló dentro del warm-up", e)
+                    }
+                    if (cont.isActive) cont.resume(Unit)
+                }
+            }
+            try {
+                session.setRepeatingRequest(request, cb, cameraHandler)
+            } catch (e: Exception) {
+                Log.e(TAG, "setRepeatingRequest (record warmup) error", e)
+                // Fallback: arrancar directo
+                try { recorder.start() } catch (_: Throwable) {}
+                if (cont.isActive) cont.resume(Unit)
+            }
+            cont.invokeOnCancellation { armed = true }
+        }
+        // Pequeño extra para que el encoder llene su cola
+        delay(40)
     }
 
     fun stopVideoRecording(context: Context, storage: MediaStorageManager) {
@@ -812,9 +910,14 @@ class CameraControlViewModel : ViewModel() {
                     delay(80)
                     safeStopMediaRecorder()
                     _isRecording.value = false
-                    videoUri?.let { storage.finalizeVideo(context, it) }
-                    videoPfd?.close()
+
+                    // FIX RACE: cerrar el FD ANTES de finalize para que el contenedor MP4
+                    // esté completamente flusheado en disco antes de IS_PENDING=0.
+                    try { videoPfd?.close() } catch (_: Throwable) {}
                     videoPfd = null
+
+                    videoUri?.let { storage.finalizeVideo(context, it) }
+                    videoUri = null
 
                     // Cerramos la sesión de record y abrimos preview limpia
                     try { captureSession?.stopRepeating() } catch (_: Throwable) {}
@@ -851,9 +954,9 @@ class CameraControlViewModel : ViewModel() {
         if (ranges.isEmpty()) return Range(fps, fps)
         // Exact match
         ranges.firstOrNull { it.lower == fps && it.upper == fps }?.let { return it }
-        // Upper exactly fps and lower <= fps/2 (mejor para poca luz)
+        // Upper exactly fps y lower lo más alto posible (evita FPS variable bajo)
         ranges.filter { it.upper == fps }
-            .maxByOrNull { it.upper - it.lower }
+            .maxByOrNull { it.lower }
             ?.let { return it }
         // Upper >= fps
         ranges.filter { it.upper >= fps }
@@ -925,7 +1028,7 @@ class CameraControlViewModel : ViewModel() {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
             applyCommon(builder)
-            CameraTuning.applyImageQuality(builder, _cameraMode.value)
+            CameraTuning.applyImageQuality(builder, _cameraMode.value, supportsVideoStabilization)
             SamsungVendorTags.applyBase(builder, _cameraMode.value, _isRecording.value)
             SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
             if (_focusLocked.value) {
@@ -994,16 +1097,21 @@ class CameraControlViewModel : ViewModel() {
         }
 
         // ─── ZOOM (híbrido óptico-base × digital) ───
+        // FIX CRÍTICO 3X: el clamp permite ahora hasta MAX_DIGITAL_ZOOM aunque maxHwZoom=1
         val requestedZoom = _zoomLevel.value
         val sensorZoom = (requestedZoom / currentOpticalBaseZoom)
-            .coerceIn(1f, max(maxHwZoom, MAX_DIGITAL_ZOOM))
+            .coerceIn(1f, MAX_DIGITAL_ZOOM)
 
         if (abs(sensorZoom - 1f) > 0.001f) {
+            // Intentamos primero el vendor tag de Samsung (más eficiente, sin pérdida)
             val applied = SamsungVendorTags.applyZoomRatio(builder, sensorZoom)
             if (!applied) {
+                // Fallback API >=30: SCALER_CROP_REGION estándar
                 sensorArea?.let { area ->
-                    // Para zoom > maxHwZoom, hacemos crop al máximo y dejamos que el GPU haga el resto
-                    val effective = sensorZoom.coerceAtMost(max(maxHwZoom, 1f))
+                    // FIX 3X: usar el zoom completo solicitado, no el limitado por maxHwZoom.
+                    // Esto permite crop digital de hasta 30x sobre la lente principal cuando
+                    // no hay tele física, en lugar de quedarse en el límite del HW.
+                    val effective = sensorZoom.coerceIn(1f, MAX_DIGITAL_ZOOM)
                     val newW = (area.width() / effective).toInt().coerceAtLeast(1)
                     val newH = (area.height() / effective).toInt().coerceAtLeast(1)
                     val left = (area.width() - newW) / 2 + area.left
@@ -1086,9 +1194,8 @@ class CameraControlViewModel : ViewModel() {
                 if (hasDedicatedUltra && ultraPhysical != null) {
                     CameraSelection(ultraPhysical.id, 0.5f)
                 } else {
-                    // FIX: si no hay ultra-wide física, aplicamos un crop expandido vía
-                    // opticalBaseZoom < 1f. Pero como el HAL no permite crop "fuera"
-                    // de sensor, mantenemos 1f y la app simulará 0.5 con crop fallback
+                    // Si no hay ultra-wide física, mantenemos lente principal a 1×.
+                    // (La UI mostrará 0.5× pero no se puede zoom-out por debajo del HW.)
                     CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
                 }
             }
