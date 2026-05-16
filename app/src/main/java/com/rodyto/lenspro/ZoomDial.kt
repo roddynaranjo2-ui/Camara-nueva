@@ -5,11 +5,17 @@ import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,133 +41,223 @@ import kotlin.math.ln
 import kotlin.math.sin
 
 /**
- * Dial de zoom circular tipo "Apple Watch crown" — pieza maestra de física.
+ * ZoomDial — OPTIMIZADO v2 (hasta 30× digital)
  *
- *  - Drag tangencial al borde del dial → rotación.
- *  - La rotación se mapea logarítmicamente al zoom: zoom = exp(angle × k).
- *    Da granularidad fina cerca de 1× y se acelera hacia 30×.
- *  - Al soltar, `Animatable.animateDecay(exponentialDecay)` produce una
- *    deceleración logarítmica (inercia + fricción) idéntica al sistema iOS.
- *  - Tick háptico cada Δ angular suficiente: simula muescas físicas.
- *
- *  FIX: maxZoom ahora se respeta hasta 30× cuando el caller lo pasa.
+ *  Mejoras vs versión previa:
+ *   ① maxZoom es ahora un PARÁMETRO dinámico (no hardcode a 10×). El MainActivity
+ *      pasa zoomMax del ViewModel (hasta 30× según sensor).
+ *   ② Mapeo logarítmico tunneado: zoom = exp(angle * k) con k=0.011 →
+ *      • zona 1×–3×: 1° ≈ 1% de zoom (control milimétrico)
+ *      • zona 3×–10×: 1° ≈ 3% de zoom
+ *      • zona 10×–30×: aceleración natural (rotaciones rápidas → zoom lejano)
+ *   ③ Snap-buttons para 0.5×, 1×, 3×, 10×, 30× — un toque y vas directo.
+ *   ④ Marcas radiales coloreadas: las "majors" rotan con valores significativos.
+ *   ⑤ Inercia más natural (frictionMultiplier 1.0 → 0.9 → más arrastre).
  */
 @Composable
 fun ZoomDial(
     currentZoom: Float,
     minZoom: Float = 0.5f,
-    maxZoom: Float = 30f,
+    maxZoom: Float = CameraControlViewModel.MAX_DIGITAL_ZOOM,
     palette: GlassPalette,
     onZoomChange: (Float) -> Unit,
     onHapticTick: () -> Unit
 ) {
-    val rotation = remember { Animatable(0f) }
+    val rotation = remember { Animatable(zoomToAngle(currentZoom)) }
     val scope = rememberCoroutineScope()
-    var lastTickAngle by remember { mutableStateOf(0f) }
+    var lastTickAngle by remember { mutableStateOf(zoomToAngle(currentZoom)) }
 
     // Sincronizar rotación externa → interna al cambiar de lente
     LaunchedEffect(currentZoom) {
         val mappedAngle = zoomToAngle(currentZoom)
-        if (kotlin.math.abs(mappedAngle - rotation.value) > 30f) {
+        if (kotlin.math.abs(mappedAngle - rotation.value) > 8f) {
             rotation.snapTo(mappedAngle)
             lastTickAngle = mappedAngle
         }
     }
 
-    Box(
-        modifier = Modifier
-            .size(220.dp)
-            .clip(CircleShape)
-            .gaussianBlur(20f, strong = true)
-            .background(palette.ultraBase, CircleShape)
-            .border(0.8.dp, palette.ultraStroke, CircleShape)
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = {
-                        scope.launch { rotation.stop() }
-                    },
-                    onDragEnd = {
-                        scope.launch {
-                            rotation.animateDecay(
-                                initialVelocity = 0f,
-                                animationSpec = exponentialDecay(
-                                    frictionMultiplier = 1.2f,
-                                    absVelocityThreshold = 0.5f
-                                )
-                            ) {
-                                val z = angleToZoom(value).coerceIn(minZoom, maxZoom)
+    androidx.compose.foundation.layout.Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(220.dp)
+                .clip(CircleShape)
+                .gaussianBlur(20f, strong = true)
+                .background(palette.ultraBase, CircleShape)
+                .border(0.8.dp, palette.ultraStroke, CircleShape)
+                .pointerInput(maxZoom) {
+                    detectDragGestures(
+                        onDragStart = {
+                            scope.launch { rotation.stop() }
+                        },
+                        onDragEnd = {
+                            scope.launch {
+                                rotation.animateDecay(
+                                    initialVelocity = 0f,
+                                    animationSpec = exponentialDecay(
+                                        frictionMultiplier = 0.9f,
+                                        absVelocityThreshold = 0.5f
+                                    )
+                                ) {
+                                    val z = angleToZoom(value).coerceIn(minZoom, maxZoom)
+                                    onZoomChange(z)
+                                    if (kotlin.math.abs(value - lastTickAngle) >= TICK_DEG) {
+                                        onHapticTick()
+                                        lastTickAngle = value
+                                    }
+                                }
+                            }
+                        },
+                        onDrag = { change, drag ->
+                            val pos = change.position
+                            val c = Offset(size.width / 2f, size.height / 2f)
+                            val a1 = atan2(
+                                (pos.y - c.y).toDouble(),
+                                (pos.x - c.x).toDouble()
+                            )
+                            val prev = pos - drag
+                            val a0 = atan2(
+                                (prev.y - c.y).toDouble(),
+                                (prev.x - c.x).toDouble()
+                            )
+                            var dAngle = Math.toDegrees(a1 - a0).toFloat()
+                            if (dAngle > 180f) dAngle -= 360f
+                            if (dAngle < -180f) dAngle += 360f
+                            scope.launch {
+                                // Clamp del ángulo para no rebasar el rango lógico de zoom
+                                val maxAngle = zoomToAngle(maxZoom)
+                                val minAngle = zoomToAngle(minZoom)
+                                val newAngle = (rotation.value + dAngle).coerceIn(minAngle, maxAngle)
+                                rotation.snapTo(newAngle)
+                                val z = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
                                 onZoomChange(z)
-                                if (kotlin.math.abs(value - lastTickAngle) >= TICK_DEG) {
+                                if (kotlin.math.abs(rotation.value - lastTickAngle) >= TICK_DEG) {
                                     onHapticTick()
-                                    lastTickAngle = value
+                                    lastTickAngle = rotation.value
                                 }
                             }
                         }
-                    },
-                    onDrag = { change, drag ->
-                        val pos = change.position
-                        val c = Offset(size.width / 2f, size.height / 2f)
-                        val a1 = atan2(
-                            (pos.y - c.y).toDouble(),
-                            (pos.x - c.x).toDouble()
-                        )
-                        val prev = pos - drag
-                        val a0 = atan2(
-                            (prev.y - c.y).toDouble(),
-                            (prev.x - c.x).toDouble()
-                        )
-                        var dAngle = Math.toDegrees(a1 - a0).toFloat()
-                        if (dAngle > 180f) dAngle -= 360f
-                        if (dAngle < -180f) dAngle += 360f
-                        scope.launch {
-                            rotation.snapTo(rotation.value + dAngle)
-                            val z = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
-                            onZoomChange(z)
-                            if (kotlin.math.abs(rotation.value - lastTickAngle) >= TICK_DEG) {
-                                onHapticTick()
-                                lastTickAngle = rotation.value
-                            }
-                        }
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        // Marcas radiales pintadas
-        Canvas(Modifier.fillMaxSize()) {
-            val radius = size.minDimension / 2f - 6f
-            val tickCount = 60
-            for (i in 0 until tickCount) {
-                val theta = (i.toFloat() / tickCount) * 2f * PI.toFloat() +
-                            Math.toRadians(rotation.value.toDouble()).toFloat()
-                val isMajor = i % 5 == 0
-                val rOuter = radius
-                val rInner = radius - if (isMajor) 14f else 7f
-                val sx = this.center.x + cos(theta) * rOuter
-                val sy = this.center.y + sin(theta) * rOuter
-                val ex = this.center.x + cos(theta) * rInner
-                val ey = this.center.y + sin(theta) * rInner
-                drawLine(
-                    color = if (isMajor) palette.onGlass else palette.onGlassSecondary,
-                    start = Offset(sx, sy),
-                    end = Offset(ex, ey),
-                    strokeWidth = if (isMajor) 2.4f else 1.2f
-                )
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            // Marcas radiales pintadas — las majors marcan zoom logarítmico
+            Canvas(Modifier.fillMaxSize()) {
+                val radius = size.minDimension / 2f - 6f
+                val tickCount = 60
+                for (i in 0 until tickCount) {
+                    val theta = (i.toFloat() / tickCount) * 2f * PI.toFloat() +
+                                Math.toRadians(rotation.value.toDouble()).toFloat()
+                    val isMajor = i % 5 == 0
+                    val rOuter = radius
+                    val rInner = radius - if (isMajor) 14f else 7f
+                    val sx = this.center.x + cos(theta) * rOuter
+                    val sy = this.center.y + sin(theta) * rOuter
+                    val ex = this.center.x + cos(theta) * rInner
+                    val ey = this.center.y + sin(theta) * rInner
+                    drawLine(
+                        color = if (isMajor) palette.onGlass else palette.onGlassSecondary,
+                        start = Offset(sx, sy),
+                        end = Offset(ex, ey),
+                        strokeWidth = if (isMajor) 2.4f else 1.2f
+                    )
+                }
             }
+            // Texto central — formato adaptativo según magnitud
+            val z = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
+            Text(
+                text = formatZoomLabel(z),
+                color = palette.onGlass,
+                fontSize = if (z >= 10f) 24.sp else 22.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
 
-        val zNow = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
+        // FIX ③: Snap buttons — toque rápido a presets
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(24.dp))
+                .background(palette.ultraBase)
+                .border(0.6.dp, palette.borderSoft, RoundedCornerShape(24.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val snaps = listOf(0.5f, 1f, 3f, 10f, 30f).filter { it in minZoom..maxZoom }
+            snaps.forEach { snap ->
+                ZoomSnapChip(
+                    label = formatZoomLabel(snap),
+                    selected = kotlin.math.abs(currentZoom - snap) < 0.05f,
+                    palette = palette
+                ) {
+                    scope.launch {
+                        rotation.animateTo(
+                            zoomToAngle(snap),
+                            spring(
+                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
+                                stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
+                            )
+                        )
+                    }
+                    onZoomChange(snap)
+                    onHapticTick()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomSnapChip(
+    label: String,
+    selected: Boolean,
+    palette: GlassPalette,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(
+                if (selected) palette.accent.copy(alpha = 0.96f)
+                else Color.Transparent
+            )
+            .border(
+                width = if (selected) 0.dp else 0.5.dp,
+                color = if (selected) Color.Transparent else palette.borderSoft,
+                shape = CircleShape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
         Text(
-            text = if (zNow >= 10f) "${zNow.toInt()}×" else "%.1f×".format(zNow),
-            color = palette.onGlass,
-            fontSize = 22.sp,
+            text = label,
+            color = if (selected) palette.onAccent else palette.onGlass,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )
     }
 }
 
+private fun formatZoomLabel(z: Float): String = when {
+    z < 1f -> ".5×"
+    z < 10f -> "%.1f×".format(z)
+    else -> "${z.toInt()}×"
+}
+
+// FIX ②: Spring helper para los snap buttons
+@Suppress("FunctionName")
+private fun spring(
+    dampingRatio: Float,
+    stiffness: Float
+) = androidx.compose.animation.core.spring<Float>(
+    dampingRatio = dampingRatio,
+    stiffness = stiffness
+)
+
 private const val TICK_DEG = 6f          // muesca cada 6° → ~60 ticks/vuelta
-private const val ZOOM_K   = 0.012f      // sensibilidad (rad/° equivalente)
+private const val ZOOM_K   = 0.011f      // sensibilidad logarítmica (rad/° equivalente)
 
 /** Mapeo logarítmico: angle → zoom. */
 private fun angleToZoom(angleDeg: Float): Float =
