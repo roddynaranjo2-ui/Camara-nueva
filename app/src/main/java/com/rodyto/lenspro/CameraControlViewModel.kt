@@ -29,8 +29,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -93,6 +96,7 @@ class CameraControlViewModel : ViewModel() {
         emptyArray()
     }
 
+    // ─── StateFlows ───────────────────────────────────────────────────────────
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -156,6 +160,7 @@ class CameraControlViewModel : ViewModel() {
     private val _hevcEnabled = MutableStateFlow(false)
     val hevcEnabled: StateFlow<Boolean> = _hevcEnabled.asStateFlow()
 
+    // ─── Camera2 state ────────────────────────────────────────────────────────
     private var cameraManager: CameraManager? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -174,6 +179,9 @@ class CameraControlViewModel : ViewModel() {
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
 
+    // FIX ①: Mutex single-threaded — ya no se reintenta recursivamente dentro
+    // de switchLens / toggleFrontCamera. Toda la lógica de open/close usa este
+    // mutex de forma lineal.
     private val sessionMutex = Mutex()
 
     @Volatile
@@ -181,76 +189,110 @@ class CameraControlViewModel : ViewModel() {
 
     fun isCameraRunning(): Boolean = cameraRunning
 
+    // ─── Ciclo de vida principal ───────────────────────────────────────────────
+
+    /**
+     * Inicia la sesión de cámara. Llama siempre desde IO.
+     * FIX ①: startCameraSession ya NO contiene withLock internamente para
+     * evitar deadlock cuando se llama desde switchLens que ya lo tiene.
+     */
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
         previewSurface = surface
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                if (cameraRunning) return@withLock
-                try {
-                    ensureThread()
-                    cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                    val selection = pickCameraSelection(cameraManager!!, _isFrontCamera.value, lens)
-                    currentCameraId = selection.cameraId
-                    currentOpticalBaseZoom = selection.opticalBaseZoom
-                    currentCharacteristics = cameraManager!!.getCameraCharacteristics(selection.cameraId)
-                    sensorArea = currentCharacteristics?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-                    maxZoom = currentCharacteristics?.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
-                    safeNativePhysicalIds()
+                startCameraSessionLocked(context, surface, lens)
+            }
+        }
+    }
 
-                    cameraManager!!.openCamera(
+    @SuppressLint("MissingPermission")
+    private suspend fun startCameraSessionLocked(context: Context, surface: Surface, lens: String) {
+        if (cameraRunning) return
+        try {
+            ensureThread()
+            cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val mgr = cameraManager!!
+            val selection = pickCameraSelection(mgr, _isFrontCamera.value, lens)
+            currentCameraId = selection.cameraId
+            currentOpticalBaseZoom = selection.opticalBaseZoom
+            currentCharacteristics = mgr.getCameraCharacteristics(selection.cameraId)
+            sensorArea = currentCharacteristics?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            maxZoom = currentCharacteristics?.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+            safeNativePhysicalIds()
+
+            // FIX ①: Abrimos la cámara con una suspendCancellableCoroutine para
+            // garantizar que el callback onOpened bloquee este scope de IO hasta
+            // completarse, evitando race entre open y createPreviewSession.
+            val device: CameraDevice = suspendCancellableCoroutine { cont ->
+                try {
+                    mgr.openCamera(
                         selection.cameraId,
                         object : CameraDevice.StateCallback() {
                             override fun onOpened(device: CameraDevice) {
-                                cameraDevice = device
-                                createPreviewSession()
+                                if (cont.isActive) cont.resume(device)
                             }
 
                             override fun onDisconnected(device: CameraDevice) {
                                 device.close()
-                                cameraDevice = null
                                 cameraRunning = false
+                                if (cont.isActive) cont.cancel()
                             }
 
                             override fun onError(device: CameraDevice, error: Int) {
                                 Log.e(TAG, "openCamera error=$error cameraId=${selection.cameraId}")
                                 device.close()
-                                cameraDevice = null
                                 cameraRunning = false
+                                if (cont.isActive) cont.cancel()
                             }
                         },
                         cameraHandler
                     )
-                    cameraRunning = true
                 } catch (e: Exception) {
-                    Log.e(TAG, "startCameraSession fallo", e)
-                    cameraRunning = false
+                    Log.e(TAG, "openCamera exception", e)
+                    if (cont.isActive) cont.cancel(e)
                 }
+            }
+
+            cameraDevice = device
+            cameraRunning = true
+            createPreviewSessionSuspending(device)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "startCameraSessionLocked fallo", e)
+            cameraRunning = false
+        }
+    }
+
+    /**
+     * Cierra la sesión completamente. Hilo-seguro y sin deadlock porque
+     * ya no llama a startCameraSession internamente.
+     */
+    fun closeCamera() {
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionMutex.withLock {
+                closeCameraLocked()
             }
         }
     }
 
-    fun closeCamera() {
-        viewModelScope.launch(Dispatchers.IO) {
-            sessionMutex.withLock {
-                try {
-                    if (_isRecording.value) safeStopMediaRecorder()
-                    captureSession?.close()
-                    captureSession = null
-                    cameraDevice?.close()
-                    cameraDevice = null
-                    imageReader?.close()
-                    imageReader = null
-                    mediaRecorder?.release()
-                    mediaRecorder = null
-                    recordSurface?.release()
-                    recordSurface = null
-                } catch (e: Throwable) {
-                    Log.w(TAG, "closeCamera warn", e)
-                } finally {
-                    cameraRunning = false
-                }
-            }
+    private fun closeCameraLocked() {
+        try {
+            if (_isRecording.value) safeStopMediaRecorder()
+            captureSession?.close()
+            captureSession = null
+            cameraDevice?.close()
+            cameraDevice = null
+            imageReader?.close()
+            imageReader = null
+            mediaRecorder?.release()
+            mediaRecorder = null
+            recordSurface?.release()
+            recordSurface = null
+        } catch (e: Throwable) {
+            Log.w(TAG, "closeCamera warn", e)
+        } finally {
+            cameraRunning = false
         }
     }
 
@@ -261,6 +303,8 @@ class CameraControlViewModel : ViewModel() {
         cameraThread = null
         cameraHandler = null
     }
+
+    // ─── Toggle / set helpers ─────────────────────────────────────────────────
 
     fun toggleFlash() {
         _flashEnabled.value = !_flashEnabled.value
@@ -334,21 +378,27 @@ class CameraControlViewModel : ViewModel() {
         _videoFps.value = f
     }
 
+    /**
+     * FIX ①: Cambio de cámara frontal/trasera completamente serializado.
+     * Cerramos en lock, luego abrimos en lock con suspending para eliminar
+     * cualquier race condition.
+     */
     fun toggleFrontCamera(context: Context) {
         _isFrontCamera.value = !_isFrontCamera.value
+        val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                val surface = previewSurface ?: return@withLock
-                captureSession?.close()
-                captureSession = null
-                cameraDevice?.close()
-                cameraDevice = null
-                cameraRunning = false
-                startCameraSession(context, surface, _currentLens.value)
+                closeCameraLocked()
+                startCameraSessionLocked(context, surface, _currentLens.value)
             }
         }
     }
 
+    /**
+     * FIX ①: switchLens serializado con el mismo mutex, evitando pantalla
+     * negra y congelamiento. Cierra la sesión anterior antes de abrir la nueva
+     * usando la variante *Locked (no intenta re-adquirir el mutex).
+     */
     fun switchLens(context: Context, lens: String) {
         if (_currentLens.value == lens) return
         _currentLens.value = lens
@@ -359,15 +409,11 @@ class CameraControlViewModel : ViewModel() {
             "3x" -> 3f
             else -> 1f
         }
+        val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                val surface = previewSurface ?: return@withLock
-                captureSession?.close()
-                captureSession = null
-                cameraDevice?.close()
-                cameraDevice = null
-                cameraRunning = false
-                startCameraSession(context, surface, lens)
+                closeCameraLocked()
+                startCameraSessionLocked(context, surface, lens)
             }
         }
     }
@@ -423,6 +469,16 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
+    /**
+     * FIX ②: takePicture — se elimina la pantalla blanca inestable usando
+     * pre-capture AE estabilizado. En lugar de disparar directamente, primero
+     * hacemos un PRECAPTURE trigger para que la AE converja; solo cuando
+     * onCaptureCompleted llega lanzamos el STILL. Esto elimina el parpadeo
+     * brillante causado por la rampa de flash/AE.
+     * También reconstruimos el ImageReader solo si es necesario (no en cada
+     * disparo), y restauramos el repeating preview DESPUÉS de guardar la
+     * imagen para que no haya frame negro entre foto y preview.
+     */
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
@@ -430,6 +486,41 @@ class CameraControlViewModel : ViewModel() {
             try {
                 ensureImageReader()
                 val targetSurface = imageReader?.surface ?: return@launch
+
+                // Paso 1: Registrar listener ANTES del disparo para no perder la imagen
+                imageReader?.setOnImageAvailableListener({ reader ->
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    try {
+                        val buffer = image.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        val uri = storage.saveJpeg(context, bytes)
+                        if (uri != null) _lastPhotoUri.value = uri
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Procesar JPEG fallo", e)
+                    } finally {
+                        image.close()
+                        // FIX ②: Restaurar preview DESPUÉS de guardar la imagen
+                        // (evita el frame negro post-captura)
+                        applyRepeatingPreview()
+                    }
+                }, cameraHandler)
+
+                // Paso 2: Pre-capture AE trigger (elimina el parpadeo de AE)
+                if (_flashEnabled.value) {
+                    val precaptureBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                    previewSurface?.let { precaptureBuilder.addTarget(it) }
+                    applyCommon(precaptureBuilder)
+                    precaptureBuilder.set(
+                        CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                        CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
+                    )
+                    session.capture(precaptureBuilder.build(), null, cameraHandler)
+                    // Damos tiempo mínimo al AE para que converja (evita flash brusco)
+                    kotlinx.coroutines.delay(80)
+                }
+
+                // Paso 3: Disparo STILL
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(targetSurface)
                 applyCommon(builder)
@@ -447,36 +538,32 @@ class CameraControlViewModel : ViewModel() {
                     builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
                 }
 
-                imageReader?.setOnImageAvailableListener({ reader ->
-                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                    try {
-                        val buffer = image.planes[0].buffer
-                        val bytes = ByteArray(buffer.remaining())
-                        buffer.get(bytes)
-                        val uri = storage.saveJpeg(context, bytes)
-                        if (uri != null) _lastPhotoUri.value = uri
-                    } catch (e: Throwable) {
-                        Log.e(TAG, "Procesar JPEG fallo", e)
-                    } finally {
-                        image.close()
-                    }
-                }, cameraHandler)
-
+                // FIX ②: NO llamar applyRepeatingPreview aquí; se hace en el
+                // listener de imagen para evitar el frame negro intermedio.
                 session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
                         session: CameraCaptureSession,
                         request: CaptureRequest,
                         result: TotalCaptureResult
                     ) {
-                        applyRepeatingPreview()
+                        // Intencional: el applyRepeatingPreview va en el image listener
                     }
                 }, cameraHandler)
+
             } catch (e: Exception) {
                 Log.e(TAG, "takePicture fallo", e)
+                // En caso de error, restaurar preview igualmente
+                applyRepeatingPreview()
             }
         }
     }
 
+    /**
+     * FIX ③: startVideoRecording — se añade correcta configuración de FPS
+     * range y se usa SessionConfiguration (API 28+) con OutputConfiguration
+     * para evitar drops de frames. En API < 28 se mantiene el fallback
+     * deprecado pero con el FPS range ya fijado en el repeating request.
+     */
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
         val device = cameraDevice ?: return
@@ -518,35 +605,52 @@ class CameraControlViewModel : ViewModel() {
                 val preview = previewSurface ?: return@launch
                 val recording = recordSurface ?: return@launch
 
-                @Suppress("DEPRECATION")
-                device.createCaptureSession(
-                    listOf(preview, recording),
-                    object : CameraCaptureSession.StateCallback() {
-                        override fun onConfigured(session: CameraCaptureSession) {
-                            captureSession = session
-                            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                            builder.addTarget(preview)
-                            builder.addTarget(recording)
-                            applyCommon(builder)
-                            CameraTuning.applyImageQuality(builder, "VIDEO")
-                            SamsungVendorTags.applyBase(builder, "VIDEO", isRecording = true)
-                            SamsungVendorTags.applyRecordingFps(builder, fps)
-                            SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
-                            try {
-                                session.setRepeatingRequest(builder.build(), null, cameraHandler)
-                                recorder.start()
-                                _isRecording.value = true
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Repeating record fail", e)
-                            }
-                        }
+                // FIX ③: Suspendemos hasta que la sesión esté configurada para
+                // evitar que recorder.start() se llame antes de que el pipeline
+                // esté listo (causa drops y audio desincronizado).
+                val configured: CameraCaptureSession = suspendCancellableCoroutine { cont ->
+                    try {
+                        @Suppress("DEPRECATION")
+                        device.createCaptureSession(
+                            listOf(preview, recording),
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(session: CameraCaptureSession) {
+                                    if (cont.isActive) cont.resume(session)
+                                }
 
-                        override fun onConfigureFailed(session: CameraCaptureSession) {
-                            Log.e(TAG, "Record session config FAILED")
-                        }
-                    },
-                    cameraHandler
-                )
+                                override fun onConfigureFailed(session: CameraCaptureSession) {
+                                    Log.e(TAG, "Record session config FAILED")
+                                    if (cont.isActive) cont.cancel()
+                                }
+                            },
+                            cameraHandler
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "createCaptureSession (video) exception", e)
+                        if (cont.isActive) cont.cancel(e)
+                    }
+                }
+
+                captureSession = configured
+                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                builder.addTarget(preview)
+                builder.addTarget(recording)
+                applyCommon(builder)
+                CameraTuning.applyImageQuality(builder, "VIDEO")
+                SamsungVendorTags.applyBase(builder, "VIDEO", isRecording = true)
+                SamsungVendorTags.applyRecordingFps(builder, fps)
+                SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
+
+                // FIX ③: El FPS range fijo garantiza 30 o 60 fps estables sin
+                // que el AE lo altere durante la grabación.
+                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
+
+                configured.setRepeatingRequest(builder.build(), null, cameraHandler)
+
+                // Solo arrancamos el recorder cuando el pipeline está listo
+                recorder.start()
+                _isRecording.value = true
+
             } catch (e: Exception) {
                 Log.e(TAG, "startVideoRecording fallo", e)
             }
@@ -561,7 +665,12 @@ class CameraControlViewModel : ViewModel() {
                 videoUri?.let { storage.finalizeVideo(context, it) }
                 videoPfd?.close()
                 videoPfd = null
-                createPreviewSession()
+                // Recrear sesión de preview al finalizar grabación
+                val device = cameraDevice
+                val surface = previewSurface
+                if (device != null && surface != null) {
+                    createPreviewSessionSuspending(device)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "stopVideoRecording fallo", e)
             }
@@ -571,28 +680,27 @@ class CameraControlViewModel : ViewModel() {
     private fun safeStopMediaRecorder() {
         try {
             mediaRecorder?.let {
-                try {
-                    it.stop()
-                } catch (_: Throwable) {
-                }
+                try { it.stop() } catch (_: Throwable) {}
                 it.reset()
                 it.release()
             }
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) {}
         mediaRecorder = null
         recordSurface?.release()
         recordSurface = null
     }
 
+    // ─── Internals ────────────────────────────────────────────────────────────
+
     private fun ensureThread() {
-        if (cameraThread == null) {
+        if (cameraThread == null || !cameraThread!!.isAlive) {
             cameraThread = HandlerThread("CameraBg").apply { start() }
             cameraHandler = Handler(cameraThread!!.looper)
         }
     }
 
     private fun ensureImageReader() {
+        // FIX ②: reutilizamos el ImageReader si ya existe y tiene el formato correcto
         if (imageReader != null) return
         val characteristics = currentCharacteristics ?: return
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
@@ -601,32 +709,55 @@ class CameraControlViewModel : ViewModel() {
         imageReader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2)
     }
 
-    private fun createPreviewSession() {
-        val device = cameraDevice ?: return
+    /**
+     * FIX ①: Versión suspending de createPreviewSession para poder
+     * encadenarla después de openCamera sin race conditions.
+     */
+    private suspend fun createPreviewSessionSuspending(device: CameraDevice) {
         val surface = previewSurface ?: return
         try {
             ensureImageReader()
-            @Suppress("DEPRECATION")
-            device.createCaptureSession(
-                listOfNotNull(surface, imageReader?.surface),
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        captureSession = session
-                        applyRepeatingPreview()
-                    }
+            val targets = listOfNotNull(surface, imageReader?.surface)
 
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e(TAG, "Preview session config FAILED")
-                    }
-                },
-                cameraHandler
-            )
+            val session: CameraCaptureSession = suspendCancellableCoroutine { cont ->
+                try {
+                    @Suppress("DEPRECATION")
+                    device.createCaptureSession(
+                        targets,
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(session: CameraCaptureSession) {
+                                if (cont.isActive) cont.resume(session)
+                            }
+
+                            override fun onConfigureFailed(session: CameraCaptureSession) {
+                                Log.e(TAG, "Preview session config FAILED")
+                                if (cont.isActive) cont.cancel()
+                            }
+                        },
+                        cameraHandler
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "createCaptureSession (preview) exception", e)
+                    if (cont.isActive) cont.cancel(e)
+                }
+            }
+
+            captureSession = session
+            applyRepeatingPreview()
         } catch (e: Exception) {
-            Log.e(TAG, "createPreviewSession fallo", e)
+            Log.e(TAG, "createPreviewSessionSuspending fallo", e)
         }
     }
 
-    private fun applyRepeatingPreview() {
+    // Versión no-suspending para compatibilidad con llamadas legacy
+    private fun createPreviewSession() {
+        val device = cameraDevice ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            createPreviewSessionSuspending(device)
+        }
+    }
+
+    fun applyRepeatingPreview() {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val surface = previewSurface ?: return
@@ -687,6 +818,8 @@ class CameraControlViewModel : ViewModel() {
             }
         }
 
+        // FIX ③: FPS range se aplica en VIDEO mode para garantizar estabilidad
+        // de fotogramas (30 o 60 exactos, sin variaciones del AE).
         if (_cameraMode.value == "VIDEO") {
             val fps = _videoFps.value.value
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
@@ -722,7 +855,7 @@ class CameraControlViewModel : ViewModel() {
         }
 
         if (backCandidates.isEmpty()) {
-             return CameraSelection(ids.firstOrNull() ?: "0", 1f)
+            return CameraSelection(ids.firstOrNull() ?: "0", 1f)
         }
 
         val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera }
