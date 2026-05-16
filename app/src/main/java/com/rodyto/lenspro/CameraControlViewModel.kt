@@ -13,7 +13,6 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
-import android.media.ImageReader
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -26,6 +25,7 @@ import android.view.Surface
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,10 +38,6 @@ import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-
-// ──────────────────────────────────────────────────────────────────────────────
-//  ENUMS PÚBLICOS — sin cambios en API externa.
-// ──────────────────────────────────────────────────────────────────────────────
 
 enum class VideoResolution(val label: String, val width: Int, val height: Int) {
     HD("HD", 1280, 720),
@@ -61,7 +57,6 @@ enum class PreviewAspect(val label: String, val ratio: Float) {
     RATIO_FULL("FULL", 9f / 19.5f)
 }
 
-/** Modo de flash tri-estado (OFF / ON / AUTO) — afecta foto y torch en video. */
 enum class FlashMode(val label: String) {
     OFF("Off"),
     AUTO("Auto"),
@@ -72,16 +67,11 @@ class CameraControlViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "RodytoLensPro"
-        // Tope absoluto de zoom digital total que la app expone.
         const val MAX_DIGITAL_ZOOM = 30f
-        // Punto en que conmutamos de CROP-only → CROP + upscale GPU.
         const val HYBRID_ZOOM_THRESHOLD = 10f
-        // Mínimo zoom que la UI permite (ultra-wide simulada).
         const val MIN_ZOOM = 0.5f
 
-        @Volatile
-        private var nativeLibLoaded = false
-
+        @Volatile private var nativeLibLoaded = false
         init {
             try {
                 System.loadLibrary("rodytolenspro")
@@ -93,17 +83,10 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private data class CameraCandidate(
-        val id: String,
-        val facing: Int,
-        val focal: Float,
-        val isLogicalMultiCamera: Boolean,
-        val sensorArea: Rect?
+        val id: String, val facing: Int, val focal: Float,
+        val isLogicalMultiCamera: Boolean, val sensorArea: Rect?
     )
-
-    private data class CameraSelection(
-        val cameraId: String,
-        val opticalBaseZoom: Float
-    )
+    private data class CameraSelection(val cameraId: String, val opticalBaseZoom: Float)
 
     @Suppress("unused")
     private external fun getPhysicalCameraIdsNative(): Array<String>
@@ -111,11 +94,10 @@ class CameraControlViewModel : ViewModel() {
     private fun safeNativePhysicalIds(): Array<String> = try {
         if (nativeLibLoaded) getPhysicalCameraIdsNative() else emptyArray()
     } catch (e: Throwable) {
-        Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e)
-        emptyArray()
+        Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e); emptyArray()
     }
 
-    // ─── StateFlows ───────────────────────────────────────────────────────────
+    // ─── StateFlows existentes ────────────────────────────────────────────────
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -131,11 +113,9 @@ class CameraControlViewModel : ViewModel() {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
-    /** API legacy (boolean) preservada para retro-compatibilidad. */
     private val _flashEnabled = MutableStateFlow(false)
     val flashEnabled: StateFlow<Boolean> = _flashEnabled.asStateFlow()
 
-    /** Modo de flash extendido (OFF/AUTO/ON). _flashEnabled queda sincronizado. */
     private val _flashMode = MutableStateFlow(FlashMode.OFF)
     val flashMode: StateFlow<FlashMode> = _flashMode.asStateFlow()
 
@@ -148,7 +128,6 @@ class CameraControlViewModel : ViewModel() {
     private val _zoomLevel = MutableStateFlow(1f)
     val zoomLevel: StateFlow<Float> = _zoomLevel.asStateFlow()
 
-    /** Tope dinámico de zoom (calculado a partir del sensor + clamp 30x). */
     private val _zoomMax = MutableStateFlow(10f)
     val zoomMax: StateFlow<Float> = _zoomMax.asStateFlow()
 
@@ -188,19 +167,42 @@ class CameraControlViewModel : ViewModel() {
     private val _hevcEnabled = MutableStateFlow(false)
     val hevcEnabled: StateFlow<Boolean> = _hevcEnabled.asStateFlow()
 
-    /** Foco manual (0f=∞, 1f=cercano). null = automático. */
     private val _manualFocus = MutableStateFlow<Float?>(null)
     val manualFocus: StateFlow<Float?> = _manualFocus.asStateFlow()
 
-    /** Distancia mínima de enfoque del sensor (diópter). */
     private val _minFocusDistance = MutableStateFlow(0f)
     val minFocusDistance: StateFlow<Float> = _minFocusDistance.asStateFlow()
+
+    // ─── NUEVOS StateFlows (v2.0) ─────────────────────────────────────────────
+    private val _histogramEnabled = MutableStateFlow(false)
+    val histogramEnabled: StateFlow<Boolean> = _histogramEnabled.asStateFlow()
+
+    private val _horizonEnabled = MutableStateFlow(false)
+    val horizonEnabled: StateFlow<Boolean> = _horizonEnabled.asStateFlow()
+
+    private val _histogramBins = MutableStateFlow<IntArray?>(null)
+    val histogramBins: StateFlow<IntArray?> = _histogramBins.asStateFlow()
+
+    private val _rawCapture = MutableStateFlow(false)
+    val rawCapture: StateFlow<Boolean> = _rawCapture.asStateFlow()
+
+    private val _smoothZoomEnabled = MutableStateFlow(true)
+    val smoothZoomEnabled: StateFlow<Boolean> = _smoothZoomEnabled.asStateFlow()
+
+    private val _supports60fps = MutableStateFlow(true)
+    val supports60fps: StateFlow<Boolean> = _supports60fps.asStateFlow()
+
+    private val _iso = MutableStateFlow<Int?>(null)        // sensor metadata
+    val iso: StateFlow<Int?> = _iso.asStateFlow()
+
+    private val _shutterSpeedNs = MutableStateFlow<Long?>(null)
+    val shutterSpeedNs: StateFlow<Long?> = _shutterSpeedNs.asStateFlow()
 
     // ─── Camera2 state ────────────────────────────────────────────────────────
     private var cameraManager: CameraManager? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var imageReader: ImageReader? = null
+    private val multiReader = MultiChannelImageReader()
     private var mediaRecorder: MediaRecorder? = null
     private var previewSurface: Surface? = null
     private var recordSurface: Surface? = null
@@ -217,41 +219,32 @@ class CameraControlViewModel : ViewModel() {
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
+    private var bgThread: HandlerThread? = null
+    private var bgHandler: Handler? = null
 
     private val sessionMutex = Mutex()
 
-    @Volatile
-    private var cameraRunning = false
-
+    @Volatile private var cameraRunning = false
     fun isCameraRunning(): Boolean = cameraRunning
 
     fun getZoomMaxValue(): Float = _zoomMax.value
     fun getZoomMinValue(): Float = MIN_ZOOM
 
-    // ─── Preview size hint ────────────────────────────────────────────────────
-    /** Tamaño actual del SurfaceView en píxeles (notificado desde CameraPreview). */
     @Volatile private var previewSurfaceWidth: Int = 0
     @Volatile private var previewSurfaceHeight: Int = 0
-
-    /**
-     * Llamado desde CameraPreview.surfaceChanged() para informar al ViewModel
-     * del tamaño real del buffer de preview. Se usa en tapToFocus y para future
-     * optimizaciones de buffer.
-     */
     fun notifyPreviewSize(width: Int, height: Int) {
-        previewSurfaceWidth = width
-        previewSurfaceHeight = height
+        previewSurfaceWidth = width; previewSurfaceHeight = height
     }
 
-    // ─── Ciclo de vida principal ──────────────────────────────────────────────
+    private var smoothZoomJob: Job? = null
+
+    // ─── Ciclo de vida ────────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
         previewSurface = surface
         viewModelScope.launch(Dispatchers.IO) {
-            sessionMutex.withLock {
-                startCameraSessionLocked(context, surface, lens)
-            }
+            sessionMutex.withLock { startCameraSessionLocked(context, surface, lens) }
         }
     }
 
@@ -259,7 +252,7 @@ class CameraControlViewModel : ViewModel() {
     private suspend fun startCameraSessionLocked(context: Context, surface: Surface, lens: String) {
         if (cameraRunning) return
         try {
-            ensureThread()
+            ensureThreads()
             cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val mgr = cameraManager!!
             val selection = pickCameraSelection(mgr, _isFrontCamera.value, lens)
@@ -274,14 +267,17 @@ class CameraControlViewModel : ViewModel() {
             supportedFpsRanges = currentCharacteristics
                 ?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
 
-            // FIX: detectar si VSTAB está realmente soportado para no forzarla en HALs que la fingen
             val vstabModes = currentCharacteristics
                 ?.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: IntArray(0)
             supportsVideoStabilization = vstabModes.any {
                 it == CameraCharacteristics.CONTROL_VIDEO_STABILIZATION_MODE_ON
             }
 
-            // FIX: zoom máximo dinámico clamped al tope 30x global.
+            // ▼ Validar 60 fps en res actual
+            _supports60fps.value = CameraTuning.supportsFpsAtResolution(
+                currentCharacteristics, _videoResolution.value, 60
+            )
+
             val hwBased = maxHwZoom * currentOpticalBaseZoom
             _zoomMax.value = min(max(hwBased, 10f), MAX_DIGITAL_ZOOM)
 
@@ -289,28 +285,20 @@ class CameraControlViewModel : ViewModel() {
 
             val device: CameraDevice = suspendCancellableCoroutine { cont ->
                 try {
-                    mgr.openCamera(
-                        selection.cameraId,
-                        object : CameraDevice.StateCallback() {
-                            override fun onOpened(device: CameraDevice) {
-                                if (cont.isActive) cont.resume(device)
-                            }
-
-                            override fun onDisconnected(device: CameraDevice) {
-                                device.close()
-                                cameraRunning = false
-                                if (cont.isActive) cont.cancel()
-                            }
-
-                            override fun onError(device: CameraDevice, error: Int) {
-                                Log.e(TAG, "openCamera error=$error cameraId=${selection.cameraId}")
-                                device.close()
-                                cameraRunning = false
-                                if (cont.isActive) cont.cancel()
-                            }
-                        },
-                        cameraHandler
-                    )
+                    mgr.openCamera(selection.cameraId, object : CameraDevice.StateCallback() {
+                        override fun onOpened(device: CameraDevice) {
+                            if (cont.isActive) cont.resume(device)
+                        }
+                        override fun onDisconnected(device: CameraDevice) {
+                            device.close(); cameraRunning = false
+                            if (cont.isActive) cont.cancel()
+                        }
+                        override fun onError(device: CameraDevice, error: Int) {
+                            Log.e(TAG, "openCamera error=$error cameraId=${selection.cameraId}")
+                            device.close(); cameraRunning = false
+                            if (cont.isActive) cont.cancel()
+                        }
+                    }, cameraHandler)
                 } catch (e: Exception) {
                     Log.e(TAG, "openCamera exception", e)
                     if (cont.isActive) cont.cancel(e)
@@ -319,19 +307,16 @@ class CameraControlViewModel : ViewModel() {
 
             cameraDevice = device
             cameraRunning = true
+            ensureImageReaders()
             createPreviewSessionSuspending(device)
-
         } catch (e: Exception) {
-            Log.e(TAG, "startCameraSessionLocked fallo", e)
-            cameraRunning = false
+            Log.e(TAG, "startCameraSessionLocked fallo", e); cameraRunning = false
         }
     }
 
     fun closeCamera() {
         viewModelScope.launch(Dispatchers.IO) {
-            sessionMutex.withLock {
-                closeCameraLocked()
-            }
+            sessionMutex.withLock { closeCameraLocked() }
         }
     }
 
@@ -339,34 +324,24 @@ class CameraControlViewModel : ViewModel() {
         try {
             if (_isRecording.value) safeStopMediaRecorder()
             try { captureSession?.stopRepeating() } catch (_: Throwable) {}
-            captureSession?.close()
-            captureSession = null
-            cameraDevice?.close()
-            cameraDevice = null
-            imageReader?.close()
-            imageReader = null
-            mediaRecorder?.release()
-            mediaRecorder = null
-            recordSurface?.release()
-            recordSurface = null
+            captureSession?.close(); captureSession = null
+            cameraDevice?.close(); cameraDevice = null
+            multiReader.release()
+            mediaRecorder?.release(); mediaRecorder = null
+            recordSurface?.release(); recordSurface = null
         } catch (e: Throwable) {
             Log.w(TAG, "closeCamera warn", e)
-        } finally {
-            cameraRunning = false
-        }
+        } finally { cameraRunning = false }
     }
 
     override fun onCleared() {
-        super.onCleared()
-        closeCamera()
-        cameraThread?.quitSafely()
-        cameraThread = null
-        cameraHandler = null
+        super.onCleared(); closeCamera()
+        cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
+        bgThread?.quitSafely(); bgThread = null; bgHandler = null
     }
 
-    // ─── Toggle / set helpers ─────────────────────────────────────────────────
+    // ─── Toggles ──────────────────────────────────────────────────────────────
 
-    /** Ciclo tri-estado del flash: OFF → AUTO → ON → OFF. */
     fun toggleFlash() {
         val next = when (_flashMode.value) {
             FlashMode.OFF -> FlashMode.AUTO
@@ -382,60 +357,64 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
-    fun toggleHdr() {
-        _hdrEnabled.value = !_hdrEnabled.value
-        applyRepeatingPreview()
+    fun toggleHdr() { _hdrEnabled.value = !_hdrEnabled.value; applyRepeatingPreview() }
+    fun toggleGrid() { _gridEnabled.value = !_gridEnabled.value }
+    fun toggleShutterSound() { _shutterSoundEnabled.value = !_shutterSoundEnabled.value }
+    fun toggleHaptics() { _hapticsEnabled.value = !_hapticsEnabled.value }
+    fun toggleHevc() { _hevcEnabled.value = !_hevcEnabled.value }
+    fun toggleHistogram() {
+        _histogramEnabled.value = !_histogramEnabled.value
+        // Si se activa requerimos YUV reader → reconstruimos session si está activa
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionMutex.withLock {
+                if (cameraRunning) {
+                    ensureImageReaders()
+                    cameraDevice?.let { createPreviewSessionSuspending(it) }
+                }
+            }
+        }
     }
-
-    fun toggleGrid() {
-        _gridEnabled.value = !_gridEnabled.value
+    fun toggleHorizon() { _horizonEnabled.value = !_horizonEnabled.value }
+    fun toggleRaw() {
+        _rawCapture.value = !_rawCapture.value
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionMutex.withLock {
+                if (cameraRunning) {
+                    ensureImageReaders()
+                    cameraDevice?.let { createPreviewSessionSuspending(it) }
+                }
+            }
+        }
     }
-
-    fun toggleShutterSound() {
-        _shutterSoundEnabled.value = !_shutterSoundEnabled.value
-    }
-
-    fun toggleHaptics() {
-        _hapticsEnabled.value = !_hapticsEnabled.value
-    }
-
-    fun toggleHevc() {
-        _hevcEnabled.value = !_hevcEnabled.value
-    }
+    fun toggleSmoothZoom() { _smoothZoomEnabled.value = !_smoothZoomEnabled.value }
 
     fun cycleTimer() {
-        _timerSeconds.value = when (_timerSeconds.value) {
-            0 -> 3
-            3 -> 10
-            else -> 0
-        }
+        _timerSeconds.value = when (_timerSeconds.value) { 0 -> 3; 3 -> 10; else -> 0 }
     }
 
     fun cycleTheme() {
-        _darkTheme.value = when (_darkTheme.value) {
-            null -> true
-            true -> false
-            false -> null
-        }
+        _darkTheme.value = when (_darkTheme.value) { null -> true; true -> false; false -> null }
     }
 
+    /**
+     * Cicla por TODAS las paletas, incluyendo las nuevas (Obsidian, Grafito, Oro, Desert, Crimson).
+     */
     fun cycleAccentStyle() {
-        _accentStyle.value = when (_accentStyle.value) {
-            AccentStyle.ICE_BLUE -> AccentStyle.AURORA
-            AccentStyle.AURORA -> AccentStyle.JADE
-            AccentStyle.JADE -> AccentStyle.ICE_BLUE
-        }
+        val all = AccentStyle.entries
+        val nextIdx = (all.indexOf(_accentStyle.value) + 1) % all.size
+        _accentStyle.value = all[nextIdx]
     }
+
+    fun setAccentStyle(style: AccentStyle) { _accentStyle.value = style }
+    fun setDarkPref(value: Boolean?) { _darkTheme.value = value }
 
     fun setCameraMode(mode: String) {
         if (mode !in listOf("FOTO", "VIDEO")) return
         val previous = _cameraMode.value
         _cameraMode.value = mode
         if (_manualAspect.value == null) {
-            // FIX: Foto = 3:4 (vertical), Video = 9:16 (vertical 16:9 tradicional)
             _previewAspectRatio.value = if (mode == "VIDEO") 9f / 16f else 3f / 4f
         }
-        // Si cambia entre modos, re-aplicar repeating para tomar el modo correcto de AE/AF
         if (previous != mode) applyRepeatingPreview()
     }
 
@@ -446,10 +425,37 @@ class CameraControlViewModel : ViewModel() {
 
     fun setVideoResolution(r: VideoResolution) {
         _videoResolution.value = r
+        _supports60fps.value = CameraTuning.supportsFpsAtResolution(
+            currentCharacteristics, r, 60
+        )
+        if (!_supports60fps.value && _videoFps.value == VideoFps.FPS60) {
+            // fallback automático: la res no soporta 60
+            _videoFps.value = VideoFps.FPS30
+            Log.w(TAG, "Resolución $r no soporta 60fps → fallback 30fps")
+        }
+        applyRepeatingPreview()
     }
 
+    /**
+     * ▼ FIX 60 FPS ▼
+     * Antes: solo guardaba el valor. Ahora:
+     *   1. Verifica que el HAL soporta el FPS pedido a la resolución actual.
+     *   2. Si no, hace fallback automático y deja log.
+     *   3. Re-aplica el repeating preview para que el cambio sea inmediato.
+     */
     fun setVideoFps(f: VideoFps) {
-        _videoFps.value = f
+        val supported = if (f == VideoFps.FPS60) {
+            CameraTuning.supportsFpsAtResolution(currentCharacteristics, _videoResolution.value, 60)
+        } else true
+        if (!supported) {
+            Log.w(TAG, "Sensor no soporta 60fps en ${_videoResolution.value} → manteniendo 30fps")
+            _videoFps.value = VideoFps.FPS30
+            _supports60fps.value = false
+        } else {
+            _videoFps.value = f
+            _supports60fps.value = (f == VideoFps.FPS60)
+        }
+        applyRepeatingPreview()
     }
 
     fun toggleFrontCamera(context: Context) {
@@ -457,8 +463,7 @@ class CameraControlViewModel : ViewModel() {
         val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                closeCameraLocked()
-                startCameraSessionLocked(context, surface, _currentLens.value)
+                closeCameraLocked(); startCameraSessionLocked(context, surface, _currentLens.value)
             }
         }
     }
@@ -467,37 +472,51 @@ class CameraControlViewModel : ViewModel() {
         if (_currentLens.value == lens) return
         _currentLens.value = lens
         _zoomLevel.value = when (lens) {
-            "0.5x" -> 0.5f
-            "1x" -> 1f
-            "2x" -> 2f
-            "3x" -> 3f
-            else -> 1f
+            "0.5x" -> 0.5f; "1x" -> 1f; "2x" -> 2f; "3x" -> 3f; else -> 1f
         }
         val surface = previewSurface ?: return
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                closeCameraLocked()
-                startCameraSessionLocked(context, surface, lens)
+                closeCameraLocked(); startCameraSessionLocked(context, surface, lens)
             }
         }
     }
 
-    /** Zoom continuo: respeta el clamp dinámico (hasta 30x). */
     fun setZoom(ratio: Float) {
         val clamped = ratio.coerceIn(MIN_ZOOM, _zoomMax.value)
-        _zoomLevel.value = clamped
-        applyRepeatingPreview()
+        _zoomLevel.value = clamped; applyRepeatingPreview()
     }
 
-    /**
-     * NUEVO: Zoom continuo optimizado para slider/pinch.
-     * No re-arma toda la sesión, solo actualiza repeating request.
-     */
     fun setZoomContinuous(ratio: Float) {
         val clamped = ratio.coerceIn(MIN_ZOOM, _zoomMax.value)
         if (abs(clamped - _zoomLevel.value) < 0.01f) return
-        _zoomLevel.value = clamped
-        applyRepeatingPreview()
+        _zoomLevel.value = clamped; applyRepeatingPreview()
+    }
+
+    /**
+     * ▼ NUEVO (punto 17): Smooth zoom interpolado.
+     * Anima desde el zoom actual hasta el destino en N steps a 60Hz.
+     */
+    fun smoothZoomTo(target: Float, durationMs: Long = 380L) {
+        val from = _zoomLevel.value
+        val to = target.coerceIn(MIN_ZOOM, _zoomMax.value)
+        if (!_smoothZoomEnabled.value || abs(to - from) < 0.05f) {
+            setZoom(to); return
+        }
+        smoothZoomJob?.cancel()
+        smoothZoomJob = viewModelScope.launch {
+            val steps = (durationMs / 16L).coerceAtLeast(8L).toInt()
+            for (i in 1..steps) {
+                val t = i / steps.toFloat()
+                // ease-out cubic
+                val ease = 1f - (1f - t) * (1f - t) * (1f - t)
+                _zoomLevel.value = from + (to - from) * ease
+                applyRepeatingPreview()
+                delay(16L)
+            }
+            _zoomLevel.value = to
+            applyRepeatingPreview()
+        }
     }
 
     fun getExposureRange(): Range<Int>? = currentCharacteristics
@@ -509,33 +528,18 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
-    /**
-     * Foco manual: 0f→infinito, 1f→muy cerca. Pasar null para volver al AF automático.
-     */
     fun setManualFocus(value: Float?) {
         _manualFocus.value = value?.coerceIn(0f, 1f)
-        if (value != null) {
-            _focusLocked.value = true
-        }
+        if (value != null) _focusLocked.value = true
         applyRepeatingPreview()
     }
 
     fun resetManualFocus() {
-        _manualFocus.value = null
-        _focusLocked.value = false
-        applyRepeatingPreview()
+        _manualFocus.value = null; _focusLocked.value = false; applyRepeatingPreview()
     }
 
-    /**
-     * Tap-to-focus mejorado:
-     *  - usa el rectángulo del preview real (no el de pantalla completa)
-     *  - aplica la rotación del sensor
-     *  - clamp riguroso para evitar IllegalArgumentException
-     *  - resetea focusLocked si estaba en manual
-     */
     fun tapToFocus(
-        x: Float, y: Float,
-        previewW: Int, previewH: Int,
+        x: Float, y: Float, previewW: Int, previewH: Int,
         previewLeft: Int = 0, previewTop: Int = 0
     ) {
         val area = sensorArea ?: return
@@ -543,105 +547,86 @@ class CameraControlViewModel : ViewModel() {
         val device = cameraDevice ?: return
         if (previewW <= 0 || previewH <= 0) return
         try {
-            // Coordenadas dentro del preview (no pantalla)
             val localX = (x - previewLeft).coerceIn(0f, previewW.toFloat())
             val localY = (y - previewTop).coerceIn(0f, previewH.toFloat())
+            val nx = localX / previewW; val ny = localY / previewH
 
-            // Normalizadas a [0..1] del preview
-            val nx = localX / previewW
-            val ny = localY / previewH
-
-            // Rotación del sensor (90 / 270 invierte ejes)
             val (rx, ry) = when (sensorOrientation % 360) {
                 90 -> ny to (1f - nx)
                 180 -> (1f - nx) to (1f - ny)
                 270 -> (1f - ny) to nx
                 else -> nx to ny
             }
-            // Cámara frontal: espejado horizontal
             val finalX = if (_isFrontCamera.value) 1f - rx else rx
 
             val sx = (finalX * area.width()).toInt().coerceIn(0, area.width() - 1)
             val sy = (ry * area.height()).toInt().coerceIn(0, area.height() - 1)
-            // Tamaño de la zona de medición un poco más pequeño = enfoque más preciso
             val half = (min(area.width(), area.height()) * 0.05f).toInt().coerceAtLeast(100)
             val rect = Rect(
-                (sx - half).coerceAtLeast(0),
-                (sy - half).coerceAtLeast(0),
-                (sx + half).coerceAtMost(area.width() - 1),
-                (sy + half).coerceAtMost(area.height() - 1)
+                (sx - half).coerceAtLeast(0), (sy - half).coerceAtLeast(0),
+                (sx + half).coerceAtMost(area.width() - 1), (sy + half).coerceAtMost(area.height() - 1)
             )
             val metering = MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1)
 
-            // Si veníamos de modo manual, lo liberamos
-            _manualFocus.value = null
-            _focusLocked.value = false
+            _manualFocus.value = null; _focusLocked.value = false
 
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { builder.addTarget(it) }
             applyCommon(builder)
-            // OVERRIDE: estos van DESPUÉS de applyCommon para no ser sobrescritos
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(metering))
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(metering))
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
             builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                 CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
-
             session.capture(builder.build(), null, cameraHandler)
-            // Después del trigger, restablecer repeating con AF continuo
             applyRepeatingPreview()
         } catch (e: Exception) {
             Log.w(TAG, "tapToFocus error", e)
         }
     }
 
-    /** Versión legacy con pantalla completa (mantengo compat). */
     fun tapToFocus(x: Float, y: Float, screenW: Int, screenH: Int) {
         tapToFocus(x, y, screenW, screenH, 0, 0)
     }
 
     fun toggleFocusLock() {
-        _focusLocked.value = !_focusLocked.value
-        applyRepeatingPreview()
+        _focusLocked.value = !_focusLocked.value; applyRepeatingPreview()
     }
 
-    // ─── FOTO: takePicture con AE convergence real ────────────────────────────
+    // ─── FOTO con flash funcional ─────────────────────────────────────────────
 
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
+        val jpegReader = multiReader.jpeg ?: return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                ensureImageReader()
-                val targetSurface = imageReader?.surface ?: return@launch
-
-                // Listener registrado ANTES del disparo para no perder la imagen
-                imageReader?.setOnImageAvailableListener({ reader ->
+                jpegReader.setOnImageAvailableListener({ reader ->
                     val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                     try {
                         val buffer = image.planes[0].buffer
-                        val bytes = ByteArray(buffer.remaining())
-                        buffer.get(bytes)
-                        val uri = storage.saveJpeg(context, bytes)
-                        if (uri != null) _lastPhotoUri.value = uri
+                        val bytes = ByteArray(buffer.remaining()); buffer.get(bytes)
+                        // ▼ Guardado en background thread (no en cameraHandler) → no bloquea preview
+                        bgHandler?.post {
+                            val uri = storage.saveJpeg(context, bytes)
+                            if (uri != null) _lastPhotoUri.value = uri
+                        }
                     } catch (e: Throwable) {
                         Log.e(TAG, "Procesar JPEG fallo", e)
                     } finally {
                         image.close()
-                        applyRepeatingPreview()
+                        // Restablecer AE_LOCK y preview
+                        runCatching { unlockAeAndResume() }
                     }
-                }, cameraHandler)
+                }, bgHandler)
 
-                // Pre-capture AE convergence si vamos a usar flash (ON o AUTO)
-                val flashRequested = _flashMode.value != FlashMode.OFF
-                if (flashRequested) {
-                    runPrecaptureAndAwait(device, session)
-                }
+                // ▼ FIX FLASH ▼ — precaptura robusta SI hay flash
+                val flashWanted = _flashMode.value != FlashMode.OFF
+                if (flashWanted) runPrecaptureRepeating(device, session)
 
-                // Disparo STILL
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-                builder.addTarget(targetSurface)
+                builder.addTarget(jpegReader.surface)
                 applyCommon(builder)
                 CameraTuning.applyImageQuality(builder, "FOTO", supportsVideoStabilization)
                 CameraTuning.applyJpegQuality(builder)
@@ -650,117 +635,126 @@ class CameraControlViewModel : ViewModel() {
                 SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
                 SamsungVendorTags.applyProTone(builder, _hdrEnabled.value)
 
-                // FIX FLASH: estos overrides van DESPUÉS de applyCommon
+                // ▼ FIX FLASH: configuración explícita por modo
                 when (_flashMode.value) {
                     FlashMode.ON -> {
                         builder.set(CaptureRequest.CONTROL_AE_MODE,
                             CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-                        builder.set(CaptureRequest.FLASH_MODE,
-                            CaptureRequest.FLASH_MODE_SINGLE)
+                        builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_SINGLE)
+                        builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
                     }
                     FlashMode.AUTO -> {
                         builder.set(CaptureRequest.CONTROL_AE_MODE,
                             CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
+                        builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
                     }
                     FlashMode.OFF -> {
-                        builder.set(CaptureRequest.CONTROL_AE_MODE,
-                            CaptureRequest.CONTROL_AE_MODE_ON)
-                        builder.set(CaptureRequest.FLASH_MODE,
-                            CaptureRequest.FLASH_MODE_OFF)
+                        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
                     }
                 }
 
                 session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
-                        session: CameraCaptureSession,
-                        request: CaptureRequest,
-                        result: TotalCaptureResult
-                    ) { /* preview se restaura en el image listener */ }
+                        s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
+                    ) {
+                        // Lectura de metadatos en tiempo real (punto 3)
+                        _iso.value = t.get(CaptureResult.SENSOR_SENSITIVITY)
+                        _shutterSpeedNs.value = t.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                    }
                 }, cameraHandler)
-
             } catch (e: Exception) {
-                Log.e(TAG, "takePicture fallo", e)
-                applyRepeatingPreview()
+                Log.e(TAG, "takePicture fallo", e); applyRepeatingPreview()
             }
         }
     }
 
     /**
-     * FIX FLASH: Lanza pre-capture trigger y espera hasta que AE converja (max 1500 ms).
-     * NO llama a applyCommon ni sobrescribe AE_MODE — eso rompía la convergencia con flash.
+     * ▼ FIX FLASH DEFINITIVO ▼
+     *
+     * Usa `setRepeatingRequest` para que el AE pueda converger frame a frame
+     * (clave en Samsung — un único capture() rara vez hace switching del flash).
+     * Tras converger (o timeout 1.6s), aplica AE_LOCK=true para mantener el flash
+     * preparado durante el STILL_CAPTURE.
      */
-    private suspend fun runPrecaptureAndAwait(
-        device: CameraDevice,
-        session: CameraCaptureSession
-    ) {
+    private suspend fun runPrecaptureRepeating(device: CameraDevice, session: CameraCaptureSession) {
         try {
-            val precaptureBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            previewSurface?.let { precaptureBuilder.addTarget(it) }
-
-            // Configuración mínima coherente con el modo de flash deseado.
-            // No usamos applyCommon porque sobrescribe CONTROL_AE_MODE y mata la convergencia.
-            precaptureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-            precaptureBuilder.set(
-                CaptureRequest.CONTROL_AF_MODE,
-                if (_cameraMode.value == "VIDEO")
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-                else
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            )
-            precaptureBuilder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-
-            // FIX clave: AE_MODE acorde al flash deseado (esto faltaba)
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            previewSurface?.let { builder.addTarget(it) }
+            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             when (_flashMode.value) {
-                FlashMode.ON -> precaptureBuilder.set(
-                    CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH
-                )
-                FlashMode.AUTO -> precaptureBuilder.set(
-                    CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH
-                )
-                FlashMode.OFF -> precaptureBuilder.set(
-                    CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON
-                )
+                FlashMode.ON -> {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE,
+                        CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+                }
+                FlashMode.AUTO -> {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE,
+                        CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
+                }
+                FlashMode.OFF -> {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
             }
+            builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
 
-            precaptureBuilder.set(
-                CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
-                CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
-            )
-
-            // Esperamos a CONVERGED o timeout (1.5s — flash AUTO necesita más tiempo)
             suspendCancellableCoroutine<Unit> { cont ->
                 var resolved = false
-                val deadline = System.currentTimeMillis() + 1500L
+                val deadline = System.currentTimeMillis() + 1600L
                 val callback = object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
                         s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
                     ) {
                         if (resolved) return
-                        val state = t.get(CaptureResult.CONTROL_AE_STATE)
-                        val converged = state == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
-                            state == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
-                            state == CaptureResult.CONTROL_AE_STATE_LOCKED ||
+                        val ae = t.get(CaptureResult.CONTROL_AE_STATE)
+                        val ok = ae == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                            ae == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
+                            ae == CaptureResult.CONTROL_AE_STATE_LOCKED ||
                             System.currentTimeMillis() > deadline
-                        if (converged) {
+                        if (ok) {
                             resolved = true
                             if (cont.isActive) cont.resume(Unit)
                         }
                     }
                 }
                 try {
-                    session.capture(precaptureBuilder.build(), callback, cameraHandler)
+                    // ▼ CLAVE: repeating, no single capture
+                    session.setRepeatingRequest(builder.build(), callback, cameraHandler)
                 } catch (e: Exception) {
                     if (cont.isActive) cont.resume(Unit)
                 }
                 cont.invokeOnCancellation { resolved = true }
             }
-        } catch (_: Throwable) { /* ignorar — flash funcionará mejor o peor */ }
+
+            // Cancelar el precapture trigger (limpieza)
+            try {
+                val cancel = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                previewSurface?.let { cancel.addTarget(it) }
+                applyCommon(cancel)
+                cancel.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_CANCEL)
+                session.capture(cancel.build(), null, cameraHandler)
+            } catch (_: Throwable) {}
+        } catch (_: Throwable) {}
     }
 
-    // ─── VIDEO: refactor profundo (sin lag, FPS estable) ──────────────────────
+    private fun unlockAeAndResume() {
+        try {
+            val device = cameraDevice ?: return
+            val session = captureSession ?: return
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            previewSurface?.let { builder.addTarget(it) }
+            applyCommon(builder)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+            session.capture(builder.build(), null, cameraHandler)
+        } catch (_: Throwable) {}
+        applyRepeatingPreview()
+    }
+
+    // ─── VIDEO ────────────────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
@@ -770,8 +764,7 @@ class CameraControlViewModel : ViewModel() {
                 try {
                     val uri = storage.createVideoUri(context) ?: return@withLock
                     val pfd = storage.openVideoFd(context, uri) ?: return@withLock
-                    videoUri = uri
-                    videoPfd = pfd
+                    videoUri = uri; videoPfd = pfd
 
                     val resolution = _videoResolution.value
                     val fps = _videoFps.value.value
@@ -782,10 +775,8 @@ class CameraControlViewModel : ViewModel() {
                     val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         MediaRecorder(context)
                     } else {
-                        @Suppress("DEPRECATION")
-                        MediaRecorder()
+                        @Suppress("DEPRECATION") MediaRecorder()
                     }.apply {
-                        // ORDEN CRÍTICO en MediaRecorder
                         setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
                         setVideoSource(MediaRecorder.VideoSource.SURFACE)
                         setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
@@ -794,12 +785,11 @@ class CameraControlViewModel : ViewModel() {
                         setVideoFrameRate(fps)
                         setVideoEncodingBitRate(bitrate)
                         setVideoEncoder(codecInt)
-                        // Perfil/Level explícitos: evita que el HAL caiga en Baseline
                         try {
                             val profile = CameraTuning.preferredProfile(_hevcEnabled.value)
                             val level = CameraTuning.preferredLevel(resolution, fps, _hevcEnabled.value)
                             setVideoEncodingProfileLevel(profile, level)
-                        } catch (_: Throwable) { /* opcional */ }
+                        } catch (_: Throwable) {}
                         setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                         setAudioEncodingBitRate(192_000)
                         setAudioSamplingRate(48_000)
@@ -812,7 +802,6 @@ class CameraControlViewModel : ViewModel() {
                     val preview = previewSurface ?: return@withLock
                     val recording = recordSurface ?: return@withLock
 
-                    // FIX CRÍTICO: cerrar la sesión actual ANTES de crear la nueva
                     try { captureSession?.stopRepeating() } catch (_: Throwable) {}
                     try { captureSession?.close() } catch (_: Throwable) {}
                     captureSession = null
@@ -826,7 +815,6 @@ class CameraControlViewModel : ViewModel() {
                                     override fun onConfigured(session: CameraCaptureSession) {
                                         if (cont.isActive) cont.resume(session)
                                     }
-
                                     override fun onConfigureFailed(session: CameraCaptureSession) {
                                         Log.e(TAG, "Record session config FAILED")
                                         if (cont.isActive) cont.cancel()
@@ -842,35 +830,26 @@ class CameraControlViewModel : ViewModel() {
 
                     captureSession = configured
                     val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                    builder.addTarget(preview)
-                    builder.addTarget(recording)
+                    builder.addTarget(preview); builder.addTarget(recording)
                     applyCommon(builder)
                     CameraTuning.applyImageQuality(builder, "VIDEO", supportsVideoStabilization)
                     SamsungVendorTags.applyBase(builder, "VIDEO", isRecording = true)
                     SamsungVendorTags.applyRecordingFps(builder, fps)
                     SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
 
-                    // FPS range robusto: elegimos el rango soportado más cercano a fps fijo,
-                    // o caemos a [fps/2, fps] como fallback (evita lag en poca luz).
-                    val targetRange = bestFpsRange(fps)
+                    // ▼ FIX 60 FPS ▼ rango DEFINITIVO calculado por CameraTuning
+                    val targetRange = CameraTuning.bestFpsRange(supportedFpsRanges, fps)
                     builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetRange)
+                    Log.d(TAG, "Video FPS target=$fps → applied range=$targetRange")
 
-                    // TORCH durante grabación si el usuario tiene flash ON o AUTO con baja luz.
                     applyFlashForRecording(builder)
-
-                    // FIX VIDEO LAG: Esperar a que la pipeline esté caliente (primer onCaptureCompleted)
-                    // antes de arrancar el recorder. Esto elimina los drops iniciales que causaban
-                    // 6 fps efectivos en la mayoría de dispositivos.
                     waitFirstFrameThenStart(configured, builder.build(), recorder)
                     _isRecording.value = true
-
                 } catch (e: Exception) {
                     Log.e(TAG, "startVideoRecording fallo", e)
                     try { safeStopMediaRecorder() } catch (_: Throwable) {}
                     try { videoPfd?.close() } catch (_: Throwable) {}
-                    videoPfd = null
-                    videoUri = null
-                    // Restaurar preview en caso de error
+                    videoPfd = null; videoUri = null
                     val dev = cameraDevice
                     if (dev != null) createPreviewSessionSuspending(dev)
                 }
@@ -878,14 +857,8 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * NUEVO — Warm-up del pipeline: arranca repeating, espera primer frame, luego recorder.start().
-     * Esto evita los frames-drop iniciales que provocaban grabación a 6 FPS en muchos dispositivos.
-     */
     private suspend fun waitFirstFrameThenStart(
-        session: CameraCaptureSession,
-        request: CaptureRequest,
-        recorder: MediaRecorder
+        session: CameraCaptureSession, request: CaptureRequest, recorder: MediaRecorder
     ) {
         suspendCancellableCoroutine<Unit> { cont ->
             var armed = false
@@ -895,9 +868,7 @@ class CameraControlViewModel : ViewModel() {
                 ) {
                     if (armed) return
                     armed = true
-                    try {
-                        recorder.start()
-                    } catch (e: Throwable) {
+                    try { recorder.start() } catch (e: Throwable) {
                         Log.e(TAG, "recorder.start() falló dentro del warm-up", e)
                     }
                     if (cont.isActive) cont.resume(Unit)
@@ -907,13 +878,11 @@ class CameraControlViewModel : ViewModel() {
                 session.setRepeatingRequest(request, cb, cameraHandler)
             } catch (e: Exception) {
                 Log.e(TAG, "setRepeatingRequest (record warmup) error", e)
-                // Fallback: arrancar directo
                 try { recorder.start() } catch (_: Throwable) {}
                 if (cont.isActive) cont.resume(Unit)
             }
             cont.invokeOnCancellation { armed = true }
         }
-        // Pequeño extra para que el encoder llene su cola
         delay(40)
     }
 
@@ -921,28 +890,19 @@ class CameraControlViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
                 try {
-                    // Dar un poco de margen al encoder antes del stop
                     delay(80)
                     safeStopMediaRecorder()
                     _isRecording.value = false
+                    val pfd = videoPfd; videoPfd = null
+                    val uri = videoUri; videoUri = null
+                    try { pfd?.close() } catch (_: Throwable) {}
+                    uri?.let { storage.finalizeVideo(context, it) }
 
-                    // FIX RACE: cerrar el FD ANTES de finalize para que el contenedor MP4
-                    // esté completamente flusheado en disco antes de IS_PENDING=0.
-                    try { videoPfd?.close() } catch (_: Throwable) {}
-                    videoPfd = null
-
-                    videoUri?.let { storage.finalizeVideo(context, it) }
-                    videoUri = null
-
-                    // Cerramos la sesión de record y abrimos preview limpia
                     try { captureSession?.stopRepeating() } catch (_: Throwable) {}
                     try { captureSession?.close() } catch (_: Throwable) {}
                     captureSession = null
-
                     val device = cameraDevice
-                    if (device != null) {
-                        createPreviewSessionSuspending(device)
-                    }
+                    if (device != null) createPreviewSessionSuspending(device)
                 } catch (e: Exception) {
                     Log.e(TAG, "stopVideoRecording fallo", e)
                 }
@@ -963,47 +923,41 @@ class CameraControlViewModel : ViewModel() {
         recordSurface = null
     }
 
-    /** Mejor rango FPS soportado: prioriza [fps,fps], luego [fps/2,fps]. */
-    private fun bestFpsRange(fps: Int): Range<Int> {
-        val ranges = supportedFpsRanges
-        if (ranges.isEmpty()) return Range(fps, fps)
-        // Exact match
-        ranges.firstOrNull { it.lower == fps && it.upper == fps }?.let { return it }
-        // Upper exactly fps y lower lo más alto posible (evita FPS variable bajo)
-        ranges.filter { it.upper == fps }
-            .maxByOrNull { it.lower }
-            ?.let { return it }
-        // Upper >= fps
-        ranges.filter { it.upper >= fps }
-            .minByOrNull { abs(it.upper - fps) + abs(it.lower - fps) }
-            ?.let { return Range(min(it.lower, fps), fps) }
-        // Fallback: el rango con upper más alto
-        return ranges.maxByOrNull { it.upper } ?: Range(fps, fps)
-    }
-
     // ─── Internals ────────────────────────────────────────────────────────────
 
-    private fun ensureThread() {
+    private fun ensureThreads() {
         if (cameraThread == null || !cameraThread!!.isAlive) {
             cameraThread = HandlerThread("CameraBg").apply { start() }
             cameraHandler = Handler(cameraThread!!.looper)
         }
+        if (bgThread == null || !bgThread!!.isAlive) {
+            bgThread = HandlerThread("CameraIO").apply { start() }
+            bgHandler = Handler(bgThread!!.looper)
+        }
     }
 
-    private fun ensureImageReader() {
-        if (imageReader != null) return
-        val characteristics = currentCharacteristics ?: return
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-        val sizes = map.getOutputSizes(ImageFormat.JPEG) ?: return
-        val largest = sizes.maxByOrNull { it.width.toLong() * it.height } ?: return
-        imageReader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2)
+    private fun ensureImageReaders() {
+        val ch = currentCharacteristics ?: return
+        multiReader.configure(
+            characteristics = ch,
+            wantRaw = _rawCapture.value && multiReader.supportsRaw(ch),
+            wantYuv = _histogramEnabled.value
+        )
+        // Listener YUV → histograma
+        multiReader.yuv?.setOnImageAvailableListener({ reader ->
+            val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val bins = HistogramComputer.computeY(img)
+                if (bins != null) _histogramBins.value = bins
+            } finally { img.close() }
+        }, bgHandler)
     }
 
     private suspend fun createPreviewSessionSuspending(device: CameraDevice) {
         val surface = previewSurface ?: return
         try {
-            ensureImageReader()
-            val targets = listOfNotNull(surface, imageReader?.surface)
+            ensureImageReaders()
+            val targets = listOfNotNull(surface) + multiReader.targetSurfaces()
 
             val session: CameraCaptureSession = suspendCancellableCoroutine { cont ->
                 try {
@@ -1014,20 +968,17 @@ class CameraControlViewModel : ViewModel() {
                             override fun onConfigured(session: CameraCaptureSession) {
                                 if (cont.isActive) cont.resume(session)
                             }
-
                             override fun onConfigureFailed(session: CameraCaptureSession) {
                                 Log.e(TAG, "Preview session config FAILED")
                                 if (cont.isActive) cont.cancel()
                             }
-                        },
-                        cameraHandler
+                        }, cameraHandler
                     )
                 } catch (e: Exception) {
                     Log.e(TAG, "createCaptureSession (preview) exception", e)
                     if (cont.isActive) cont.cancel(e)
                 }
             }
-
             captureSession = session
             applyRepeatingPreview()
         } catch (e: Exception) {
@@ -1042,6 +993,8 @@ class CameraControlViewModel : ViewModel() {
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
+            // El YUV reader recibe los frames del preview para el histograma
+            multiReader.yuv?.surface?.let { builder.addTarget(it) }
             applyCommon(builder)
             CameraTuning.applyImageQuality(builder, _cameraMode.value, supportsVideoStabilization)
             SamsungVendorTags.applyBase(builder, _cameraMode.value, _isRecording.value)
@@ -1049,31 +1002,34 @@ class CameraControlViewModel : ViewModel() {
             if (_focusLocked.value) {
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
-            // Torch sólo si estamos en VIDEO y flash ON (constante durante preview de video)
             if (_cameraMode.value == "VIDEO" && _flashMode.value == FlashMode.ON) {
                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             } else {
                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
             }
-            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+
+            // Listener para metadatos sensor (ISO + shutter speed) → punto 3
+            val cb = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
+                ) {
+                    _iso.value = t.get(CaptureResult.SENSOR_SENSITIVITY)
+                    _shutterSpeedNs.value = t.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                }
+            }
+            session.setRepeatingRequest(builder.build(), cb, cameraHandler)
         } catch (e: Exception) {
             Log.w(TAG, "applyRepeatingPreview error", e)
         }
     }
 
-    /** Aplica torch al builder de grabación si procede. */
     private fun applyFlashForRecording(builder: CaptureRequest.Builder) {
         when (_flashMode.value) {
             FlashMode.ON -> {
                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
-            FlashMode.AUTO -> {
-                // En video AUTO no enciende torch; deja AE decidir flash en preview-no-flash
-                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            }
-            FlashMode.OFF -> {
+            FlashMode.AUTO, FlashMode.OFF -> {
                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
@@ -1082,151 +1038,94 @@ class CameraControlViewModel : ViewModel() {
 
     private fun applyCommon(builder: CaptureRequest.Builder) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-
-        // ─── Enfoque ───
         val manual = _manualFocus.value
         if (manual != null && _minFocusDistance.value > 0f) {
-            // Foco manual (override del AF)
             val diopter = manual * _minFocusDistance.value
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, diopter)
         } else {
             builder.set(
                 CaptureRequest.CONTROL_AF_MODE,
-                if (_cameraMode.value == "VIDEO") {
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-                } else {
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                }
+                if (_cameraMode.value == "VIDEO") CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             )
         }
-
-        // ─── AE / Flash ───
-        // En preview siempre AE_ON; el flash real se gestiona en cada disparo o por torch en video.
         builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-
         builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
 
         if (_exposureLevel.value != 0) {
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
         }
 
-        // ─── ZOOM (híbrido óptico-base × digital) ───
-        // FIX CRÍTICO 3X: el clamp permite ahora hasta MAX_DIGITAL_ZOOM aunque maxHwZoom=1
         val requestedZoom = _zoomLevel.value
-        val sensorZoom = (requestedZoom / currentOpticalBaseZoom)
-            .coerceIn(1f, MAX_DIGITAL_ZOOM)
-
+        val sensorZoom = (requestedZoom / currentOpticalBaseZoom).coerceIn(1f, MAX_DIGITAL_ZOOM)
         if (abs(sensorZoom - 1f) > 0.001f) {
-            // Intentamos primero el vendor tag de Samsung (más eficiente, sin pérdida)
             val applied = SamsungVendorTags.applyZoomRatio(builder, sensorZoom)
             if (!applied) {
-                // Fallback API >=30: SCALER_CROP_REGION estándar
                 sensorArea?.let { area ->
-                    // FIX 3X: usar el zoom completo solicitado, no el limitado por maxHwZoom.
-                    // Esto permite crop digital de hasta 30x sobre la lente principal cuando
-                    // no hay tele física, en lugar de quedarse en el límite del HW.
                     val effective = sensorZoom.coerceIn(1f, MAX_DIGITAL_ZOOM)
                     val newW = (area.width() / effective).toInt().coerceAtLeast(1)
                     val newH = (area.height() / effective).toInt().coerceAtLeast(1)
                     val left = (area.width() - newW) / 2 + area.left
                     val top = (area.height() - newH) / 2 + area.top
-                    builder.set(
-                        CaptureRequest.SCALER_CROP_REGION,
-                        Rect(left, top, left + newW, top + newH)
-                    )
+                    builder.set(CaptureRequest.SCALER_CROP_REGION,
+                        Rect(left, top, left + newW, top + newH))
                 }
             }
         }
 
-        // ─── FPS range para VIDEO ───
         if (_cameraMode.value == "VIDEO") {
             val fps = _videoFps.value.value
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange(fps))
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                CameraTuning.bestFpsRange(supportedFpsRanges, fps))
         }
     }
 
-    /** Calcula el JPEG_ORIENTATION para la cámara (orientación del dispositivo). */
     private fun jpegRotationHint(): Int {
-        // Asumiendo portrait fijo (la app está bloqueada a portrait).
         val deviceRotation = 0
-        return if (_isFrontCamera.value) {
-            (sensorOrientation + deviceRotation) % 360
-        } else {
-            (sensorOrientation - deviceRotation + 360) % 360
-        }
+        return if (_isFrontCamera.value) (sensorOrientation + deviceRotation) % 360
+        else (sensorOrientation - deviceRotation + 360) % 360
     }
 
     private fun pickCameraSelection(mgr: CameraManager, front: Boolean, lens: String): CameraSelection {
         val ids = mgr.cameraIdList
         if (front) {
             ids.forEach { id ->
-                val characteristics = mgr.getCameraCharacteristics(id)
-                if (characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
+                val c = mgr.getCameraCharacteristics(id)
+                if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
                     return CameraSelection(id, 1f)
                 }
             }
         }
-
         val backCandidates = ids.mapNotNull { id ->
-            val characteristics = mgr.getCameraCharacteristics(id)
-            val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-                ?: return@mapNotNull null
+            val c = mgr.getCameraCharacteristics(id)
+            val facing = c.get(CameraCharacteristics.LENS_FACING) ?: return@mapNotNull null
             if (facing != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
-            val focal = characteristics
-                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 ?.minOrNull() ?: return@mapNotNull null
-            CameraCandidate(
-                id = id,
-                facing = facing,
-                focal = focal,
-                isLogicalMultiCamera = CameraTuning.isLogicalMultiCamera(characteristics),
-                sensorArea = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-            )
+            CameraCandidate(id, facing, focal, CameraTuning.isLogicalMultiCamera(c),
+                c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE))
         }
-
-        if (backCandidates.isEmpty()) {
-            return CameraSelection(ids.firstOrNull() ?: "0", 1f)
-        }
+        if (backCandidates.isEmpty()) return CameraSelection(ids.firstOrNull() ?: "0", 1f)
 
         val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera }
-        val widePhysical = backCandidates.minByOrNull { candidate ->
-            kotlin.math.abs(candidate.focal - 5f) + if (candidate.isLogicalMultiCamera) 0.7f else 0f
+        val widePhysical = backCandidates.minByOrNull { c ->
+            kotlin.math.abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f
         } ?: backCandidates.first()
         val ultraPhysical = backCandidates.minByOrNull { it.focal }
         val telePhysical = backCandidates.maxByOrNull { it.focal }
-
         val hasDedicatedTele = telePhysical != null && ultraPhysical != null &&
-            telePhysical.id != widePhysical.id &&
-            telePhysical.focal >= widePhysical.focal * 1.8f
-
+            telePhysical.id != widePhysical.id && telePhysical.focal >= widePhysical.focal * 1.8f
         val hasDedicatedUltra = ultraPhysical != null &&
-            ultraPhysical.id != widePhysical.id &&
-            ultraPhysical.focal <= widePhysical.focal * 0.75f
+            ultraPhysical.id != widePhysical.id && ultraPhysical.focal <= widePhysical.focal * 0.75f
 
         return when (lens) {
-            "0.5x" -> {
-                if (hasDedicatedUltra && ultraPhysical != null) {
-                    CameraSelection(ultraPhysical.id, 0.5f)
-                } else {
-                    // Si no hay ultra-wide física, mantenemos lente principal a 1×.
-                    // (La UI mostrará 0.5× pero no se puede zoom-out por debajo del HW.)
-                    CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
-                }
-            }
-
-            "3x" -> {
-                if (hasDedicatedTele && telePhysical != null) {
-                    Log.d(TAG, "Usando tele física para 3x: ${telePhysical.id}")
-                    CameraSelection(telePhysical.id, 3f)
-                } else {
-                    // FIX clave: si no hay tele física, hacemos 3x digital sobre principal
-                    // dejando opticalBaseZoom=1f para que applyCommon haga el crop 3x.
-                    Log.d(TAG, "Tele física no disponible; usando 3x digital sobre principal")
-                    CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
-                }
-            }
-
+            "0.5x" -> if (hasDedicatedUltra && ultraPhysical != null)
+                CameraSelection(ultraPhysical.id, 0.5f)
+            else CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+            "3x" -> if (hasDedicatedTele && telePhysical != null)
+                CameraSelection(telePhysical.id, 3f)
+            else CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
             else -> CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
         }
     }
