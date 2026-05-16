@@ -6,21 +6,15 @@ plugins {
 android {
     namespace 'com.rodyto.lenspro'
 
-    // Android 15 (API 35). Compatible con Android 16 / One UI 8 en S21 FE
-    // (Android 16 ejecuta APKs targetSdk 35 sin restricciones).
     compileSdk 35
-
-    // Versión fija de NDK para CI consistente
     ndkVersion "26.1.10909125"
 
     defaultConfig {
         applicationId "com.rodyto.lenspro"
-
         minSdk 26
         targetSdk 35
-
-        versionCode 4
-        versionName "1.3"
+        versionCode 5
+        versionName "2.0"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -61,7 +55,6 @@ android {
     }
 
     composeOptions {
-        // Coincide con Kotlin 1.9.25
         kotlinCompilerExtensionVersion '1.5.15'
     }
 
@@ -114,6 +107,9 @@ dependencies {
     implementation 'androidx.compose.animation:animation'
 
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+
+    // NUEVO: persistencia ligera para SettingsActivity
+    implementation 'androidx.datastore:datastore-preferences:1.1.1'
 
     implementation 'io.coil-kt:coil-compose:2.7.0'
 
