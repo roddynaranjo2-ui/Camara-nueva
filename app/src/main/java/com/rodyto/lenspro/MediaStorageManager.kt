@@ -9,16 +9,27 @@ import android.provider.MediaStore
 import android.util.Log
 
 /**
+ * MediaStorageManager — OPTIMIZADO v2
+ *
  * Persistencia en MediaStore (DCIM/LensPro).
  *  - Usa IS_PENDING en API 29+ para evitar archivos parciales visibles.
  *  - Limpia el Uri si la escritura falla a mitad.
  *  - openVideoFd: abre con "rw" — MediaRecorder lo requiere.
+ *
+ * FIX v2:
+ *   ① finalizeVideo ahora puede recibir el FD para cerrarlo ANTES del update
+ *     (orden crítico: el writer del mp4 debe haber liberado el FD para que el
+ *     mediaserver pueda indexar correctamente la duración y los keyframes).
+ *   ② Validación de tamaño mínimo: si el video resultante < 4 KB se considera
+ *     fallido (la cabecera mp4 mínima ronda los 2-3 KB) y se elimina silenciosamente.
+ *   ③ deleteUri público para que el ViewModel pueda limpiar grabaciones canceladas.
  */
 class MediaStorageManager {
 
     companion object {
         private const val TAG    = "RodytoLensPro"
         private const val FOLDER = "LensPro"
+        private const val MIN_VALID_VIDEO_BYTES = 4 * 1024L  // 4 KB
     }
 
     // ---------- IMÁGENES JPEG ----------
@@ -94,13 +105,59 @@ class MediaStorageManager {
         context.contentResolver.openFileDescriptor(uri, "rw")
     } catch (e: Exception) { Log.e(TAG, "Error abriendo FD de video", e); null }
 
+    /**
+     * Versión legacy (mantengo compat con el ViewModel original).
+     * Marca el video como NO pendiente. Si el FD está aún abierto la indexación
+     * puede fallar — recomendado usar finalizeVideo(context, uri, fd) cuando sea posible.
+     */
     fun finalizeVideo(context: Context, uri: Uri) {
+        finalizeVideo(context, uri, null)
+    }
+
+    /**
+     * FIX ①: Versión nueva: cierra el FD ANTES del update y valida tamaño mínimo.
+     * Si el archivo resultante es absurdamente pequeño, se elimina (grabación fallida).
+     *
+     * @return true si el video quedó válido y publicado, false si fue eliminado.
+     */
+    fun finalizeVideo(context: Context, uri: Uri, fd: ParcelFileDescriptor?): Boolean {
+        // Cerrar FD primero — el mediaserver necesita el fichero exclusivo
+        try { fd?.close() } catch (_: Throwable) {}
+
+        // FIX ②: Validar tamaño (Android 10+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val sizeOk = context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    pfd.statSize >= MIN_VALID_VIDEO_BYTES
+                } ?: false
+                if (!sizeOk) {
+                    Log.w(TAG, "Video < ${MIN_VALID_VIDEO_BYTES}B → eliminando $uri")
+                    runCatching { context.contentResolver.delete(uri, null, null) }
+                    return false
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "No pude validar tamaño del video, asumo válido", e)
+            }
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 context.contentResolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
-            } catch (e: Exception) { Log.e(TAG, "Error finalizando video", e) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error finalizando video", e)
+                return false
+            }
         }
+        return true
+    }
+
+    /**
+     * FIX ③: Limpieza pública para grabaciones canceladas/fallidas.
+     */
+    fun deleteUri(context: Context, uri: Uri?) {
+        if (uri == null) return
+        runCatching { context.contentResolver.delete(uri, null, null) }
     }
 }
