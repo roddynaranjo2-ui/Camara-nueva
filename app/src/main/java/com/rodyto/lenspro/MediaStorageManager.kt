@@ -12,14 +12,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * MediaStorageManager v3
+ * MediaStorageManager v3.1
  *
- * v3 (NUEVO):
- *   • Organización por carpeta de fecha "DCIM/LensPro/yyyy-MM-dd" cuando organizeByDate=true.
- *   • Compatible API <=Q.
- *   • Resto del comportamiento (IS_PENDING, validación tamaño, deleteUri) intacto.
+ * NUEVO:
+ *  • `organizeByDate` ahora es VAR (no val), permite cambiarlo en runtime
+ *    desde el toggle de SettingsActivity sin recrear el manager.
+ *  • saveRaw mejorado: si bytes vacíos, retorna null sin crear MediaStore entry
+ *    huérfano.
  */
-class MediaStorageManager(private val organizeByDate: Boolean = true) {
+class MediaStorageManager(@Volatile var organizeByDate: Boolean = true) {
 
     companion object {
         private const val TAG = "RodytoLensPro"
@@ -71,7 +72,6 @@ class MediaStorageManager(private val organizeByDate: Boolean = true) {
         }
     }
 
-    /** NUEVO: saveRaw — guarda un DNG en background. Usado por captura RAW. */
     fun saveRaw(context: Context, bytes: ByteArray): Uri? {
         if (bytes.isEmpty()) return null
         val resolver = context.contentResolver
@@ -97,6 +97,7 @@ class MediaStorageManager(private val organizeByDate: Boolean = true) {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
             }
+            Log.d(TAG, "DNG guardado: $uri (${bytes.size / 1024} KB)")
             uri
         } catch (e: Exception) {
             Log.e(TAG, "Error guardando DNG", e)
