@@ -7,43 +7,41 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * MediaStorageManager — OPTIMIZADO v2
+ * MediaStorageManager v3
  *
- * Persistencia en MediaStore (DCIM/LensPro).
- *  - Usa IS_PENDING en API 29+ para evitar archivos parciales visibles.
- *  - Limpia el Uri si la escritura falla a mitad.
- *  - openVideoFd: abre con "rw" — MediaRecorder lo requiere.
- *
- * FIX v2:
- *   ① finalizeVideo ahora puede recibir el FD para cerrarlo ANTES del update
- *     (orden crítico: el writer del mp4 debe haber liberado el FD para que el
- *     mediaserver pueda indexar correctamente la duración y los keyframes).
- *   ② Validación de tamaño mínimo: si el video resultante < 4 KB se considera
- *     fallido (la cabecera mp4 mínima ronda los 2-3 KB) y se elimina silenciosamente.
- *   ③ deleteUri público para que el ViewModel pueda limpiar grabaciones canceladas.
+ * v3 (NUEVO):
+ *   • Organización por carpeta de fecha "DCIM/LensPro/yyyy-MM-dd" cuando organizeByDate=true.
+ *   • Compatible API <=Q.
+ *   • Resto del comportamiento (IS_PENDING, validación tamaño, deleteUri) intacto.
  */
-class MediaStorageManager {
+class MediaStorageManager(private val organizeByDate: Boolean = true) {
 
     companion object {
-        private const val TAG    = "RodytoLensPro"
-        private const val FOLDER = "LensPro"
-        private const val MIN_VALID_VIDEO_BYTES = 4 * 1024L  // 4 KB
+        private const val TAG = "RodytoLensPro"
+        private const val FOLDER_ROOT = "LensPro"
+        private const val MIN_VALID_VIDEO_BYTES = 4 * 1024L
     }
 
-    // ---------- IMÁGENES JPEG ----------
+    private fun relativePath(): String {
+        if (!organizeByDate) return "DCIM/$FOLDER_ROOT"
+        val sub = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        return "DCIM/$FOLDER_ROOT/$sub"
+    }
+
     fun saveJpeg(context: Context, bytes: ByteArray): Uri? {
         if (bytes.isEmpty()) return null
-
         val resolver = context.contentResolver
         val filename = "IMG_${System.currentTimeMillis()}.jpg"
-
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath())
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
@@ -56,11 +54,9 @@ class MediaStorageManager {
         return try {
             uri = resolver.insert(collection, values)
                 ?: throw IllegalStateException("MediaStore insert returned null")
-
             resolver.openOutputStream(uri)?.use { out ->
                 out.write(bytes); out.flush()
             } ?: throw IllegalStateException("OutputStream null for $uri")
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 resolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
@@ -75,14 +71,47 @@ class MediaStorageManager {
         }
     }
 
-    // ---------- VIDEO MP4 ----------
+    /** NUEVO: saveRaw — guarda un DNG en background. Usado por captura RAW. */
+    fun saveRaw(context: Context, bytes: ByteArray): Uri? {
+        if (bytes.isEmpty()) return null
+        val resolver = context.contentResolver
+        val filename = "IMG_${System.currentTimeMillis()}.dng"
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/x-adobe-dng")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath())
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        }
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        else
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        var uri: Uri? = null
+        return try {
+            uri = resolver.insert(collection, values) ?: return null
+            resolver.openOutputStream(uri)?.use { it.write(bytes); it.flush() }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.update(uri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }, null, null)
+            }
+            uri
+        } catch (e: Exception) {
+            Log.e(TAG, "Error guardando DNG", e)
+            uri?.let { runCatching { resolver.delete(it, null, null) } }
+            null
+        }
+    }
+
     fun createVideoUri(context: Context): Uri? {
         val filename = "VID_${System.currentTimeMillis()}.mp4"
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/$FOLDER")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath())
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
@@ -97,34 +126,14 @@ class MediaStorageManager {
         }
     }
 
-    /**
-     * FIX: Abrimos con "rw" porque MediaRecorder necesita lectura+escritura
-     * sobre el FileDescriptor (algunos OEM fallan si se abre con "w").
-     */
     fun openVideoFd(context: Context, uri: Uri): ParcelFileDescriptor? = try {
         context.contentResolver.openFileDescriptor(uri, "rw")
     } catch (e: Exception) { Log.e(TAG, "Error abriendo FD de video", e); null }
 
-    /**
-     * Versión legacy (mantengo compat con el ViewModel original).
-     * Marca el video como NO pendiente. Si el FD está aún abierto la indexación
-     * puede fallar — recomendado usar finalizeVideo(context, uri, fd) cuando sea posible.
-     */
-    fun finalizeVideo(context: Context, uri: Uri) {
-        finalizeVideo(context, uri, null)
-    }
+    fun finalizeVideo(context: Context, uri: Uri) { finalizeVideo(context, uri, null) }
 
-    /**
-     * FIX ①: Versión nueva: cierra el FD ANTES del update y valida tamaño mínimo.
-     * Si el archivo resultante es absurdamente pequeño, se elimina (grabación fallida).
-     *
-     * @return true si el video quedó válido y publicado, false si fue eliminado.
-     */
     fun finalizeVideo(context: Context, uri: Uri, fd: ParcelFileDescriptor?): Boolean {
-        // Cerrar FD primero — el mediaserver necesita el fichero exclusivo
         try { fd?.close() } catch (_: Throwable) {}
-
-        // FIX ②: Validar tamaño (Android 10+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val sizeOk = context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -139,23 +148,18 @@ class MediaStorageManager {
                 Log.w(TAG, "No pude validar tamaño del video, asumo válido", e)
             }
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 context.contentResolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
             } catch (e: Exception) {
-                Log.e(TAG, "Error finalizando video", e)
-                return false
+                Log.e(TAG, "Error finalizando video", e); return false
             }
         }
         return true
     }
 
-    /**
-     * FIX ③: Limpieza pública para grabaciones canceladas/fallidas.
-     */
     fun deleteUri(context: Context, uri: Uri?) {
         if (uri == null) return
         runCatching { context.contentResolver.delete(uri, null, null) }
