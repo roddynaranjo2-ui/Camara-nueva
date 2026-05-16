@@ -228,6 +228,21 @@ class CameraControlViewModel : ViewModel() {
     fun getZoomMaxValue(): Float = _zoomMax.value
     fun getZoomMinValue(): Float = MIN_ZOOM
 
+    // ─── Preview size hint ────────────────────────────────────────────────────
+    /** Tamaño actual del SurfaceView en píxeles (notificado desde CameraPreview). */
+    @Volatile private var previewSurfaceWidth: Int = 0
+    @Volatile private var previewSurfaceHeight: Int = 0
+
+    /**
+     * Llamado desde CameraPreview.surfaceChanged() para informar al ViewModel
+     * del tamaño real del buffer de preview. Se usa en tapToFocus y para future
+     * optimizaciones de buffer.
+     */
+    fun notifyPreviewSize(width: Int, height: Int) {
+        previewSurfaceWidth = width
+        previewSurfaceHeight = height
+    }
+
     // ─── Ciclo de vida principal ──────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
