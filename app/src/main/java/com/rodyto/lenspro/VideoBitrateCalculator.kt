@@ -1,35 +1,19 @@
 package com.rodyto.lenspro
 
 /**
- * VideoBitrateCalculator
+ * VideoBitrateCalculator — Réplica afinada de la fórmula Samsung One UI.
  *
- * Réplica fiel de la clase decompilada de la cámara Samsung:
- *     com.sec.android.app.camera.engine.recording.session.VideoBitrate$Calculator
+ * Bitrate(bps) = area × fps × bitsPerPixelPerFrame × hdrBoost
  *
- * La fórmula real combina:
- *   - El ÁREA del frame (width × height)
- *   - El FPS efectivo
- *   - Un FACTOR por codec (H264 ≈ 0.10 bits/pixel/frame, HEVC ≈ 0.06)
- *   - Un BOOST para HDR/Pro (×1.25)
- *
- * El cálculo respeta los topes empíricos de Samsung One UI:
- *   HD30:   8 Mb/s  /  HD60: 12 Mb/s
- *   FHD30: 17 Mb/s  / FHD60: 26 Mb/s
- *   4K30:  48 Mb/s  /  4K60: 72 Mb/s
+ * Topes empíricos:
+ *   HD30:   8  Mb/s  /  HD60:  12 Mb/s
+ *   FHD30: 17  Mb/s  /  FHD60: 26 Mb/s
+ *   4K30:  48  Mb/s  /  4K60:  72 Mb/s
  */
 object VideoBitrateCalculator {
 
     enum class Codec { H264, HEVC }
 
-    /**
-     * Calcula el bitrate efectivo (bps) para Camera2 + MediaRecorder.
-     *
-     * @param width  ancho del frame de video
-     * @param height alto del frame de video
-     * @param fps    frames por segundo
-     * @param codec  codec destino
-     * @param hdr    si está activado el modo HDR/Pro Tone (boost ×1.25)
-     */
     fun compute(
         width: Int,
         height: Int,
@@ -48,10 +32,6 @@ object VideoBitrateCalculator {
         return clamped.toInt()
     }
 
-    /**
-     * Devuelve un "preset" estilo Samsung (snap a los valores conocidos)
-     * útil para mostrar en UI o para forzar mismo bitrate que la cámara stock.
-     */
     fun preset(res: VideoResolution, fps: Int, codec: Codec = Codec.H264): Int {
         val key = "${res.label}-$fps-${codec.name}"
         return PRESETS[key] ?: compute(res.width, res.height, fps, codec)
