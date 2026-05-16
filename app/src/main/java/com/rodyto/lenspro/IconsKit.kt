@@ -12,7 +12,6 @@ import androidx.compose.material.icons.rounded.FlashAuto
 import androidx.compose.material.icons.rounded.FlashOff
 import androidx.compose.material.icons.rounded.FlashOn
 import androidx.compose.material.icons.rounded.GridOn
-import araveling
 import androidx.compose.material.icons.rounded.HdrAuto
 import androidx.compose.material.icons.rounded.HorizontalRule
 import androidx.compose.material.icons.rounded.LensBlur
@@ -33,3 +32,46 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+
+object LensIcons {
+    val Settings: ImageVector get() = Icons.Rounded.Settings
+    val FlashOn: ImageVector get() = Icons.Rounded.FlashOn
+    val FlashOff: ImageVector get() = Icons.Rounded.FlashOff
+    val FlashAuto: ImageVector get() = Icons.Rounded.FlashAuto
+    val Hdr: ImageVector get() = Icons.Rounded.HdrAuto
+    val Grid: ImageVector get() = Icons.Rounded.GridOn
+    val SoundOn: ImageVector get() = Icons.Rounded.VolumeUp
+    val SoundOff: ImageVector get() = Icons.Rounded.VolumeOff
+    val Timer: ImageVector get() = Icons.Rounded.Timer
+    val TimerOff: ImageVector get() = Icons.Rounded.TimerOff
+    val Aspect: ImageVector get() = Icons.Rounded.LensBlur
+    val Exposure: ImageVector get() = Icons.Rounded.Exposure
+    val Flip: ImageVector get() = Icons.Rounded.Cameraswitch
+    val Gallery: ImageVector get() = Icons.Rounded.Collections
+    val Theme: ImageVector get() = Icons.Rounded.Palette
+    val More: ImageVector get() = Icons.Rounded.Tune
+    val Sparkle: ImageVector get() = Icons.Rounded.AutoAwesome
+    val Brightness: ImageVector get() = Icons.Rounded.WbSunny
+    // NUEVOS
+    val Histogram: ImageVector get() = Icons.Rounded.BarChart
+    val Horizon: ImageVector get() = Icons.Rounded.HorizontalRule
+    val Raw: ImageVector get() = Icons.Rounded.RawOn
+    val ChevronRight: ImageVector get() = Icons.Rounded.ChevronRight
+    val MoreHoriz: ImageVector get() = Icons.Rounded.MoreHoriz
+}
+
+@Composable
+fun LensIcon(
+    icon: ImageVector,
+    contentDescription: String? = null,
+    tint: Color = Color.White,
+    size: Dp = 20.dp,
+    modifier: Modifier = Modifier
+) {
+    Icon(
+        imageVector = icon,
+        contentDescription = contentDescription,
+        tint = tint,
+        modifier = modifier.size(size)
+    )
+}
