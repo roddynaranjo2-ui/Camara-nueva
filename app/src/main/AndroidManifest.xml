@@ -7,7 +7,6 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- Storage legacy (≤ Android 9) -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -15,7 +14,6 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Media granular (Android 13+) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
@@ -26,6 +24,8 @@
     <uses-feature android:name="android.hardware.camera.any"       android:required="true"  />
     <uses-feature android:name="android.hardware.camera.front"     android:required="false" />
     <uses-feature android:name="android.hardware.microphone"       android:required="true"  />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -53,6 +53,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ▼ NUEVO: pantalla de ajustes avanzados ▼ -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="Ajustes avanzados"
+            android:parentActivityName=".MainActivity"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.LensPro.Settings"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
 
     </application>
 </manifest>
