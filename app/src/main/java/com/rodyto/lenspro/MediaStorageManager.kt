@@ -10,8 +10,9 @@ import android.util.Log
 
 /**
  * Persistencia en MediaStore (DCIM/LensPro).
- *  - Usa `IS_PENDING` en API 29+ para evitar archivos parciales visibles.
+ *  - Usa IS_PENDING en API 29+ para evitar archivos parciales visibles.
  *  - Limpia el Uri si la escritura falla a mitad.
+ *  - openVideoFd: abre con "rw" — MediaRecorder lo requiere.
  */
 class MediaStorageManager {
 
@@ -85,8 +86,12 @@ class MediaStorageManager {
         }
     }
 
+    /**
+     * FIX: Abrimos con "rw" porque MediaRecorder necesita lectura+escritura
+     * sobre el FileDescriptor (algunos OEM fallan si se abre con "w").
+     */
     fun openVideoFd(context: Context, uri: Uri): ParcelFileDescriptor? = try {
-        context.contentResolver.openFileDescriptor(uri, "w")
+        context.contentResolver.openFileDescriptor(uri, "rw")
     } catch (e: Exception) { Log.e(TAG, "Error abriendo FD de video", e); null }
 
     fun finalizeVideo(context: Context, uri: Uri) {
