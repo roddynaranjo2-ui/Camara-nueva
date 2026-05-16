@@ -1,6 +1,7 @@
 package com.rodyto.lenspro
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -12,12 +13,12 @@ import kotlinx.coroutines.flow.map
 private val Context.lensProDataStore by preferencesDataStore(name = "lenspro_settings")
 
 /**
- * SettingsRepository — persistencia ligera vía DataStore.
- * Conserva flags premium que NO viven en el ViewModel:
- *   • histograma activo / horizonte / focus peaking
- *   • carpeta de organización (date / project)
- *   • estilo de paleta (override) + tema
- *   • formato preferido JPG / RAW
+ * SettingsRepository v2 — persistencia ligera vía DataStore.
+ *
+ * Cambios vs v1:
+ *  • Helpers `setAccent`, `setTheme` para facilitar a SettingsActivity.
+ *  • `themeFromString` / `themeToString` para serializar darkPref.
+ *  • `accentStyleFromIndex` para reconstruir AccentStyle desde el índice.
  */
 class SettingsRepository(private val context: Context) {
 
@@ -43,13 +44,31 @@ class SettingsRepository(private val context: Context) {
     val smoothZoom: Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_SMOOTH_ZOOM] ?: true }
     val video60fpsDefault: Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_VIDEO_60FPS] ?: false }
 
-    suspend fun set(key: androidx.datastore.preferences.core.Preferences.Key<Boolean>, value: Boolean) {
+    suspend fun set(key: Preferences.Key<Boolean>, value: Boolean) {
         context.lensProDataStore.edit { it[key] = value }
     }
-    suspend fun setInt(key: androidx.datastore.preferences.core.Preferences.Key<Int>, value: Int) {
+    suspend fun setInt(key: Preferences.Key<Int>, value: Int) {
         context.lensProDataStore.edit { it[key] = value }
     }
-    suspend fun setString(key: androidx.datastore.preferences.core.Preferences.Key<String>, value: String) {
+    suspend fun setString(key: Preferences.Key<String>, value: String) {
         context.lensProDataStore.edit { it[key] = value }
+    }
+
+    /** Helpers tipados */
+    suspend fun setAccentIndex(idx: Int) = setInt(KEY_ACCENT_INDEX, idx)
+    suspend fun setThemeMode(mode: String) = setString(KEY_THEME_MODE, mode)
+
+    /** Conversiones AccentStyle <-> índice */
+    fun accentFromIndex(idx: Int): AccentStyle =
+        AccentStyle.entries.getOrElse(idx) { AccentStyle.ICE_BLUE }
+
+    fun indexOfAccent(style: AccentStyle): Int =
+        AccentStyle.entries.indexOf(style).coerceAtLeast(0)
+
+    fun themeFromString(s: String): Boolean? = when (s) {
+        "dark" -> true; "light" -> false; else -> null
+    }
+    fun themeToString(v: Boolean?): String = when (v) {
+        true -> "dark"; false -> "light"; null -> "system"
     }
 }
