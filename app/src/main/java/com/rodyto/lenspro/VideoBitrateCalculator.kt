@@ -5,10 +5,10 @@ package com.rodyto.lenspro
  *
  * Bitrate(bps) = area × fps × bitsPerPixelPerFrame × hdrBoost
  *
- * Topes empíricos:
- *   HD30:   8  Mb/s  /  HD60:  12 Mb/s
- *   FHD30: 17  Mb/s  /  FHD60: 26 Mb/s
- *   4K30:  48  Mb/s  /  4K60:  72 Mb/s
+ * Topes empíricos (ajustados para evitar lag en encoders mid-range):
+ *   HD30:   6  Mb/s  /  HD60:  10 Mb/s
+ *   FHD30: 14  Mb/s  /  FHD60: 22 Mb/s
+ *   4K30:  42  Mb/s  /  4K60:  64 Mb/s
  */
 object VideoBitrateCalculator {
 
@@ -23,8 +23,8 @@ object VideoBitrateCalculator {
     ): Int {
         val area = (width.toLong() * height.toLong()).coerceAtLeast(1)
         val bitsPerPixelPerFrame = when (codec) {
-            Codec.H264 -> 0.10
-            Codec.HEVC -> 0.06
+            Codec.H264 -> 0.085   // antes 0.10 → bajado 15% (encoder se asfixiaba en mid-range)
+            Codec.HEVC -> 0.052   // antes 0.06
         }
         val raw = area.toDouble() * fps.toDouble() * bitsPerPixelPerFrame
         val boosted = if (hdr) raw * 1.25 else raw
@@ -37,20 +37,29 @@ object VideoBitrateCalculator {
         return PRESETS[key] ?: compute(res.width, res.height, fps, codec)
     }
 
+    /**
+     * NUEVO: bitrate adaptativo. Si el dispositivo declara una capacidad de encoder
+     * por debajo del preset, usa el más bajo. (Llamarlo opcional desde el VM.)
+     */
+    fun safePreset(res: VideoResolution, fps: Int, codec: Codec, encoderMaxBps: Int): Int {
+        val target = preset(res, fps, codec)
+        return if (encoderMaxBps in 1_000_000..target) encoderMaxBps else target
+    }
+
     private val PRESETS: Map<String, Int> = mapOf(
-        // === H264 ===
-        "HD-30-H264"  to  8_000_000,
-        "HD-60-H264"  to 12_000_000,
-        "FHD-30-H264" to 17_000_000,
-        "FHD-60-H264" to 26_000_000,
-        "4K-30-H264"  to 48_000_000,
-        "4K-60-H264"  to 72_000_000,
+        // === H264 (ajustados a la baja para mid-range) ===
+        "HD-30-H264"  to  6_000_000,
+        "HD-60-H264"  to 10_000_000,
+        "FHD-30-H264" to 14_000_000,
+        "FHD-60-H264" to 22_000_000,
+        "4K-30-H264"  to 42_000_000,
+        "4K-60-H264"  to 64_000_000,
         // === HEVC ===
-        "HD-30-HEVC"  to  5_000_000,
-        "HD-60-HEVC"  to  8_000_000,
-        "FHD-30-HEVC" to 10_000_000,
-        "FHD-60-HEVC" to 16_000_000,
-        "4K-30-HEVC"  to 28_000_000,
-        "4K-60-HEVC"  to 44_000_000
+        "HD-30-HEVC"  to  4_000_000,
+        "HD-60-HEVC"  to  6_500_000,
+        "FHD-30-HEVC" to  9_000_000,
+        "FHD-60-HEVC" to 14_000_000,
+        "4K-30-HEVC"  to 25_000_000,
+        "4K-60-HEVC"  to 40_000_000
     )
 }
