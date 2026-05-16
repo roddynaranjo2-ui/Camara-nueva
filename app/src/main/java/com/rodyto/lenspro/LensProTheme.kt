@@ -8,7 +8,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /* ================================================================
- * LensPro — tokens visuales glass / liquid glass
+ * LensPro — Tokens visuales (glass / liquid glass) — v2.0
+ *
+ * AMPLIACIÓN: paleta extendida con NEGRO PREMIUM + GRAPHITE + GOLD
+ * para conseguir el look iOS 26 / iPhone 17 Pro Max sin romper la
+ * estructura existente. Todas las paletas existentes se conservan.
  * ================================================================ */
 
 enum class AccentStyle(
@@ -38,7 +42,47 @@ enum class AccentStyle(
         accentSoft = Color(0xFFC5F3E5),
         accentGlow = Color(0xFF23A67F),
         onAccent = Color(0xFF041711)
-    )
+    ),
+    // ▼ NUEVAS PALETAS ▼
+    OBSIDIAN(
+        label = "Negro Obsidiana",
+        accent = Color(0xFF0A0A0A),
+        accentSoft = Color(0xFF1F1F1F),
+        accentGlow = Color(0xFF000000),
+        onAccent = Color(0xFFFFFFFF)
+    ),
+    GRAPHITE(
+        label = "Grafito",
+        accent = Color(0xFF3A3A3C),
+        accentSoft = Color(0xFF8E8E93),
+        accentGlow = Color(0xFF1C1C1E),
+        onAccent = Color(0xFFFFFFFF)
+    ),
+    TITANIUM_GOLD(
+        label = "Oro titanio",
+        accent = Color(0xFFD4A574),
+        accentSoft = Color(0xFFE8C9A0),
+        accentGlow = Color(0xFFB8895C),
+        onAccent = Color(0xFF1A1208)
+    ),
+    DESERT_TITANIUM(
+        label = "Titanio desierto",
+        accent = Color(0xFFBFA48F),
+        accentSoft = Color(0xFFE5D5C5),
+        accentGlow = Color(0xFF8A6E58),
+        onAccent = Color(0xFF1B130C)
+    ),
+    CRIMSON(
+        label = "Carmesí",
+        accent = Color(0xFFFF2D55),
+        accentSoft = Color(0xFFFF8AA0),
+        accentGlow = Color(0xFFCC0033),
+        onAccent = Color(0xFF1A0008)
+    );
+
+    /** Indica si el accent es un negro/grafito (afecta el chrome glass). */
+    val isMonochrome: Boolean
+        get() = this == OBSIDIAN || this == GRAPHITE
 }
 
 val LensAccent = AccentStyle.ICE_BLUE.accent
@@ -57,6 +101,13 @@ private val UltraThinLightSurface = Color(0x8AFFFFFF)
 private val UltraThinLightStroke = Color(0x220D1522)
 private val UltraThinLightStrokeInner = Color(0x12FFFFFF)
 private val UltraThinLightShadow = Color(0x14000000)
+
+// ▼ Variantes especiales para paletas monocromas (negro/grafito): chrome más oscuro y stroke dorado-sutil
+private val UltraThinObsidianBase = Color(0xC60A0A0A)
+private val UltraThinObsidianSurface = Color(0x33FFFFFF)
+private val UltraThinObsidianStroke = Color(0x44FFFFFF)
+private val UltraThinObsidianStrokeInner = Color(0x18FFFFFF)
+private val UltraThinObsidianShadow = Color(0x99000000)
 
 private val VibrancyDarkPrimary = Color(0xF5FFFFFF)
 private val VibrancyDarkSecondary = Color(0xB8E2EEFF)
@@ -86,51 +137,57 @@ data class GlassPalette(
     val isDark: Boolean
 )
 
-private fun glassDark(style: AccentStyle) = GlassPalette(
-    bg = Color(0x66131A25),
-    bgStrong = Color(0xCC0A0E14),
-    border = Color(0x52FFFFFF),
-    borderSoft = Color(0x1FFFFFFF),
-    onGlass = VibrancyDarkPrimary,
-    onGlassSecondary = VibrancyDarkSecondary,
-    ultraBase = UltraThinDarkBase,
-    ultraSurface = UltraThinDarkSurface,
-    ultraStroke = UltraThinDarkStroke,
-    ultraStrokeInner = UltraThinDarkStrokeInner,
-    shadow = UltraThinDarkShadow,
-    vibrancyPrimary = VibrancyDarkPrimary,
-    vibrancySecondary = VibrancyDarkSecondary,
-    accent = style.accent,
-    accentSoft = style.accentSoft,
-    accentGlow = style.accentGlow,
-    onAccent = style.onAccent,
-    letterboxTop = Color(0xE0090D13),
-    letterboxBottom = Color(0xE00A0E14),
-    isDark = true
-)
+private fun glassDark(style: AccentStyle): GlassPalette {
+    val mono = style.isMonochrome
+    return GlassPalette(
+        bg = if (mono) Color(0x800A0A0A) else Color(0x66131A25),
+        bgStrong = if (mono) Color(0xE6000000) else Color(0xCC0A0E14),
+        border = Color(0x52FFFFFF),
+        borderSoft = Color(0x1FFFFFFF),
+        onGlass = VibrancyDarkPrimary,
+        onGlassSecondary = VibrancyDarkSecondary,
+        ultraBase = if (mono) UltraThinObsidianBase else UltraThinDarkBase,
+        ultraSurface = if (mono) UltraThinObsidianSurface else UltraThinDarkSurface,
+        ultraStroke = if (mono) UltraThinObsidianStroke else UltraThinDarkStroke,
+        ultraStrokeInner = if (mono) UltraThinObsidianStrokeInner else UltraThinDarkStrokeInner,
+        shadow = if (mono) UltraThinObsidianShadow else UltraThinDarkShadow,
+        vibrancyPrimary = VibrancyDarkPrimary,
+        vibrancySecondary = VibrancyDarkSecondary,
+        accent = style.accent,
+        accentSoft = style.accentSoft,
+        accentGlow = style.accentGlow,
+        onAccent = style.onAccent,
+        letterboxTop = if (mono) Color(0xF0000000) else Color(0xE0090D13),
+        letterboxBottom = if (mono) Color(0xF0050505) else Color(0xE00A0E14),
+        isDark = true
+    )
+}
 
-private fun glassLight(style: AccentStyle) = GlassPalette(
-    bg = Color(0x73F7FAFF),
-    bgStrong = Color(0xEAF7F9FC),
-    border = Color(0x260D1522),
-    borderSoft = Color(0x120D1522),
-    onGlass = VibrancyLightPrimary,
-    onGlassSecondary = VibrancyLightSecondary,
-    ultraBase = UltraThinLightBase,
-    ultraSurface = UltraThinLightSurface,
-    ultraStroke = UltraThinLightStroke,
-    ultraStrokeInner = UltraThinLightStrokeInner,
-    shadow = UltraThinLightShadow,
-    vibrancyPrimary = VibrancyLightPrimary,
-    vibrancySecondary = VibrancyLightSecondary,
-    accent = style.accent,
-    accentSoft = style.accentSoft,
-    accentGlow = style.accentGlow,
-    onAccent = style.onAccent,
-    letterboxTop = Color(0xE5F3F7FB),
-    letterboxBottom = Color(0xEAF7FAFD),
-    isDark = false
-)
+private fun glassLight(style: AccentStyle): GlassPalette {
+    val mono = style.isMonochrome
+    return GlassPalette(
+        bg = if (mono) Color(0x802C2C2E) else Color(0x73F7FAFF),
+        bgStrong = if (mono) Color(0xEA1C1C1E) else Color(0xEAF7F9FC),
+        border = if (mono) Color(0x33FFFFFF) else Color(0x260D1522),
+        borderSoft = if (mono) Color(0x1AFFFFFF) else Color(0x120D1522),
+        onGlass = if (mono) VibrancyDarkPrimary else VibrancyLightPrimary,
+        onGlassSecondary = if (mono) VibrancyDarkSecondary else VibrancyLightSecondary,
+        ultraBase = if (mono) UltraThinObsidianBase else UltraThinLightBase,
+        ultraSurface = if (mono) UltraThinObsidianSurface else UltraThinLightSurface,
+        ultraStroke = if (mono) UltraThinObsidianStroke else UltraThinLightStroke,
+        ultraStrokeInner = if (mono) UltraThinObsidianStrokeInner else UltraThinLightStrokeInner,
+        shadow = if (mono) UltraThinObsidianShadow else UltraThinLightShadow,
+        vibrancyPrimary = if (mono) VibrancyDarkPrimary else VibrancyLightPrimary,
+        vibrancySecondary = if (mono) VibrancyDarkSecondary else VibrancyLightSecondary,
+        accent = style.accent,
+        accentSoft = style.accentSoft,
+        accentGlow = style.accentGlow,
+        onAccent = style.onAccent,
+        letterboxTop = if (mono) Color(0xF0000000) else Color(0xE5F3F7FB),
+        letterboxBottom = if (mono) Color(0xF0050505) else Color(0xEAF7FAFD),
+        isDark = mono // monocroma => fuerza chrome oscuro aunque el sistema esté en claro
+    )
+}
 
 @Composable
 fun LensProTheme(
@@ -173,5 +230,7 @@ fun glassPalette(
     accentStyle: AccentStyle = AccentStyle.ICE_BLUE
 ): GlassPalette {
     val isDark = forceDark ?: isSystemInDarkTheme()
-    return if (isDark) glassDark(accentStyle) else glassLight(accentStyle)
+    // Si la paleta es monocroma forzamos chrome oscuro para mantener la estética premium negra
+    val effectiveDark = isDark || accentStyle.isMonochrome
+    return if (effectiveDark) glassDark(accentStyle) else glassLight(accentStyle)
 }
