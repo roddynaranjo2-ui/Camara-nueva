@@ -38,10 +38,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * ActionChipBar v2 — chips dinámicos.
+ * Flash ahora muestra el tri-estado correcto (OFF / AUTO / ON) con iconos diferentes.
+ */
 @Composable
 fun ActionChipBar(
     palette: GlassPalette,
-    flashOn: Boolean,
+    flashMode: FlashMode,
     onToggleFlash: () -> Unit,
     hdrOn: Boolean,
     onToggleHdr: () -> Unit,
@@ -52,9 +56,7 @@ fun ActionChipBar(
     aspectLabel: String,
     onCycleAspect: () -> Unit,
     onOpenMore: () -> Unit,
-    modifier: Modifier = Modifier,
-    // Nuevo opcional para retro-compat: si se pasa, muestra estado tri (OFF/AUTO/ON)
-    flashMode: FlashMode? = null
+    modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier
@@ -64,83 +66,51 @@ fun ActionChipBar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Chip flash con tri-estado si se pasa flashMode, si no boolean
-        if (flashMode != null) {
-            ActionChipText(
-                label = when (flashMode) {
-                    FlashMode.OFF  -> "Off"
-                    FlashMode.AUTO -> "Auto"
-                    FlashMode.ON   -> "On"
-                },
-                icon = when (flashMode) {
-                    FlashMode.OFF -> LensIcons.FlashOff
-                    else          -> LensIcons.FlashOn
-                },
-                active = flashMode != FlashMode.OFF,
-                palette = palette,
-                onClick = onToggleFlash,
-                contentDescription = "Flash ${flashMode.label}"
-            )
-        } else {
-            ActionChip(
-                icon = if (flashOn) LensIcons.FlashOn else LensIcons.FlashOff,
-                active = flashOn,
-                palette = palette,
-                onClick = onToggleFlash,
-                contentDescription = "Flash"
-            )
-        }
-        ActionChip(
-            icon = LensIcons.Hdr,
-            active = hdrOn,
+        // ▼ Flash tri-estado con icono representativo ▼
+        ActionChipText(
+            label = when (flashMode) {
+                FlashMode.OFF -> "Off"; FlashMode.AUTO -> "Auto"; FlashMode.ON -> "On"
+            },
+            icon = when (flashMode) {
+                FlashMode.OFF -> LensIcons.FlashOff
+                FlashMode.AUTO -> LensIcons.FlashAuto
+                FlashMode.ON -> LensIcons.FlashOn
+            },
+            active = flashMode != FlashMode.OFF,
             palette = palette,
-            onClick = onToggleHdr,
-            contentDescription = "HDR"
+            onClick = onToggleFlash,
+            contentDescription = "Flash ${flashMode.label}"
+        )
+        ActionChip(
+            icon = LensIcons.Hdr, active = hdrOn, palette = palette,
+            onClick = onToggleHdr, contentDescription = "HDR"
         )
         ActionChipText(
-            label = when (timerSec) {
-                3 -> "3 s"
-                10 -> "10 s"
-                else -> "Auto"
-            },
+            label = when (timerSec) { 3 -> "3 s"; 10 -> "10 s"; else -> "Auto" },
             icon = if (timerSec > 0) LensIcons.Timer else LensIcons.TimerOff,
-            active = timerSec > 0,
-            palette = palette,
-            onClick = onCycleTimer,
-            contentDescription = "Temporizador"
+            active = timerSec > 0, palette = palette,
+            onClick = onCycleTimer, contentDescription = "Temporizador"
         )
         ActionChip(
             icon = if (soundOn) LensIcons.SoundOn else LensIcons.SoundOff,
-            active = soundOn,
-            palette = palette,
-            onClick = onToggleSound,
-            contentDescription = "Sonido"
+            active = soundOn, palette = palette,
+            onClick = onToggleSound, contentDescription = "Sonido"
         )
         ActionChipText(
-            label = aspectLabel,
-            icon = LensIcons.Aspect,
-            active = false,
-            palette = palette,
-            onClick = onCycleAspect,
-            contentDescription = "Relación de aspecto"
+            label = aspectLabel, icon = LensIcons.Aspect, active = false,
+            palette = palette, onClick = onCycleAspect, contentDescription = "Relación de aspecto"
         )
         ActionChip(
-            icon = LensIcons.More,
-            active = false,
-            palette = palette,
-            onClick = onOpenMore,
-            contentDescription = "Más ajustes"
+            icon = LensIcons.More, active = false, palette = palette,
+            onClick = onOpenMore, contentDescription = "Más ajustes"
         )
     }
 }
 
 @Composable
 private fun ActionChip(
-    icon: ImageVector,
-    active: Boolean,
-    palette: GlassPalette,
-    onClick: () -> Unit,
-    contentDescription: String
+    icon: ImageVector, active: Boolean, palette: GlassPalette,
+    onClick: () -> Unit, contentDescription: String
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressed()
@@ -149,7 +119,6 @@ private fun ActionChip(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "chip_scale"
     )
-
     Box(
         modifier = Modifier
             .size(38.dp)
@@ -177,10 +146,8 @@ private fun ActionChip(
             label = "chip_icon"
         ) { ic ->
             LensIcon(
-                icon = ic,
-                contentDescription = contentDescription,
-                tint = if (active) palette.onAccent else palette.onGlass,
-                size = 18.dp
+                icon = ic, contentDescription = contentDescription,
+                tint = if (active) palette.onAccent else palette.onGlass, size = 18.dp
             )
         }
     }
@@ -188,12 +155,8 @@ private fun ActionChip(
 
 @Composable
 private fun ActionChipText(
-    label: String,
-    icon: ImageVector,
-    active: Boolean,
-    palette: GlassPalette,
-    onClick: () -> Unit,
-    contentDescription: String
+    label: String, icon: ImageVector, active: Boolean, palette: GlassPalette,
+    onClick: () -> Unit, contentDescription: String
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressed()
@@ -202,7 +165,6 @@ private fun ActionChipText(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "chip_text_scale"
     )
-
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
@@ -214,25 +176,21 @@ private fun ActionChipText(
             )
             .clickable(
                 interactionSource = interaction,
-                indication = ripple(bounded = true),
-                onClick = onClick
+                indication = ripple(bounded = true), onClick = onClick
             )
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
         LensIcon(
-            icon = icon,
-            contentDescription = contentDescription,
-            tint = if (active) palette.onAccent else palette.onGlassSecondary,
-            size = 16.dp
+            icon = icon, contentDescription = contentDescription,
+            tint = if (active) palette.onAccent else palette.onGlassSecondary, size = 16.dp
         )
         Spacer(Modifier.size(4.dp))
         Text(
             text = label,
             color = if (active) palette.onAccent else palette.onGlass,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
+            fontSize = 12.sp, fontWeight = FontWeight.SemiBold
         )
     }
 }
@@ -256,10 +214,8 @@ private fun MutableInteractionSource.collectIsPressed(): androidx.compose.runtim
 
 @Composable
 fun ModeSelectorIos(
-    mode: String,
-    palette: GlassPalette,
-    onModeChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    mode: String, palette: GlassPalette,
+    onModeChange: (String) -> Unit, modifier: Modifier = Modifier
 ) {
     val modes = listOf("FOTO", "VIDEO")
     Row(
@@ -273,9 +229,7 @@ fun ModeSelectorIos(
     ) {
         modes.forEach { item ->
             ModeLabel(
-                text = item,
-                selected = mode == item,
-                palette = palette,
+                text = item, selected = mode == item, palette = palette,
                 onClick = { onModeChange(item) }
             )
         }
@@ -283,12 +237,7 @@ fun ModeSelectorIos(
 }
 
 @Composable
-private fun ModeLabel(
-    text: String,
-    selected: Boolean,
-    palette: GlassPalette,
-    onClick: () -> Unit
-) {
+private fun ModeLabel(text: String, selected: Boolean, palette: GlassPalette, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
