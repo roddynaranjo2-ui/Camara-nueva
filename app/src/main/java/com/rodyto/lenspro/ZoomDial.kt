@@ -38,22 +38,18 @@ import kotlin.math.sin
  *
  *  - Drag tangencial al borde del dial → rotación.
  *  - La rotación se mapea logarítmicamente al zoom: zoom = exp(angle × k).
- *    Da granularidad fina cerca de 1× y se acelera hacia 10×.
+ *    Da granularidad fina cerca de 1× y se acelera hacia 30×.
  *  - Al soltar, `Animatable.animateDecay(exponentialDecay)` produce una
  *    deceleración logarítmica (inercia + fricción) idéntica al sistema iOS.
  *  - Tick háptico cada Δ angular suficiente: simula muescas físicas.
  *
- *  FIX (build): la llamada `rotation.stop()` es `suspend` y debe vivir
- *  dentro de una corrutina. Se envuelve en `scope.launch { ... }`.
- *  También se eliminó la expresión `::lastTickAngle::set` (ambiguidad de
- *  callable references + variable local). El throttling se reescribe con
- *  asignación directa al `var`.
+ *  FIX: maxZoom ahora se respeta hasta 30× cuando el caller lo pasa.
  */
 @Composable
 fun ZoomDial(
     currentZoom: Float,
     minZoom: Float = 0.5f,
-    maxZoom: Float = 10f,
+    maxZoom: Float = 30f,
     palette: GlassPalette,
     onZoomChange: (Float) -> Unit,
     onHapticTick: () -> Unit
@@ -81,13 +77,12 @@ fun ZoomDial(
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = {
-                        // rotation.stop() es suspend → debe ir dentro de una corrutina.
                         scope.launch { rotation.stop() }
                     },
                     onDragEnd = {
                         scope.launch {
                             rotation.animateDecay(
-                                initialVelocity = 0f, // velocity no expuesta directamente
+                                initialVelocity = 0f,
                                 animationSpec = exponentialDecay(
                                     frictionMultiplier = 1.2f,
                                     absVelocityThreshold = 0.5f
@@ -153,8 +148,10 @@ fun ZoomDial(
                 )
             }
         }
+
+        val zNow = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
         Text(
-            text = "%.1fx".format(angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)),
+            text = if (zNow >= 10f) "${zNow.toInt()}×" else "%.1f×".format(zNow),
             color = palette.onGlass,
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold
