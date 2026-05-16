@@ -49,12 +49,14 @@ fun CameraPreview(
 
     val aspect by viewModel.previewAspectRatio.collectAsStateWithLifecycle()
 
-    // FIX: Animación con spring crítico (sin rebote ni "tirón")
+    // FIX: Animación crítica más rápida → menos "tirón" al cambiar 3:4 ↔ 16:9.
+    // Damping ratio 1.0 (sin rebote), stiffness Medium para terminar antes
+    // de que el SurfaceView empiece a renderizar a la nueva resolución.
     val animatedAspect by animateFloatAsState(
         targetValue = aspect,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            stiffness = Spring.StiffnessMedium
         ),
         label = "preview_aspect"
     )
