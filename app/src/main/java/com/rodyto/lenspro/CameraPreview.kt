@@ -3,8 +3,9 @@ package com.rodyto.lenspro
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -48,14 +49,16 @@ fun CameraPreview(
 
     val aspect by viewModel.previewAspectRatio.collectAsStateWithLifecycle()
 
+    // FIX: Animación con spring crítico (sin rebote ni "tirón")
     val animatedAspect by animateFloatAsState(
         targetValue = aspect,
-        animationSpec = tween(220),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "preview_aspect"
     )
 
-    // FIX ①: activeSurface se guarda como referencia estable para que el
-    // LifecycleObserver siempre use la superficie actual (no un snapshot viejo).
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
 
     DisposableEffect(lifecycleOwner) {
@@ -63,9 +66,6 @@ fun CameraPreview(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     val surface = activeSurface
-                    // FIX ①: Solo iniciamos si la cámara no está ya corriendo
-                    // y la surface es válida. Evita el doble-start que causaba
-                    // pantalla negra al volver de background.
                     if (surface != null && surface.isValid && !viewModel.isCameraRunning()) {
                         viewModel.startCameraSession(
                             context = context,
@@ -74,17 +74,14 @@ fun CameraPreview(
                         )
                     }
                 }
-
                 Lifecycle.Event.ON_PAUSE -> {
                     viewModel.closeCamera()
                 }
-
                 else -> Unit
             }
         }
 
         lifecycleOwner.lifecycle.addObserver(observer)
-
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
@@ -118,10 +115,6 @@ fun CameraPreview(
                             override fun surfaceCreated(holder: SurfaceHolder) {
                                 val surface = holder.surface
                                 activeSurface = surface
-                                // FIX ①: surfaceCreated es el único lugar donde
-                                // iniciamos la cámara desde el callback de Surface.
-                                // El guard isCameraRunning() evita duplicar el open
-                                // si el LifecycleObserver ya lo arrancó.
                                 if (surface.isValid && !viewModel.isCameraRunning()) {
                                     viewModel.startCameraSession(
                                         context = ctx,
@@ -137,10 +130,6 @@ fun CameraPreview(
                                 width: Int,
                                 height: Int
                             ) {
-                                // FIX ①: surfaceChanged puede llegar después de
-                                // surfaceCreated con un nuevo buffer; solo
-                                // actualizamos la referencia, no reiniciamos la
-                                // sesión para evitar flashes de pantalla negra.
                                 activeSurface = holder.surface
                             }
 
@@ -152,8 +141,6 @@ fun CameraPreview(
                     }
                 },
                 update = { view ->
-                    // FIX ①: update se llama en recomposiciones; solo
-                    // actualizamos la referencia sin re-abrir la cámara.
                     val surface = view.holder.surface
                     activeSurface = surface
                 }
