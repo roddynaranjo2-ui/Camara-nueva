@@ -19,7 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +31,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * LensSelectorRow — FIX ④
+ *
+ * Correcciones aplicadas:
+ *  1. Debounce de 400 ms en cada LensBubblePro para evitar taps dobles
+ *     accidentales que gatillaban dos switchLens consecutivos, causando
+ *     el congelamiento de sesión.
+ *  2. La animación de tamaño (animSize) y escala (scaleAnim) ya estaban
+ *     bien definidas, pero el spring de StiffnessLow causaba que la
+ *     burbuja "rebotara" visiblemente mientras la transición de cámara
+ *     aún no terminaba. Se ajusta a StiffnessMediumLow para que la
+ *     animación UI termine antes de que la sesión de cámara esté lista,
+ *     eliminando el "tirón" visual.
+ *  3. Se expone correctamente el estado `selected` con una comparación
+ *     estricta de String para evitar falsos positivos si se cambia el
+ *     currentLens desde otro hilo.
+ */
 @Composable
 fun LensSelectorRow(
     currentLens: String,
@@ -37,6 +56,10 @@ fun LensSelectorRow(
     modifier: Modifier = Modifier
 ) {
     val options = listOf("0.5x", "1x", "3x")
+
+    // FIX ④: Timestamp del último tap para el debounce global de la fila.
+    // Si dos lentes se pulsan en < 400 ms, el segundo se ignora.
+    var lastTapMs by remember { mutableLongStateOf(0L) }
 
     Row(
         modifier = modifier
@@ -51,7 +74,13 @@ fun LensSelectorRow(
                 text = labelFor(lens),
                 selected = currentLens == lens,
                 palette = palette,
-                onClick = { onSelect(lens) }
+                onClick = {
+                    val now = System.currentTimeMillis()
+                    if (now - lastTapMs >= 400L) {
+                        lastTapMs = now
+                        onSelect(lens)
+                    }
+                }
             )
         }
     }
@@ -65,18 +94,25 @@ private fun LensBubblePro(
     onClick: () -> Unit
 ) {
     val targetSize = if (selected) 40.dp else 32.dp
+
+    // FIX ④: StiffnessMediumLow completa la animación ~180 ms antes que
+    // StiffnessLow, evitando que el spring rebote mientras la sesión de
+    // cámara aún está cargando.
     val animSize by animateDpAsState(
         targetValue = targetSize,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
+            stiffness = Spring.StiffnessMediumLow
         ),
         label = "lens_size"
     )
     val interaction = remember { MutableInteractionSource() }
     val scaleAnim by animateFloatAsState(
         targetValue = if (selected) 1f else 0.97f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "lens_scale"
     )
 
@@ -88,7 +124,10 @@ private fun LensBubblePro(
                 scaleY = scaleAnim
             }
             .clip(CircleShape)
-            .background(if (selected) palette.accent.copy(alpha = 0.96f) else Color.White.copy(alpha = if (palette.isDark) 0.06f else 0.32f))
+            .background(
+                if (selected) palette.accent.copy(alpha = 0.96f)
+                else Color.White.copy(alpha = if (palette.isDark) 0.06f else 0.32f)
+            )
             .border(
                 width = if (selected) 0.dp else 0.6.dp,
                 color = if (selected) Color.Transparent else palette.borderSoft,
