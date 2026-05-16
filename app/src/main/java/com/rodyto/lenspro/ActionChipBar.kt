@@ -52,7 +52,9 @@ fun ActionChipBar(
     aspectLabel: String,
     onCycleAspect: () -> Unit,
     onOpenMore: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Nuevo opcional para retro-compat: si se pasa, muestra estado tri (OFF/AUTO/ON)
+    flashMode: FlashMode? = null
 ) {
     Row(
         modifier = modifier
@@ -62,13 +64,32 @@ fun ActionChipBar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ActionChip(
-            icon = if (flashOn) LensIcons.FlashOn else LensIcons.FlashOff,
-            active = flashOn,
-            palette = palette,
-            onClick = onToggleFlash,
-            contentDescription = "Flash"
-        )
+        // Chip flash con tri-estado si se pasa flashMode, si no boolean
+        if (flashMode != null) {
+            ActionChipText(
+                label = when (flashMode) {
+                    FlashMode.OFF  -> "Off"
+                    FlashMode.AUTO -> "Auto"
+                    FlashMode.ON   -> "On"
+                },
+                icon = when (flashMode) {
+                    FlashMode.OFF -> LensIcons.FlashOff
+                    else          -> LensIcons.FlashOn
+                },
+                active = flashMode != FlashMode.OFF,
+                palette = palette,
+                onClick = onToggleFlash,
+                contentDescription = "Flash ${flashMode.label}"
+            )
+        } else {
+            ActionChip(
+                icon = if (flashOn) LensIcons.FlashOn else LensIcons.FlashOff,
+                active = flashOn,
+                palette = palette,
+                onClick = onToggleFlash,
+                contentDescription = "Flash"
+            )
+        }
         ActionChip(
             icon = LensIcons.Hdr,
             active = hdrOn,
