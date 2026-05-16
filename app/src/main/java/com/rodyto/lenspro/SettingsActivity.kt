@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -29,10 +28,8 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,13 +39,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * SettingsActivity — Pantalla "Ajustes avanzados" estilo iOS 26 Settings.
+ * SettingsActivity v2 — Pantalla "Ajustes avanzados" estilo iOS 26.
  *
- * UI con secciones agrupadas, glass cards y switches. Persiste vía SettingsRepository.
- * Acceso desde MainActivity → menú desplegable → "Abrir configuración".
+ * FIX C5: ahora LEE del SettingsRepository (DataStore) con `collectAsStateWithLifecycle`
+ * y PERSISTE inmediatamente cualquier cambio. Los toggles ya NO se resetean a false
+ * al reabrir la activity.
+ *
+ * FIX N3: accent y dark también se persisten en el repo, no solo localmente.
+ *
+ * El MainActivity, al volver, lee el repo en su LaunchedEffect inicial y propaga
+ * los cambios al ViewModel vía `applyPersistedSettings()`.
  */
 class SettingsActivity : ComponentActivity() {
 
@@ -56,16 +61,18 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            // Lee el estilo seleccionado del repo (sin lifecycle bind para mantener simple)
-            var accent by remember { mutableStateOf(AccentStyle.ICE_BLUE) }
-            var dark by remember { mutableStateOf<Boolean?>(null) }
+            val context = LocalContext.current
+            val repo = remember { SettingsRepository(context) }
+            val accentIdx by repo.accentIndex.collectAsStateWithLifecycle(initialValue = 0)
+            val themeStr by repo.themeMode.collectAsStateWithLifecycle(initialValue = "system")
+            val accent = repo.accentFromIndex(accentIdx)
+            val dark = repo.themeFromString(themeStr)
             LensProTheme(forceDark = dark, accentStyle = accent) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                     SettingsScreen(
+                        repo = repo,
                         accent = accent,
-                        onAccent = { accent = it },
                         darkPref = dark,
-                        onDark = { dark = it },
                         onBack = { finish() }
                     )
                 }
@@ -76,25 +83,22 @@ class SettingsActivity : ComponentActivity() {
 
 @Composable
 private fun SettingsScreen(
+    repo: SettingsRepository,
     accent: AccentStyle,
-    onAccent: (AccentStyle) -> Unit,
     darkPref: Boolean?,
-    onDark: (Boolean?) -> Unit,
     onBack: () -> Unit
 ) {
     val palette = glassPalette(forceDark = darkPref, accentStyle = accent)
-    val context = LocalContext.current
-    val repo = remember { SettingsRepository(context) }
     val scope = rememberCoroutineScope()
 
-    // Estados locales (replican el repo; en producción usarías collectAsStateWithLifecycle)
-    var histogram by remember { mutableStateOf(false) }
-    var horizon by remember { mutableStateOf(false) }
-    var focusPeak by remember { mutableStateOf(false) }
-    var raw by remember { mutableStateOf(false) }
-    var orgByDate by remember { mutableStateOf(true) }
-    var smoothZoom by remember { mutableStateOf(true) }
-    var video60 by remember { mutableStateOf(false) }
+    // FIX C5: leer DIRECTAMENTE del repo con flows
+    val histogram by repo.histogramEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val horizon by repo.horizonEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val focusPeak by repo.focusPeaking.collectAsStateWithLifecycle(initialValue = false)
+    val raw by repo.rawCapture.collectAsStateWithLifecycle(initialValue = false)
+    val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
+    val smoothZoom by repo.smoothZoom.collectAsStateWithLifecycle(initialValue = true)
+    val video60 by repo.video60fpsDefault.collectAsStateWithLifecycle(initialValue = false)
 
     Box(
         modifier = Modifier
@@ -114,11 +118,8 @@ private fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                // ── Header ──
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -142,7 +143,7 @@ private fun SettingsScreen(
                 }
             }
 
-            // ── SECCIÓN: APARIENCIA ──
+            // APARIENCIA
             item { SectionTitle("Apariencia", palette) }
             item {
                 GlassCard(palette) {
@@ -152,7 +153,8 @@ private fun SettingsScreen(
                         palette = palette,
                         onClick = {
                             val list = AccentStyle.entries
-                            onAccent(list[(list.indexOf(accent) + 1) % list.size])
+                            val nextIdx = (list.indexOf(accent) + 1) % list.size
+                            scope.launch { repo.setAccentIndex(nextIdx) }
                         }
                     )
                     Divider(palette)
@@ -161,13 +163,16 @@ private fun SettingsScreen(
                         value = when (darkPref) { true -> "Oscuro"; false -> "Claro"; null -> "Sistema" },
                         palette = palette,
                         onClick = {
-                            onDark(when (darkPref) { null -> true; true -> false; false -> null })
+                            val nextStr = when (darkPref) {
+                                null -> "dark"; true -> "light"; false -> "system"
+                            }
+                            scope.launch { repo.setThemeMode(nextStr) }
                         }
                     )
                 }
             }
 
-            // ── SECCIÓN: COMPOSICIÓN ──
+            // COMPOSICIÓN
             item { SectionTitle("Composición", palette) }
             item {
                 GlassCard(palette) {
@@ -175,35 +180,26 @@ private fun SettingsScreen(
                         label = "Histograma en tiempo real",
                         sub = "Análisis de luminancia desde YUV",
                         checked = histogram, palette = palette,
-                        onChange = {
-                            histogram = it
-                            scope.launch { repo.set(SettingsRepository.KEY_HISTOGRAM, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_HISTOGRAM, it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Horizonte artificial",
                         sub = "Usa el acelerómetro del dispositivo",
                         checked = horizon, palette = palette,
-                        onChange = {
-                            horizon = it
-                            scope.launch { repo.set(SettingsRepository.KEY_HORIZON, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_HORIZON, it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Focus peaking",
                         sub = "Resalta bordes enfocados (manual focus)",
                         checked = focusPeak, palette = palette,
-                        onChange = {
-                            focusPeak = it
-                            scope.launch { repo.set(SettingsRepository.KEY_FOCUS_PEAK, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_FOCUS_PEAK, it) } }
                     )
                 }
             }
 
-            // ── SECCIÓN: CAPTURA ──
+            // CAPTURA
             item { SectionTitle("Captura", palette) }
             item {
                 GlassCard(palette) {
@@ -211,35 +207,26 @@ private fun SettingsScreen(
                         label = "Formato RAW (DNG)",
                         sub = "Guarda el negativo digital sin procesar",
                         checked = raw, palette = palette,
-                        onChange = {
-                            raw = it
-                            scope.launch { repo.set(SettingsRepository.KEY_RAW, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_RAW, it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Zoom suave",
                         sub = "Interpolación entre lentes (380 ms)",
                         checked = smoothZoom, palette = palette,
-                        onChange = {
-                            smoothZoom = it
-                            scope.launch { repo.set(SettingsRepository.KEY_SMOOTH_ZOOM, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_SMOOTH_ZOOM, it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Video 60 fps por defecto",
                         sub = "Si el sensor lo soporta",
                         checked = video60, palette = palette,
-                        onChange = {
-                            video60 = it
-                            scope.launch { repo.set(SettingsRepository.KEY_VIDEO_60FPS, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_VIDEO_60FPS, it) } }
                     )
                 }
             }
 
-            // ── SECCIÓN: ARCHIVOS ──
+            // ARCHIVOS
             item { SectionTitle("Archivos y galería", palette) }
             item {
                 GlassCard(palette) {
@@ -247,15 +234,12 @@ private fun SettingsScreen(
                         label = "Organizar por fecha",
                         sub = "DCIM/LensPro/yyyy-MM-dd",
                         checked = orgByDate, palette = palette,
-                        onChange = {
-                            orgByDate = it
-                            scope.launch { repo.set(SettingsRepository.KEY_ORG_BY_DATE, it) }
-                        }
+                        onChange = { scope.launch { repo.set(SettingsRepository.KEY_ORG_BY_DATE, it) } }
                     )
                 }
             }
 
-            // ── PALETAS DE COLOR (selección directa) ──
+            // PALETAS
             item { SectionTitle("Paleta de colores", palette) }
             item {
                 GlassCard(palette) {
@@ -264,7 +248,9 @@ private fun SettingsScreen(
                             style = style,
                             selected = style == accent,
                             palette = palette,
-                            onClick = { onAccent(style) }
+                            onClick = {
+                                scope.launch { repo.setAccentIndex(idx) }
+                            }
                         )
                         if (idx < AccentStyle.entries.size - 1) Divider(palette)
                     }
@@ -273,7 +259,7 @@ private fun SettingsScreen(
 
             item {
                 Text(
-                    "LensPro v2.0 • Glass UI • Camera2 + NDK\nFusionado con donantes Google · OpenCamera · SimpleRawCamera",
+                    "LensPro v2.1 • Glass UI • Camera2 + NDK\nRAW DNG real · Manual focus · EXIF dinámico",
                     color = palette.onGlassSecondary,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 18.dp, bottom = 30.dp)
@@ -322,16 +308,12 @@ private fun SettingsRowSwitch(
     palette: GlassPalette, onChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(label, color = palette.onGlass, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            if (sub != null) {
-                Text(sub, color = palette.onGlassSecondary, fontSize = 12.sp)
-            }
+            if (sub != null) Text(sub, color = palette.onGlassSecondary, fontSize = 12.sp)
         }
         Switch(
             checked = checked,
@@ -351,9 +333,7 @@ private fun SettingsRowAction(
     label: String, value: String, palette: GlassPalette, onClick: () -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -361,33 +341,4 @@ private fun SettingsRowAction(
             fontWeight = FontWeight.Medium)
         Text(value, color = palette.onGlassSecondary, fontSize = 14.sp)
         Spacer(Modifier.size(6.dp))
-        LensIcon(LensIcons.ChevronRight, tint = palette.onGlassSecondary, size = 16.dp)
-    }
-}
-
-@Composable
-private fun AccentRow(
-    style: AccentStyle, selected: Boolean, palette: GlassPalette, onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(22.dp)
-                .clip(CircleShape)
-                .background(style.accent)
-                .border(0.8.dp, palette.borderSoft, CircleShape)
-        )
-        Spacer(Modifier.size(12.dp))
-        Text(style.label, color = palette.onGlass, fontSize = 15.sp,
-            modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-        if (selected) {
-            Text("✓", color = palette.accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        }
-    }
-}
+        LensIcon(LensIcons.Chevron
