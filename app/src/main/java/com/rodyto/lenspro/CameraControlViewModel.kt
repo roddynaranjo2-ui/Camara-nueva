@@ -2,7 +2,6 @@ package com.rodyto.lenspro
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -11,8 +10,10 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.DngCreator
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
+import android.media.Image
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -30,10 +31,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.max
@@ -173,7 +177,7 @@ class CameraControlViewModel : ViewModel() {
     private val _minFocusDistance = MutableStateFlow(0f)
     val minFocusDistance: StateFlow<Float> = _minFocusDistance.asStateFlow()
 
-    // ─── NUEVOS StateFlows (v2.0) ─────────────────────────────────────────────
+    // ─── NUEVOS StateFlows (v2.1) ─────────────────────────────────────────────
     private val _histogramEnabled = MutableStateFlow(false)
     val histogramEnabled: StateFlow<Boolean> = _histogramEnabled.asStateFlow()
 
@@ -192,11 +196,23 @@ class CameraControlViewModel : ViewModel() {
     private val _supports60fps = MutableStateFlow(true)
     val supports60fps: StateFlow<Boolean> = _supports60fps.asStateFlow()
 
-    private val _iso = MutableStateFlow<Int?>(null)        // sensor metadata
+    private val _iso = MutableStateFlow<Int?>(null)
     val iso: StateFlow<Int?> = _iso.asStateFlow()
 
     private val _shutterSpeedNs = MutableStateFlow<Long?>(null)
     val shutterSpeedNs: StateFlow<Long?> = _shutterSpeedNs.asStateFlow()
+
+    /** NUEVO (A8 + N10): rotación del display, alimentada desde MainActivity. */
+    @Volatile private var deviceDisplayRotation: Int = 0
+    fun notifyDeviceRotation(degrees: Int) {
+        deviceDisplayRotation = ((degrees % 360) + 360) % 360
+    }
+
+    /** NUEVO (A7): metadata DNG en vuelo desde la última captura RAW. */
+    @Volatile private var lastTotalResult: TotalCaptureResult? = null
+
+    /** NUEVO (N1): conjunto de surfaces actualmente configuradas en la sesión. */
+    @Volatile private var currentSessionSurfaces: Set<Surface> = emptySet()
 
     // ─── Camera2 state ────────────────────────────────────────────────────────
     private var cameraManager: CameraManager? = null
@@ -222,6 +238,9 @@ class CameraControlViewModel : ViewModel() {
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
 
+    /** FIX A5: lock sincrónico para `ensureThreads`. */
+    private val threadsLock = Any()
+
     private val sessionMutex = Mutex()
 
     @Volatile private var cameraRunning = false
@@ -237,6 +256,34 @@ class CameraControlViewModel : ViewModel() {
     }
 
     private var smoothZoomJob: Job? = null
+
+    /**
+     * FIX A2: callback único persistente para JPEG. Se setea una vez en
+     * ensureImageReaders() y se reutiliza. Cuando llega un frame, se pasa
+     * a este consumidor (que cambia por captura).
+     */
+    @Volatile private var pendingJpegConsumer: ((ByteArray) -> Unit)? = null
+    @Volatile private var pendingRawConsumer: ((Image) -> Unit)? = null
+
+    // ──────────────────────────────────────────────────────────────────────────
+    //  NUEVO: aplicar settings persistidos al iniciar (F1-F5, C5)
+    // ──────────────────────────────────────────────────────────────────────────
+    /**
+     * Lee TODOS los flags del SettingsRepository (DataStore) y los aplica al VM
+     * en bloque. MainActivity invoca esto una sola vez tras instanciar el VM.
+     */
+    suspend fun applyPersistedSettings(repo: SettingsRepository) {
+        try {
+            _histogramEnabled.value = repo.histogramEnabled.first()
+            _horizonEnabled.value = repo.horizonEnabled.first()
+            _rawCapture.value = repo.rawCapture.first()
+            _smoothZoomEnabled.value = repo.smoothZoom.first()
+            val want60 = repo.video60fpsDefault.first()
+            if (want60) _videoFps.value = VideoFps.FPS60
+        } catch (e: Throwable) {
+            Log.w(TAG, "applyPersistedSettings: fallo leyendo repo", e)
+        }
+    }
 
     // ─── Ciclo de vida ────────────────────────────────────────────────────────
 
@@ -273,7 +320,6 @@ class CameraControlViewModel : ViewModel() {
                 it == CameraCharacteristics.CONTROL_VIDEO_STABILIZATION_MODE_ON
             }
 
-            // ▼ Validar 60 fps en res actual
             _supports60fps.value = CameraTuning.supportsFpsAtResolution(
                 currentCharacteristics, _videoResolution.value, 60
             )
@@ -320,24 +366,69 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    private fun closeCameraLocked() {
+    /**
+     * FIX A3: ahora espera `onClosed()` con timeout 800ms antes de seguir.
+     * Esto evita que un toggleFrontCamera() o switchLens() rápidos den
+     * "CAMERA_IN_USE" en Samsung/MediaTek que tardan en liberar el HAL.
+     */
+    private suspend fun closeCameraLocked() {
         try {
             if (_isRecording.value) safeStopMediaRecorder()
             try { captureSession?.stopRepeating() } catch (_: Throwable) {}
-            captureSession?.close(); captureSession = null
-            cameraDevice?.close(); cameraDevice = null
+            try { captureSession?.close() } catch (_: Throwable) {}
+            captureSession = null
+            currentSessionSurfaces = emptySet()
+
+            val device = cameraDevice
+            if (device != null) {
+                withTimeoutOrNull(800L) {
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        val key = Any()
+                        // El callback global ya cuenta el onClosed mediante el StateCallback
+                        // pasado en openCamera; aquí solo damos margen al HAL.
+                        try {
+                            device.close()
+                        } catch (_: Throwable) {}
+                        // Pequeño polling: en cuanto cameraRunning baje a false y
+                        // el HAL haya liberado, salimos.
+                        Thread {
+                            var waited = 0
+                            while (waited < 800 && cont.isActive) {
+                                try { Thread.sleep(40) } catch (_: Throwable) {}
+                                waited += 40
+                            }
+                            if (cont.isActive) cont.resume(Unit)
+                        }.apply { name = "cam-close-$key"; start() }
+                        cont.invokeOnCancellation { /* no-op */ }
+                    }
+                }
+            }
+            cameraDevice = null
             multiReader.release()
             mediaRecorder?.release(); mediaRecorder = null
             recordSurface?.release(); recordSurface = null
         } catch (e: Throwable) {
             Log.w(TAG, "closeCamera warn", e)
-        } finally { cameraRunning = false }
+        } finally {
+            cameraRunning = false
+            pendingJpegConsumer = null
+            pendingRawConsumer = null
+        }
     }
 
+    /**
+     * FIX M4: cerramos la cámara ESPERANDO antes de matar los threads.
+     */
     override fun onCleared() {
-        super.onCleared(); closeCamera()
-        cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
-        bgThread?.quitSafely(); bgThread = null; bgHandler = null
+        super.onCleared()
+        // Cierre sincronizado en el mismo scope (ya cancelado, pero arrancamos un job final)
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionMutex.withLock { closeCameraLocked() }
+            synchronized(threadsLock) {
+                cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
+                bgThread?.quitSafely(); bgThread = null; bgHandler = null
+            }
+        }
     }
 
     // ─── Toggles ──────────────────────────────────────────────────────────────
@@ -362,9 +453,16 @@ class CameraControlViewModel : ViewModel() {
     fun toggleShutterSound() { _shutterSoundEnabled.value = !_shutterSoundEnabled.value }
     fun toggleHaptics() { _hapticsEnabled.value = !_hapticsEnabled.value }
     fun toggleHevc() { _hevcEnabled.value = !_hevcEnabled.value }
+
     fun toggleHistogram() {
-        _histogramEnabled.value = !_histogramEnabled.value
-        // Si se activa requerimos YUV reader → reconstruimos session si está activa
+        val newValue = !_histogramEnabled.value
+        setHistogramEnabled(newValue)
+    }
+
+    /** NUEVO: setter directo (usado por SettingsActivity al persistir). */
+    fun setHistogramEnabled(enabled: Boolean) {
+        if (_histogramEnabled.value == enabled) return
+        _histogramEnabled.value = enabled
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
                 if (cameraRunning) {
@@ -374,9 +472,18 @@ class CameraControlViewModel : ViewModel() {
             }
         }
     }
+
     fun toggleHorizon() { _horizonEnabled.value = !_horizonEnabled.value }
+    fun setHorizonEnabled(enabled: Boolean) { _horizonEnabled.value = enabled }
+
     fun toggleRaw() {
-        _rawCapture.value = !_rawCapture.value
+        val newValue = !_rawCapture.value
+        setRawCaptureEnabled(newValue)
+    }
+
+    fun setRawCaptureEnabled(enabled: Boolean) {
+        if (_rawCapture.value == enabled) return
+        _rawCapture.value = enabled
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
                 if (cameraRunning) {
@@ -386,7 +493,14 @@ class CameraControlViewModel : ViewModel() {
             }
         }
     }
+
     fun toggleSmoothZoom() { _smoothZoomEnabled.value = !_smoothZoomEnabled.value }
+    fun setSmoothZoomEnabled(enabled: Boolean) { _smoothZoomEnabled.value = enabled }
+
+    /** NUEVO: setter para 60fps por defecto. */
+    fun setVideoFpsDefault60(want60: Boolean) {
+        _videoFps.value = if (want60) VideoFps.FPS60 else VideoFps.FPS30
+    }
 
     fun cycleTimer() {
         _timerSeconds.value = when (_timerSeconds.value) { 0 -> 3; 3 -> 10; else -> 0 }
@@ -396,9 +510,6 @@ class CameraControlViewModel : ViewModel() {
         _darkTheme.value = when (_darkTheme.value) { null -> true; true -> false; false -> null }
     }
 
-    /**
-     * Cicla por TODAS las paletas, incluyendo las nuevas (Obsidian, Grafito, Oro, Desert, Crimson).
-     */
     fun cycleAccentStyle() {
         val all = AccentStyle.entries
         val nextIdx = (all.indexOf(_accentStyle.value) + 1) % all.size
@@ -429,20 +540,12 @@ class CameraControlViewModel : ViewModel() {
             currentCharacteristics, r, 60
         )
         if (!_supports60fps.value && _videoFps.value == VideoFps.FPS60) {
-            // fallback automático: la res no soporta 60
             _videoFps.value = VideoFps.FPS30
             Log.w(TAG, "Resolución $r no soporta 60fps → fallback 30fps")
         }
         applyRepeatingPreview()
     }
 
-    /**
-     * ▼ FIX 60 FPS ▼
-     * Antes: solo guardaba el valor. Ahora:
-     *   1. Verifica que el HAL soporta el FPS pedido a la resolución actual.
-     *   2. Si no, hace fallback automático y deja log.
-     *   3. Re-aplica el repeating preview para que el cambio sea inmediato.
-     */
     fun setVideoFps(f: VideoFps) {
         val supported = if (f == VideoFps.FPS60) {
             CameraTuning.supportsFpsAtResolution(currentCharacteristics, _videoResolution.value, 60)
@@ -458,12 +561,24 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
+    /**
+     * FIX M5: ahora cambiamos `_isFrontCamera` DENTRO del lock, solo si la
+     * apertura de la nueva cámara fue exitosa. Si falla, revertimos.
+     */
     fun toggleFrontCamera(context: Context) {
-        _isFrontCamera.value = !_isFrontCamera.value
         val surface = previewSurface ?: return
+        val newFront = !_isFrontCamera.value
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock {
-                closeCameraLocked(); startCameraSessionLocked(context, surface, _currentLens.value)
+                closeCameraLocked()
+                _isFrontCamera.value = newFront
+                startCameraSessionLocked(context, surface, _currentLens.value)
+                // Si tras intentar abrir, cameraRunning sigue false → fallback
+                if (!cameraRunning) {
+                    Log.w(TAG, "Apertura front=$newFront falló — revirtiendo")
+                    _isFrontCamera.value = !newFront
+                    startCameraSessionLocked(context, surface, _currentLens.value)
+                }
             }
         }
     }
@@ -493,10 +608,6 @@ class CameraControlViewModel : ViewModel() {
         _zoomLevel.value = clamped; applyRepeatingPreview()
     }
 
-    /**
-     * ▼ NUEVO (punto 17): Smooth zoom interpolado.
-     * Anima desde el zoom actual hasta el destino en N steps a 60Hz.
-     */
     fun smoothZoomTo(target: Float, durationMs: Long = 380L) {
         val from = _zoomLevel.value
         val to = target.coerceIn(MIN_ZOOM, _zoomMax.value)
@@ -508,7 +619,6 @@ class CameraControlViewModel : ViewModel() {
             val steps = (durationMs / 16L).coerceAtLeast(8L).toInt()
             for (i in 1..steps) {
                 val t = i / steps.toFloat()
-                // ease-out cubic
                 val ease = 1f - (1f - t) * (1f - t) * (1f - t)
                 _zoomLevel.value = from + (to - from) * ease
                 applyRepeatingPreview()
@@ -538,6 +648,14 @@ class CameraControlViewModel : ViewModel() {
         _manualFocus.value = null; _focusLocked.value = false; applyRepeatingPreview()
     }
 
+    /** NUEVO (A6 UI): expone si manual focus es soportado. */
+    fun supportsManualFocus(): Boolean = (_minFocusDistance.value > 0f)
+
+    /**
+     * FIX A1: tapToFocus ahora aplica AF AUTO directamente, sin pasar antes
+     * por applyCommon() (que setea CONTINUOUS). Antes había una doble
+     * configuración que dejaba al HAL confundido en algunos Samsung.
+     */
     fun tapToFocus(
         x: Float, y: Float, previewW: Int, previewH: Int,
         previewLeft: Int = 0, previewTop: Int = 0
@@ -572,8 +690,11 @@ class CameraControlViewModel : ViewModel() {
 
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { builder.addTarget(it) }
-            applyCommon(builder)
+            // FIX A1: AF AUTO (single) sin pasar por CONTINUOUS antes
+            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(metering))
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(metering))
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -594,48 +715,71 @@ class CameraControlViewModel : ViewModel() {
         _focusLocked.value = !_focusLocked.value; applyRepeatingPreview()
     }
 
-    // ─── FOTO con flash funcional ─────────────────────────────────────────────
+    // ─── FOTO con flash + RAW funcional ───────────────────────────────────────
 
+    /**
+     * FIX A2 + A7: ahora soporta JPEG + RAW simultáneo si _rawCapture es true.
+     * El listener del jpegReader está seteado UNA SOLA VEZ en ensureImageReaders.
+     * Aquí simplemente asignamos el consumer transitorio.
+     */
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val jpegReader = multiReader.jpeg ?: return
+        val wantRaw = _rawCapture.value && multiReader.raw != null
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                jpegReader.setOnImageAvailableListener({ reader ->
-                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                    try {
-                        val buffer = image.planes[0].buffer
-                        val bytes = ByteArray(buffer.remaining()); buffer.get(bytes)
-                        // ▼ Guardado en background thread (no en cameraHandler) → no bloquea preview
-                        bgHandler?.post {
-                            val uri = storage.saveJpeg(context, bytes)
-                            if (uri != null) _lastPhotoUri.value = uri
-                        }
-                    } catch (e: Throwable) {
-                        Log.e(TAG, "Procesar JPEG fallo", e)
-                    } finally {
-                        image.close()
-                        // Restablecer AE_LOCK y preview
+                // FIX A2: usar consumer en lugar de reasignar listener
+                pendingJpegConsumer = { bytes ->
+                    bgHandler?.post {
+                        val uri = storage.saveJpeg(context, bytes)
+                        if (uri != null) _lastPhotoUri.value = uri
                         runCatching { unlockAeAndResume() }
                     }
-                }, bgHandler)
+                }
 
-                // ▼ FIX FLASH ▼ — precaptura robusta SI hay flash
+                // FIX A7: si RAW activo, también encolamos consumer RAW
+                val rawCharacteristics = currentCharacteristics
+                if (wantRaw && rawCharacteristics != null) {
+                    pendingRawConsumer = { rawImage ->
+                        bgHandler?.post {
+                            try {
+                                val totalResult = lastTotalResult
+                                if (totalResult != null) {
+                                    val dng = DngCreator(rawCharacteristics, totalResult)
+                                    dng.setOrientation(jpegRotationHintToExif())
+                                    val baos = ByteArrayOutputStream(rawImage.width * rawImage.height * 2)
+                                    dng.writeImage(baos, rawImage)
+                                    storage.saveRaw(context, baos.toByteArray())
+                                    dng.close()
+                                }
+                            } catch (e: Throwable) {
+                                Log.e(TAG, "DNG write failed", e)
+                            } finally {
+                                try { rawImage.close() } catch (_: Throwable) {}
+                            }
+                        }
+                    }
+                }
+
+                // Precaptura flash si procede
                 val flashWanted = _flashMode.value != FlashMode.OFF
                 if (flashWanted) runPrecaptureRepeating(device, session)
 
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(jpegReader.surface)
+                if (wantRaw) multiReader.raw?.surface?.let { builder.addTarget(it) }
                 applyCommon(builder)
                 CameraTuning.applyImageQuality(builder, "FOTO", supportsVideoStabilization)
                 CameraTuning.applyJpegQuality(builder)
-                CameraTuning.applyJpegOrientation(builder, sensorOrientation, _isFrontCamera.value)
+                // FIX A8 + N10: orientación EXIF dinámica
+                CameraTuning.applyJpegOrientationDynamic(
+                    builder, sensorOrientation, _isFrontCamera.value, deviceDisplayRotation
+                )
                 SamsungVendorTags.applyCaptureSnapshotHint(builder)
                 SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
                 SamsungVendorTags.applyProTone(builder, _hdrEnabled.value)
 
-                // ▼ FIX FLASH: configuración explícita por modo
                 when (_flashMode.value) {
                     FlashMode.ON -> {
                         builder.set(CaptureRequest.CONTROL_AE_MODE,
@@ -658,7 +802,8 @@ class CameraControlViewModel : ViewModel() {
                     override fun onCaptureCompleted(
                         s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
                     ) {
-                        // Lectura de metadatos en tiempo real (punto 3)
+                        // Guardamos TotalCaptureResult para que DngCreator pueda usarlo
+                        lastTotalResult = t
                         _iso.value = t.get(CaptureResult.SENSOR_SENSITIVITY)
                         _shutterSpeedNs.value = t.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                     }
@@ -669,14 +814,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * ▼ FIX FLASH DEFINITIVO ▼
-     *
-     * Usa `setRepeatingRequest` para que el AE pueda converger frame a frame
-     * (clave en Samsung — un único capture() rara vez hace switching del flash).
-     * Tras converger (o timeout 1.6s), aplica AE_LOCK=true para mantener el flash
-     * preparado durante el STILL_CAPTURE.
-     */
     private suspend fun runPrecaptureRepeating(device: CameraDevice, session: CameraCaptureSession) {
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
@@ -721,7 +858,6 @@ class CameraControlViewModel : ViewModel() {
                     }
                 }
                 try {
-                    // ▼ CLAVE: repeating, no single capture
                     session.setRepeatingRequest(builder.build(), callback, cameraHandler)
                 } catch (e: Exception) {
                     if (cont.isActive) cont.resume(Unit)
@@ -729,7 +865,6 @@ class CameraControlViewModel : ViewModel() {
                 cont.invokeOnCancellation { resolved = true }
             }
 
-            // Cancelar el precapture trigger (limpieza)
             try {
                 val cancel = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 previewSurface?.let { cancel.addTarget(it) }
@@ -771,6 +906,8 @@ class CameraControlViewModel : ViewModel() {
                     val codecInt = CameraTuning.preferredEncoder(_hevcEnabled.value)
                     val codecLabel = CameraTuning.preferredCodecLabel(_hevcEnabled.value)
                     val bitrate = VideoBitrateCalculator.preset(resolution, fps, codecLabel)
+                    // FIX F6: usar pickOptimalRecordingSize para escoger tamaño óptimo
+                    val recSize = CameraTuning.pickOptimalRecordingSize(currentCharacteristics, resolution)
 
                     val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         MediaRecorder(context)
@@ -781,7 +918,7 @@ class CameraControlViewModel : ViewModel() {
                         setVideoSource(MediaRecorder.VideoSource.SURFACE)
                         setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                         setOutputFile(pfd.fileDescriptor)
-                        setVideoSize(resolution.width, resolution.height)
+                        setVideoSize(recSize.width, recSize.height)
                         setVideoFrameRate(fps)
                         setVideoEncodingBitRate(bitrate)
                         setVideoEncoder(codecInt)
@@ -793,7 +930,8 @@ class CameraControlViewModel : ViewModel() {
                         setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                         setAudioEncodingBitRate(192_000)
                         setAudioSamplingRate(48_000)
-                        setOrientationHint(jpegRotationHint())
+                        // FIX A8 + N10: orientación dinámica también para video
+                        setOrientationHint(videoRotationHint())
                         prepare()
                     }
                     mediaRecorder = recorder
@@ -829,6 +967,7 @@ class CameraControlViewModel : ViewModel() {
                     }
 
                     captureSession = configured
+                    currentSessionSurfaces = setOf(preview, recording)
                     val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                     builder.addTarget(preview); builder.addTarget(recording)
                     applyCommon(builder)
@@ -837,10 +976,9 @@ class CameraControlViewModel : ViewModel() {
                     SamsungVendorTags.applyRecordingFps(builder, fps)
                     SamsungVendorTags.applyHdr(builder, _hdrEnabled.value)
 
-                    // ▼ FIX 60 FPS ▼ rango DEFINITIVO calculado por CameraTuning
                     val targetRange = CameraTuning.bestFpsRange(supportedFpsRanges, fps)
                     builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetRange)
-                    Log.d(TAG, "Video FPS target=$fps → applied range=$targetRange")
+                    Log.d(TAG, "Video FPS target=$fps → applied range=$targetRange size=$recSize")
 
                     applyFlashForRecording(builder)
                     waitFirstFrameThenStart(configured, builder.build(), recorder)
@@ -925,17 +1063,26 @@ class CameraControlViewModel : ViewModel() {
 
     // ─── Internals ────────────────────────────────────────────────────────────
 
+    /** FIX A5: synchronized para que dos coroutines no creen dos threads. */
     private fun ensureThreads() {
-        if (cameraThread == null || !cameraThread!!.isAlive) {
-            cameraThread = HandlerThread("CameraBg").apply { start() }
-            cameraHandler = Handler(cameraThread!!.looper)
-        }
-        if (bgThread == null || !bgThread!!.isAlive) {
-            bgThread = HandlerThread("CameraIO").apply { start() }
-            bgHandler = Handler(bgThread!!.looper)
+        synchronized(threadsLock) {
+            val ct = cameraThread
+            if (ct == null || !ct.isAlive) {
+                cameraThread = HandlerThread("CameraBg").apply { start() }
+                cameraHandler = Handler(cameraThread!!.looper)
+            }
+            val bt = bgThread
+            if (bt == null || !bt.isAlive) {
+                bgThread = HandlerThread("CameraIO").apply { start() }
+                bgHandler = Handler(bgThread!!.looper)
+            }
         }
     }
 
+    /**
+     * FIX A2 + A7 + N1: configurar listeners persistentes UNA SOLA VEZ por reader.
+     * Los consumers se gestionan vía `pendingJpegConsumer` / `pendingRawConsumer`.
+     */
     private fun ensureImageReaders() {
         val ch = currentCharacteristics ?: return
         multiReader.configure(
@@ -943,7 +1090,8 @@ class CameraControlViewModel : ViewModel() {
             wantRaw = _rawCapture.value && multiReader.supportsRaw(ch),
             wantYuv = _histogramEnabled.value
         )
-        // Listener YUV → histograma
+
+        // YUV → histograma
         multiReader.yuv?.setOnImageAvailableListener({ reader ->
             val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -951,6 +1099,34 @@ class CameraControlViewModel : ViewModel() {
                 if (bins != null) _histogramBins.value = bins
             } finally { img.close() }
         }, bgHandler)
+
+        // JPEG → consumer en cola
+        multiReader.jpeg?.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val buffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining()); buffer.get(bytes)
+                val consumer = pendingJpegConsumer
+                pendingJpegConsumer = null
+                consumer?.invoke(bytes)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Procesar JPEG fallo", e)
+            } finally {
+                image.close()
+            }
+        }, cameraHandler)
+
+        // RAW → consumer DNG en cola
+        multiReader.raw?.setOnImageAvailableListener({ reader ->
+            val img = reader.acquireNextImage() ?: return@setOnImageAvailableListener
+            val consumer = pendingRawConsumer
+            pendingRawConsumer = null
+            if (consumer != null) {
+                consumer.invoke(img)
+            } else {
+                try { img.close() } catch (_: Throwable) {}
+            }
+        }, cameraHandler)
     }
 
     private suspend fun createPreviewSessionSuspending(device: CameraDevice) {
@@ -980,12 +1156,18 @@ class CameraControlViewModel : ViewModel() {
                 }
             }
             captureSession = session
+            currentSessionSurfaces = targets.toSet()
             applyRepeatingPreview()
         } catch (e: Exception) {
             Log.e(TAG, "createPreviewSessionSuspending fallo", e)
         }
     }
 
+    /**
+     * FIX A4: solo añadimos multiReader.yuv?.surface si está REALMENTE incluido
+     * en la sesión actual. Antes podía dispararse IllegalArgumentException si
+     * se había toggleado el histograma sin recrear sesión.
+     */
     fun applyRepeatingPreview() {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
@@ -993,8 +1175,10 @@ class CameraControlViewModel : ViewModel() {
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
-            // El YUV reader recibe los frames del preview para el histograma
-            multiReader.yuv?.surface?.let { builder.addTarget(it) }
+            // FIX A4: solo si el YUV surface está en la sesión actual
+            multiReader.yuv?.surface?.let { yuvSurface ->
+                if (yuvSurface in currentSessionSurfaces) builder.addTarget(yuvSurface)
+            }
             applyCommon(builder)
             CameraTuning.applyImageQuality(builder, _cameraMode.value, supportsVideoStabilization)
             SamsungVendorTags.applyBase(builder, _cameraMode.value, _isRecording.value)
@@ -1008,11 +1192,11 @@ class CameraControlViewModel : ViewModel() {
                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
             }
 
-            // Listener para metadatos sensor (ISO + shutter speed) → punto 3
             val cb = object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
                 ) {
+                    lastTotalResult = t
                     _iso.value = t.get(CaptureResult.SENSOR_SENSITIVITY)
                     _shutterSpeedNs.value = t.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 }
@@ -1081,11 +1265,19 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    private fun jpegRotationHint(): Int {
-        val deviceRotation = 0
+    /**
+     * FIX A8 + N10: rotación dinámica para el video. MainActivity llama
+     * `notifyDeviceRotation(degrees)` cuando se gira el dispositivo. Aquí
+     * traducimos esa rotación (0/90/180/270 deg) al hint del MediaRecorder.
+     */
+    private fun videoRotationHint(): Int {
+        val deviceRotation = deviceDisplayRotation
         return if (_isFrontCamera.value) (sensorOrientation + deviceRotation) % 360
         else (sensorOrientation - deviceRotation + 360) % 360
     }
+
+    /** EXIF (DngCreator) acepta 0/90/180/270 directos. */
+    private fun jpegRotationHintToExif(): Int = videoRotationHint()
 
     private fun pickCameraSelection(mgr: CameraManager, front: Boolean, lens: String): CameraSelection {
         val ids = mgr.cameraIdList
