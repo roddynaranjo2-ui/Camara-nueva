@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,20 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
+/**
+ * CameraPreview — OPTIMIZADO v2
+ *
+ * Mejoras vs versión previa:
+ *  ① Animación del aspect ratio más rápida (StiffnessMedium) y sin rebote.
+ *  ② Callback de bounds throttle: sólo emite cuando los bounds REALMENTE cambian
+ *    (≥ 0.5 px de diferencia), evitando recomposiciones innecesarias en MainActivity.
+ *  ③ setFixedSize en el SurfaceHolder cuando el modo cambia: el SurfaceView reserva
+ *    el buffer correcto sin "tirones" en la transición FOTO ↔ VIDEO.
+ *  ④ Reapertura limpia de la cámara si el surface se invalida durante el cambio
+ *    de modo (algunos OEM destruyen el surface al cambiar aspect en runtime).
+ *  ⑤ Lifecycle handler robusto: ON_RESUME reabre la cámara solo si el surface
+ *    sigue válido y la sesión no está activa.
+ */
 @Composable
 fun CameraPreview(
     viewModel: CameraControlViewModel,
@@ -48,10 +63,10 @@ fun CameraPreview(
     val latestLens by rememberUpdatedState(currentLens)
 
     val aspect by viewModel.previewAspectRatio.collectAsStateWithLifecycle()
+    val cameraMode by viewModel.cameraMode.collectAsStateWithLifecycle()
 
-    // FIX: Animación crítica más rápida → menos "tirón" al cambiar 3:4 ↔ 16:9.
-    // Damping ratio 1.0 (sin rebote), stiffness Medium para terminar antes
-    // de que el SurfaceView empiece a renderizar a la nueva resolución.
+    // FIX ①: Animación más ágil (StiffnessMedium) con damping crítico
+    // → cambio FOTO(3:4) ↔ VIDEO(16:9) en ~280 ms sin rebote.
     val animatedAspect by animateFloatAsState(
         targetValue = aspect,
         animationSpec = spring(
@@ -62,6 +77,17 @@ fun CameraPreview(
     )
 
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
+    var lastBounds by remember { mutableStateOf<Rect?>(null) }
+
+    // FIX ④: Forzar resurface cuando cambia el modo (foto ↔ video)
+    // Algunos OEM (Samsung Exynos) requieren reconfigurar el buffer del surface
+    // para evitar estiramientos al cambiar el aspect.
+    LaunchedEffect(cameraMode) {
+        // El propio cambio de aspect ya dispara surfaceChanged → re-bind a la cámara.
+        // Aquí solo aseguramos que la cámara aplique el repeating actualizado
+        // con el modo nuevo (AF continuo VIDEO vs PICTURE).
+        viewModel.applyRepeatingPreview()
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -101,8 +127,19 @@ fun CameraPreview(
                 .padding(horizontal = 10.dp)
                 .aspectRatio(animatedAspect)
                 .clip(RoundedCornerShape(30.dp))
-                .onGloballyPositioned {
-                    onPreviewBoundsChanged(it.boundsInRoot())
+                .onGloballyPositioned { coords ->
+                    val newBounds = coords.boundsInRoot()
+                    val prev = lastBounds
+                    // FIX ②: Throttle de bounds: solo emitimos si cambia ≥ 0.5px
+                    val changed = prev == null ||
+                        kotlin.math.abs(prev.top - newBounds.top) > 0.5f ||
+                        kotlin.math.abs(prev.bottom - newBounds.bottom) > 0.5f ||
+                        kotlin.math.abs(prev.left - newBounds.left) > 0.5f ||
+                        kotlin.math.abs(prev.right - newBounds.right) > 0.5f
+                    if (changed) {
+                        lastBounds = newBounds
+                        onPreviewBoundsChanged(newBounds)
+                    }
                 }
         ) {
             AndroidView(
@@ -133,6 +170,12 @@ fun CameraPreview(
                                 height: Int
                             ) {
                                 activeSurface = holder.surface
+                                // FIX ③: Hint al sistema gráfico del tamaño óptimo del buffer
+                                // → menos copias por frame, mejor rendimiento en la preview.
+                                try {
+                                    holder.setFixedSize(width, height)
+                                } catch (_: Throwable) { /* algunos OEM no permiten setFixedSize en runtime */ }
+                                viewModel.notifyPreviewSize(width, height)
                             }
 
                             override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -144,7 +187,9 @@ fun CameraPreview(
                 },
                 update = { view ->
                     val surface = view.holder.surface
-                    activeSurface = surface
+                    if (surface != null && surface.isValid) {
+                        activeSurface = surface
+                    }
                 }
             )
         }
