@@ -15,13 +15,18 @@ import android.util.Log
  *  - Edge sharpening: HIGH_QUALITY en FOTO, FAST en VIDEO
  *  - Tonemap:         HIGH_QUALITY en FOTO, FAST en VIDEO (evita lag 4K/60)
  *  - JPEG quality:    97 (Samsung Pro mode)
- *  - VSTAB:           PREVIEW para video estándar, solo si soportado
+ *  - VSTAB:           PREVIEW para video estándar, solo si el HAL lo expone.
  */
 object CameraTuning {
 
     private const val TAG = "CameraTuning"
 
-    fun applyImageQuality(b: CaptureRequest.Builder, mode: String) {
+    /**
+     * @param supportsVstab Si el HAL realmente expone VIDEO_STABILIZATION_MODE_ON.
+     * Cuando es false, NO se fuerza VSTAB porque algunos HALs lo aceptan pero
+     * silenciosamente caen el FPS a la mitad o menos (causa de lag 6 fps).
+     */
+    fun applyImageQuality(b: CaptureRequest.Builder, mode: String, supportsVstab: Boolean = false) {
         try {
             if (mode == "VIDEO") {
                 b.set(CaptureRequest.NOISE_REDUCTION_MODE,
@@ -41,12 +46,14 @@ object CameraTuning {
             }
             b.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
                 CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
-            // VSTAB de Camera2 estándar
-            b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                if (mode == "VIDEO")
-                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
-                else
-                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+
+            // FIX VIDEO LAG: VSTAB solo si está realmente soportado.
+            // Si no está soportado, lo dejamos OFF para que la cámara mantenga FPS.
+            val vstabValue = if (mode == "VIDEO" && supportsVstab)
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+            else
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+            b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, vstabValue)
         } catch (e: Throwable) {
             Log.w(TAG, "applyImageQuality fallback", e)
         }
