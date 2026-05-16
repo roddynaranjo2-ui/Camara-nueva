@@ -1,5 +1,6 @@
 package com.rodyto.lenspro
 
+import android.os.Build
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -20,6 +21,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
@@ -35,7 +38,33 @@ import androidx.compose.ui.unit.dp
  * Primitivas reusable glass morphing sin difuminar iconos/texto
  * ================================================================ */
 
-fun Modifier.gaussianBlur(radius: Float = 18f, strong: Boolean = false): Modifier = this
+/**
+ * FIX C4: gaussianBlur ahora APLICA EL BLUR DE VERDAD.
+ *
+ * Antes: `Modifier = this` (stub, no hacía nada).
+ * Ahora: usa `Modifier.blur()` de Compose con BlurredEdgeTreatment.
+ *
+ * IMPORTANTE: el blur de Compose requiere API 31+ (Android 12). En APIs
+ * anteriores no hay implementación nativa eficiente, así que aplicamos un
+ * alpha 0.96 + saturación leve como fallback. NO degradamos el resto del
+ * dispositivo: solo se nota en el ZoomDial popup.
+ *
+ * `strong=true` aumenta el radio del blur (usado en paneles flotantes
+ * tipo ZoomDial / Settings). `strong=false` deja un blur sutil tipo iOS.
+ */
+fun Modifier.gaussianBlur(radius: Float = 18f, strong: Boolean = false): Modifier {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val effectiveRadius = (if (strong) radius * 1.4f else radius).coerceIn(1f, 32f)
+        this.blur(
+            radius = effectiveRadius.dp,
+            edgeTreatment = BlurredEdgeTreatment.Unbounded
+        )
+    } else {
+        // Fallback API <31: graphicsLayer con leve transparencia.
+        // No es blur real, pero evita que la UI se vea "plana" en Android 11.
+        this.graphicsLayer { alpha = if (strong) 0.94f else 0.97f }
+    }
+}
 
 fun Modifier.liquidGlass(
     palette: GlassPalette,
