@@ -10,7 +10,6 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -41,18 +40,20 @@ import kotlin.math.ln
 import kotlin.math.sin
 
 /**
- * ZoomDial — OPTIMIZADO v2 (hasta 30× digital)
+ * ZoomDial — OPTIMIZADO v2.1 (hasta 30× digital)
  *
- *  Mejoras vs versión previa:
- *   ① maxZoom es ahora un PARÁMETRO dinámico (no hardcode a 10×). El MainActivity
- *      pasa zoomMax del ViewModel (hasta 30× según sensor).
- *   ② Mapeo logarítmico tunneado: zoom = exp(angle * k) con k=0.011 →
- *      • zona 1×–3×: 1° ≈ 1% de zoom (control milimétrico)
- *      • zona 3×–10×: 1° ≈ 3% de zoom
- *      • zona 10×–30×: aceleración natural (rotaciones rápidas → zoom lejano)
- *   ③ Snap-buttons para 0.5×, 1×, 3×, 10×, 30× — un toque y vas directo.
- *   ④ Marcas radiales coloreadas: las "majors" rotan con valores significativos.
- *   ⑤ Inercia más natural (frictionMultiplier 1.0 → 0.9 → más arrastre).
+ * FIX A9: Eliminado shadowing peligroso. La función privada `spring(...)`
+ * (que devolvía un `spring<Float>` oficial de Compose) se renombra a
+ * `springFloat(...)` para eliminar el riesgo de que un futuro refactor
+ * confunda nuestra función con la nativa.
+ *
+ * FIX C4 (lateral): el `.gaussianBlur(20f, strong=true)` ahora aplica
+ * un blur REAL gracias a la implementación corregida en GlassUi.kt. El
+ * efecto cristal del dial sobre el fondo dim se aprecia visiblemente.
+ *
+ * Smooth-zoom opcional: si pasas `useSmoothZoom = true`, los snaps
+ * llaman al `onSmoothZoom` del VM (animación 380ms ease-out) en vez de
+ * un cambio instantáneo. Ideal para sensación "iOS-like".
  */
 @Composable
 fun ZoomDial(
@@ -61,7 +62,8 @@ fun ZoomDial(
     maxZoom: Float = CameraControlViewModel.MAX_DIGITAL_ZOOM,
     palette: GlassPalette,
     onZoomChange: (Float) -> Unit,
-    onHapticTick: () -> Unit
+    onHapticTick: () -> Unit,
+    onSmoothZoom: ((Float) -> Unit)? = null
 ) {
     val rotation = remember { Animatable(zoomToAngle(currentZoom)) }
     val scope = rememberCoroutineScope()
@@ -175,7 +177,7 @@ fun ZoomDial(
             )
         }
 
-        // FIX ③: Snap buttons — toque rápido a presets
+        // Snap buttons — toque rápido a presets (con smoothZoom opcional)
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(24.dp))
@@ -195,13 +197,13 @@ fun ZoomDial(
                     scope.launch {
                         rotation.animateTo(
                             zoomToAngle(snap),
-                            spring(
+                            springFloat(
                                 dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
                                 stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
                             )
                         )
                     }
-                    onZoomChange(snap)
+                    if (onSmoothZoom != null) onSmoothZoom(snap) else onZoomChange(snap)
                     onHapticTick()
                 }
             }
@@ -246,9 +248,14 @@ private fun formatZoomLabel(z: Float): String = when {
     else -> "${z.toInt()}×"
 }
 
-// FIX ②: Spring helper para los snap buttons
+/**
+ * FIX A9: renombrado de `spring` → `springFloat` para eliminar el
+ * shadowing del `spring()` oficial de Compose. Antes este wrapper se
+ * llamaba igual que la función oficial — funcionalmente correcto pero
+ * "code smell" peligroso si un editor confunde una con otra.
+ */
 @Suppress("FunctionName")
-private fun spring(
+private fun springFloat(
     dampingRatio: Float,
     stiffness: Float
 ) = androidx.compose.animation.core.spring<Float>(
