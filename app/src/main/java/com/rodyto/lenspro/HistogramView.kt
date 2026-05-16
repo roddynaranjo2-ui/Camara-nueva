@@ -1,6 +1,5 @@
 package com.rodyto.lenspro
 
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
@@ -12,15 +11,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 
 /**
  * HistogramView — render Compose del histograma de luminancia.
  *
- * Diseño minimalista glass: panel translúcido con barras finas, sin números.
- * El padre lo posiciona como overlay esquinado (top-right del preview).
+ * FIX C3: El Canvas ahora usa BoxScope.matchParentSize() (API nativa de Compose)
+ * en lugar de la función vacía `matchParentSizePadding()`. Antes el Canvas se
+ * quedaba con tamaño 0×0 y NO se dibujaba nada — el histograma estaba "muerto"
+ * silenciosamente. Ahora se dibuja correctamente dentro del glass card.
+ *
+ * FIX M2: Removido import `Stroke` no usado.
+ *
+ * Diseño: panel translúcido glass con barras finas. El padre lo posiciona como
+ * overlay esquinado (top-right del preview).
  */
 @Composable
 fun HistogramView(
@@ -39,8 +43,13 @@ fun HistogramView(
             .liquidGlass(palette, RoundedCornerShape(12.dp), strong = true)
             .padding(horizontal = 6.dp, vertical = 5.dp)
     ) {
-        Canvas(modifier = Modifier.matchParentSizePadding()) {
+        // FIX C3: matchParentSize() es API OFICIAL de BoxScope: hace el Canvas del
+        // mismo tamaño que el Box padre (después de aplicar su padding). Antes
+        // se usaba una función vacía `matchParentSizePadding()` que solo devolvía
+        // `this.then(Modifier)` → Canvas sin tamaño → nada se dibujaba.
+        Canvas(modifier = Modifier.matchParentSize()) {
             val n = bins.size
+            if (size.width <= 0f || size.height <= 0f) return@Canvas
             val barW = size.width / n
             for (i in 0 until n) {
                 val h = (bins[i] / max) * size.height
@@ -50,7 +59,7 @@ fun HistogramView(
                     size = Size(barW * 0.85f, h)
                 )
             }
-            // Línea base
+            // Línea base sutil
             drawLine(
                 color = palette.onGlassSecondary.copy(alpha = 0.35f),
                 start = Offset(0f, size.height),
@@ -60,7 +69,3 @@ fun HistogramView(
         }
     }
 }
-
-// Helper para igualar el tamaño del Canvas al padre menos el padding
-private fun Modifier.matchParentSizePadding(): Modifier = this
-    .then(Modifier)
