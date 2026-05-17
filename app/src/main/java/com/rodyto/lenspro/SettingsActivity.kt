@@ -42,23 +42,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
-/**
- * SettingsActivity v2 — Pantalla "Ajustes avanzados" estilo iOS 26.
- *
- * FIX C5: ahora LEE del SettingsRepository (DataStore) con `collectAsStateWithLifecycle`
- * y PERSISTE inmediatamente cualquier cambio. Los toggles ya NO se resetean a false
- * al reabrir la activity.
- *
- * FIX N3: accent y dark también se persisten en el repo, no solo localmente.
- *
- * FIX CRÍTICO: AccentRow composable estaba completamente ausente — el archivo
- * estaba truncado antes de cerrar la función SettingsRowAction y antes de
- * definir AccentRow. El compilador fallaba con "Unresolved reference: AccentRow"
- * y "Unresolved reference: ChevronRight".
- *
- * El MainActivity, al volver, lee el repo en su LaunchedEffect inicial y propaga
- * los cambios al ViewModel vía `applyPersistedSettings()`.
- */
 class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,7 +78,6 @@ private fun SettingsScreen(
     val palette = glassPalette(forceDark = darkPref, accentStyle = accent)
     val scope = rememberCoroutineScope()
 
-    // FIX C5: leer DIRECTAMENTE del repo con flows
     val histogram by repo.histogramEnabled.collectAsStateWithLifecycle(initialValue = false)
     val horizon by repo.horizonEnabled.collectAsStateWithLifecycle(initialValue = false)
     val focusPeak by repo.focusPeaking.collectAsStateWithLifecycle(initialValue = false)
@@ -147,7 +129,6 @@ private fun SettingsScreen(
                 }
             }
 
-            // APARIENCIA
             item { SectionTitle("Apariencia", palette) }
             item {
                 GlassCard(palette) {
@@ -176,7 +157,6 @@ private fun SettingsScreen(
                 }
             }
 
-            // COMPOSICIÓN
             item { SectionTitle("Composición", palette) }
             item {
                 GlassCard(palette) {
@@ -203,7 +183,6 @@ private fun SettingsScreen(
                 }
             }
 
-            // CAPTURA
             item { SectionTitle("Captura", palette) }
             item {
                 GlassCard(palette) {
@@ -230,7 +209,6 @@ private fun SettingsScreen(
                 }
             }
 
-            // ARCHIVOS
             item { SectionTitle("Archivos y galería", palette) }
             item {
                 GlassCard(palette) {
@@ -243,7 +221,6 @@ private fun SettingsScreen(
                 }
             }
 
-            // PALETAS
             item { SectionTitle("Paleta de colores", palette) }
             item {
                 GlassCard(palette) {
@@ -252,9 +229,7 @@ private fun SettingsScreen(
                             style = style,
                             selected = style == accent,
                             palette = palette,
-                            onClick = {
-                                scope.launch { repo.setAccentIndex(idx) }
-                            }
+                            onClick = { scope.launch { repo.setAccentIndex(idx) } }
                         )
                         if (idx < AccentStyle.entries.size - 1) Divider(palette)
                     }
@@ -352,18 +327,10 @@ private fun SettingsRowAction(
         )
         Text(value, color = palette.onGlassSecondary, fontSize = 14.sp)
         Spacer(Modifier.size(6.dp))
-        // FIX CRÍTICO: referencia corregida — antes "LensIcons.Chevron" (no existe),
-        // el nombre correcto es "LensIcons.ChevronRight" definido en IconsKit.kt.
         LensIcon(LensIcons.ChevronRight, tint = palette.onGlassSecondary, size = 16.dp)
     }
 }
 
-/**
- * FIX CRÍTICO: AccentRow estaba completamente ausente. El archivo original
- * estaba truncado — la función SettingsRowAction tenía la última línea cortada
- * y AccentRow nunca fue incluida, causando "Unresolved reference: AccentRow"
- * en SettingsScreen al compilar.
- */
 @Composable
 private fun AccentRow(
     style: AccentStyle,
@@ -379,7 +346,6 @@ private fun AccentRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Muestra circular del color del accent
         Box(
             modifier = Modifier
                 .size(28.dp)
@@ -400,11 +366,7 @@ private fun AccentRow(
             )
         }
         if (selected) {
-            LensIcon(
-                icon = LensIcons.ChevronRight,
-                tint = palette.accent,
-                size = 18.dp
-            )
+            LensIcon(icon = LensIcons.ChevronRight, tint = palette.accent, size = 18.dp)
         }
     }
 }
