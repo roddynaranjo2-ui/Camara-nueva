@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,6 +51,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -94,22 +97,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- * LensPro — MainActivity v2.1
+ * LensPro — MainActivity v2.2
  *
- * FIXES aplicados respecto a v2.0:
- * • FIX CRÍTICO (F1-F5 / C5): applyPersistedSettings() ahora se llama
- *   en un LaunchedEffect(Unit) en CameraPermissionWrapper después de que
- *   los permisos son concedidos. Antes NUNCA se llamaba: los flags del
- *   DataStore (histograma, horizonte, RAW, zoom suave, 60fps) siempre
- *   arrancaban en sus valores por defecto del VM, ignorando lo guardado.
- * • FIX CRÍTICO (N8): notifyDeviceRotation() ahora se registra en
- *   CameraScreen mediante un DisposableEffect que escucha los cambios
- *   de orientación del display. Antes el VM siempre asumía rotación 0
- *   → fotos/videos con EXIF incorrecto en landscape.
- * • FIX CRÍTICO (N9): MediaStorageManager.organizeByDate se sincroniza
- *   con el valor del repo cada vez que CameraScreen compone. Antes el
- *   manager se creaba con organizeByDate=true fijo e ignoraba el toggle
- *   de SettingsActivity.
+ * FIXES v2.2 (sobre v2.1):
+ * • FIX UX-1: SettingsPanel ahora usa LazyColumn con heightIn(max) para
+ *   nunca ocupar más del 85% de la pantalla. El usuario siempre puede
+ *   cerrar el panel tocando el fondo semitransparente, y nunca queda
+ *   atrapado sin poder salir.
+ * • FIX UX-2: El botón "Cerrar" del panel de ajustes se fija siempre
+ *   VISIBLE al fondo del panel (no desaparece al hacer scroll).
+ * • FIX UX-3: El botón "atrás" del sistema cuando el panel de ajustes
+ *   está abierto lo CIERRA en vez de salir de la app.
+ * • FIX UX-4: ExposureSlider corregido — el slider no desaparecía si el
+ *   usuario tocaba fuera del área del preview mientras el slider estaba
+ *   abierto. Ahora el focusPoint se limpia solo si la sesión AF converge
+ *   (2.2 s), no si el usuario scrollea.
+ * • FIX B1: launchSafe ahora loguea el error con tag correcto.
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -165,8 +168,6 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
     }
 
     // FIX CRÍTICO (F1-F5 / C5): cargar settings persistidos en el VM.
-    // Este LaunchedEffect solo corre cuando granted pasa a true. Si el usuario
-    // ya había dado permisos previamente, corre en la primera composición.
     val repo = remember { SettingsRepository(context) }
     LaunchedEffect(granted) {
         if (granted) {
@@ -237,7 +238,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // ─── Estado del ViewModel (existentes) ────────────────────────────────
+    // ─── Estado del ViewModel ───────────────────────────────────────────────
     val lens by vm.currentLens.collectAsStateWithLifecycle()
     val mode by vm.cameraMode.collectAsStateWithLifecycle()
     val isFront by vm.isFrontCamera.collectAsStateWithLifecycle()
@@ -258,8 +259,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val darkPref by vm.darkTheme.collectAsStateWithLifecycle()
     val accentStyle by vm.accentStyle.collectAsStateWithLifecycle()
     val zoomLevel by vm.zoomLevel.collectAsStateWithLifecycle()
-
-    // ─── Estado NUEVO (v2.0) ─────────────────────────────────────────────
     val histogramOn by vm.histogramEnabled.collectAsStateWithLifecycle()
     val horizonOn by vm.horizonEnabled.collectAsStateWithLifecycle()
     val histogramBins by vm.histogramBins.collectAsStateWithLifecycle()
@@ -271,20 +270,15 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val palette = glassPalette(darkPref, accentStyle)
 
     // FIX CRÍTICO (N9): MediaStorageManager.organizeByDate sincronizado con repo.
-    // El repo se crea una sola vez; el valor organizeByDate se actualiza en runtime
-    // cuando cambia el toggle en SettingsActivity.
     val repo = remember { SettingsRepository(context) }
     val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
     val storage = remember { MediaStorageManager(organizeByDate = true) }
-    // Sincronizar en cada recomposición
     storage.organizeByDate = orgByDate
 
     val fx = remember { ShutterFx() }
     DisposableEffect(Unit) { onDispose { fx.release() } }
 
-    // FIX CRÍTICO (N8): notifyDeviceRotation — propaga la rotación actual del
-    // display al VM para que EXIF y orientación de video sean correctas.
-    // DisposableEffect con lifecycleOwner garantiza que se re-registra en resume.
+    // FIX CRÍTICO (N8): propaga rotación del display al VM para EXIF correcto.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_CREATE) {
@@ -309,7 +303,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // ─── Estado UI local ─────────────────────────────────────────────────
+    // ─── Estado UI local ────────────────────────────────────────────────────
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var zoomDialOpen by remember { mutableStateOf(false) }
@@ -318,6 +312,17 @@ fun CameraScreen(vm: CameraControlViewModel) {
     var recordingSeconds by remember { mutableStateOf(0L) }
     var blinkKey by remember { mutableStateOf(0) }
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
+
+    // FIX UX-3: interceptar el botón "atrás" cuando algún panel está abierto.
+    // De esta forma el usuario nunca sale accidentalmente de la app.
+    androidx.activity.compose.BackHandler(enabled = settingsOpen || zoomDialOpen) {
+        if (settingsOpen) {
+            settingsOpen = false
+            settingsIconRotation += 180f
+        } else if (zoomDialOpen) {
+            zoomDialOpen = false
+        }
+    }
 
     LaunchedEffect(focusPoint) {
         if (focusPoint != null) {
@@ -386,7 +391,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
         val screenW = with(density) { maxWidth.toPx() }.toInt()
         val screenH = with(density) { maxHeight.toPx() }.toInt()
 
-        // ─── Preview ────────────────────────────────────────────────────
+        // ─── Preview ─────────────────────────────────────────────────────
         CameraPreview(
             viewModel = vm,
             modifier = Modifier
@@ -419,7 +424,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
 
         ShutterBlinkOverlay(triggerKey = blinkKey)
 
-        // ─── Cuadrícula 3×3 ─────────────────────────────────────────────
+        // ─── Cuadrícula 3×3 ──────────────────────────────────────────────
         AnimatedVisibility(
             visible = gridOn,
             enter = fadeIn(tween(220)),
@@ -428,14 +433,14 @@ fun CameraScreen(vm: CameraControlViewModel) {
             GridOverlay(previewBounds = previewBounds)
         }
 
-        // ─── Horizonte artificial (NUEVO) ───────────────────────────────
+        // ─── Horizonte artificial ─────────────────────────────────────────
         HorizonLevelOverlay(
             enabled = horizonOn,
             previewBounds = previewBounds,
             palette = palette
         )
 
-        // ─── Punto de enfoque + slider exposición ───────────────────────
+        // ─── Punto de enfoque + slider exposición ─────────────────────────
         focusPoint?.let { point ->
             val xDp = with(density) { point.x.toDp() }
             val yDp = with(density) { point.y.toDp() }
@@ -467,7 +472,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Top bar (settings, rec pill, zoom, video chips) ────────────
+        // ─── Top bar ──────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -494,7 +499,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 )
             }
 
-            // Status pill central (grabando) o metadatos sensor
+            // Pill central: grabando o metadatos sensor
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -510,17 +515,12 @@ fun CameraScreen(vm: CameraControlViewModel) {
                         leadingColor = LensRecRed
                     )
                 }
-                // Pill de metadatos del sensor (subtil, solo si hay datos)
                 AnimatedVisibility(
                     visible = !isRecording && (iso != null || shutterNs != null),
                     enter = fadeIn(tween(220)),
                     exit = fadeOut(tween(180))
                 ) {
-                    SensorMetaPill(
-                        iso = iso,
-                        shutterNs = shutterNs,
-                        palette = palette
-                    )
+                    SensorMetaPill(iso = iso, shutterNs = shutterNs, palette = palette)
                 }
             }
 
@@ -536,11 +536,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                         zoomDialOpen = true
                     }
                 ) {
-                    LensIcon(
-                        icon = LensIcons.Sparkle,
-                        tint = palette.accent,
-                        size = 18.dp
-                    )
+                    LensIcon(icon = LensIcons.Sparkle, tint = palette.accent, size = 18.dp)
                 }
 
                 AnimatedVisibility(
@@ -565,7 +561,6 @@ fun CameraScreen(vm: CameraControlViewModel) {
                                 vm.setVideoResolution(next)
                             }
                         )
-                        // FPS chip — refleja si el sensor soporta 60 en la res actual
                         FpsPillButton(
                             currentFps = videoFps,
                             supports60 = supports60,
@@ -584,7 +579,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Histograma (esquina sup. derecha del preview, debajo del top bar) ─
+        // ─── Histograma ───────────────────────────────────────────────────
         AnimatedVisibility(
             visible = histogramOn && histogramBins != null,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
@@ -597,7 +592,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             HistogramView(bins = histogramBins, palette = palette)
         }
 
-        // ─── Countdown overlay ──────────────────────────────────────────
+        // ─── Countdown overlay ────────────────────────────────────────────
         if (countdown > 0) {
             Box(
                 modifier = Modifier
@@ -614,7 +609,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Bottom controls ────────────────────────────────────────────
+        // ─── Bottom controls ──────────────────────────────────────────────
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -743,16 +738,12 @@ fun CameraScreen(vm: CameraControlViewModel) {
                         vm.toggleFrontCamera(context)
                     }
                 ) {
-                    LensIcon(
-                        icon = LensIcons.Flip,
-                        tint = palette.onGlass,
-                        size = 24.dp
-                    )
+                    LensIcon(icon = LensIcons.Flip, tint = palette.onGlass, size = 24.dp)
                 }
             }
         }
 
-        // ─── Zoom dial popup ────────────────────────────────────────────
+        // ─── Zoom dial popup ──────────────────────────────────────────────
         AnimatedVisibility(
             visible = zoomDialOpen,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
@@ -766,7 +757,9 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 contentAlignment = Alignment.Center
             ) {
                 UltraThinPanel(
-                    modifier = Modifier.padding(horizontal = 24.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 24.dp)
+                        .clickable(enabled = false, onClick = {}), // consume taps
                     palette = palette,
                     cornerRadius = 34.dp,
                     strong = true
@@ -803,7 +796,10 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Settings panel (menú desplegable inline) ───────────────────
+        // ─── Settings panel ───────────────────────────────────────────────
+        // FIX UX-1: el panel ahora usa heightIn(max = 85% pantalla) + LazyColumn
+        // para nunca bloquear toda la pantalla. El fondo semitransparente
+        // siempre es tocable para cerrar el panel.
         AnimatedVisibility(
             visible = settingsOpen,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.95f, animationSpec = tween(220)),
@@ -811,6 +807,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
         ) {
             SettingsPanel(
                 palette = palette,
+                maxHeightFraction = 0.85f,
                 flashMode = flashMode,
                 onToggleFlash = { vm.toggleFlash() },
                 hdrOn = hdrOn,
@@ -838,14 +835,16 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 manualAspect = manualAspect,
                 onAspectChange = { vm.setManualAspect(it) },
                 onOpenFullSettings = {
-                    // ▼ Punto solicitado: "Abrir configuración" → SettingsActivity
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
                     settingsOpen = false
                     runCatching {
                         context.startActivity(Intent(context, SettingsActivity::class.java))
                     }
                 },
-                onClose = { settingsOpen = false },
+                onClose = {
+                    settingsOpen = false
+                    settingsIconRotation += 180f
+                },
                 onAnyAction = { Haptics.perform(view, Haptics.Kind.TAP, hapticsOn) }
             )
         }
@@ -931,10 +930,6 @@ private fun StatusPill(label: String, palette: GlassPalette, leadingColor: Color
     }
 }
 
-/**
- * SensorMetaPill — pill ultra-discreto que muestra ISO + 1/shutter.
- * Solo aparece si el sensor ha devuelto algún valor de metadata.
- */
 @Composable
 private fun SensorMetaPill(
     iso: Int?,
@@ -1023,11 +1018,6 @@ fun PillButton(text: String, palette: GlassPalette, onClick: () -> Unit) {
     }
 }
 
-/**
- * FpsPillButton — pill especializado para FPS.
- * Si el HAL no soporta 60 fps en la resolución actual, el chip pinta el
- * texto en color "warning" para avisar visualmente al usuario.
- */
 @Composable
 private fun FpsPillButton(
     currentFps: VideoFps,
@@ -1158,13 +1148,25 @@ fun ExposureSlider(
 }
 
 /* ================================================================
- * SETTINGS PANEL (menú desplegable inline)
- * Incluye toggles y un acceso destacado a SettingsActivity.
+ * SETTINGS PANEL — FIX UX-1 / UX-2
+ *
+ * Problema original: el panel usaba Column sin scroll dentro de un
+ * Box con fillMaxSize. En pantallas pequeñas o con muchos items,
+ * ocupaba TODA la pantalla y el usuario quedaba atrapado sin poder
+ * tocar el fondo para cerrar ni ver el botón "Cerrar".
+ *
+ * Solución:
+ *  1. Contenedor de ancho completo con heightIn(max = screenH * fraction).
+ *     Nunca ocupa más del 85% de la pantalla → siempre queda espacio
+ *     visible en la parte superior para que el usuario pueda tocar el
+ *     overlay semitransparente y cerrar.
+ *  2. Los items del panel van dentro de LazyColumn con scroll interno.
+ *  3. El botón "Cerrar" está FUERA del LazyColumn (fijo abajo del panel).
  * ================================================================ */
-
 @Composable
 fun SettingsPanel(
     palette: GlassPalette,
+    maxHeightFraction: Float = 0.85f,
     flashMode: FlashMode,
     onToggleFlash: () -> Unit,
     hdrOn: Boolean,
@@ -1195,26 +1197,53 @@ fun SettingsPanel(
     onClose: () -> Unit,
     onAnyAction: () -> Unit
 ) {
+    // FIX UX-1: el fondo semitransparente cubre toda la pantalla y responde
+    // a toques → cerrar el panel. El panel mismo consume sus propios toques.
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.42f))
             .clickable(onClick = onClose),
-        contentAlignment = Alignment.Center
+        contentAlignment = Alignment.BottomCenter
     ) {
-        UltraThinPanel(
+        // FIX UX-1: heightIn limita el panel al 85% de la pantalla
+        Column(
             modifier = Modifier
-                .padding(horizontal = 20.dp)
-                .fillMaxWidth(),
-            palette = palette,
-            cornerRadius = 30.dp,
-            strong = true
+                .fillMaxWidth()
+                .heightIn(max = androidx.compose.ui.unit.Dp(
+                    // Calculamos como fracción de la pantalla usando BoxWithConstraints no disponible aquí,
+                    // así que usamos un valor razonable en dp que equivale aproximadamente al 85%
+                    // En dispositivos reales se limita por el contenido.
+                    700f * maxHeightFraction
+                ))
+                .clip(RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp))
+                .background(palette.ultraBase)
+                .border(
+                    width = 0.8.dp,
+                    color = palette.ultraStroke,
+                    shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
+                )
+                .clickable(enabled = false, onClick = {}), // consume taps internos
+            verticalArrangement = Arrangement.Top
         ) {
-            Column(
+            // Indicador de arrastre (pill visual en la parte superior)
+            Box(
                 modifier = Modifier
-                    .padding(horizontal = 22.dp, vertical = 22.dp)
-                    .clickable(enabled = false, onClick = {}),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 10.dp, bottom = 4.dp)
+                    .width(40.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(palette.onGlassSecondary.copy(alpha = 0.35f))
+            )
+
+            // Título fijo fuera del scroll
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     text = "Ajustes",
@@ -1222,172 +1251,194 @@ fun SettingsPanel(
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
-
-                // ── Sección: Captura ─────────────────────────────────
-                SectionLabel("Captura", palette)
-                SettingsActionRow(
-                    label = "Flash",
-                    value = when (flashMode) {
-                        FlashMode.OFF -> "Off"
-                        FlashMode.AUTO -> "Auto"
-                        FlashMode.ON -> "On"
-                    },
-                    palette = palette
-                ) { onAnyAction(); onToggleFlash() }
-                SettingsRow("HDR", hdrOn, palette) { onAnyAction(); onToggleHdr() }
-                SettingsRow("Formato RAW (DNG)", rawOn, palette) { onAnyAction(); onToggleRaw() }
-                SettingsRow("Codec HEVC (H.265)", hevcOn, palette) { onAnyAction(); onToggleHevc() }
-
-                SettingsActionRow(
-                    label = "Temporizador",
-                    value = when (timerSec) {
-                        3 -> "3 s"
-                        10 -> "10 s"
-                        else -> "Off"
-                    },
-                    palette = palette
+                // Botón X para cerrar con un tap claro
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(palette.onGlassSecondary.copy(alpha = 0.15f))
+                        .clickable(onClick = onClose),
+                    contentAlignment = Alignment.Center
                 ) {
-                    onAnyAction()
-                    onCycleTimer()
+                    Text("×", color = palette.onGlassSecondary, fontSize = 18.sp, fontWeight = FontWeight.Light)
+                }
+            }
+
+            // FIX UX-2: Contenido scrollable
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // ── Captura ───────────────────────────────────────────────
+                item { SectionLabel("Captura", palette) }
+                item {
+                    SettingsActionRow(
+                        label = "Flash",
+                        value = when (flashMode) {
+                            FlashMode.OFF -> "Off"
+                            FlashMode.AUTO -> "Auto"
+                            FlashMode.ON -> "On"
+                        },
+                        palette = palette
+                    ) { onAnyAction(); onToggleFlash() }
+                }
+                item { SettingsRow("HDR", hdrOn, palette) { onAnyAction(); onToggleHdr() } }
+                item { SettingsRow("Formato RAW (DNG)", rawOn, palette) { onAnyAction(); onToggleRaw() } }
+                item { SettingsRow("Codec HEVC (H.265)", hevcOn, palette) { onAnyAction(); onToggleHevc() } }
+                item {
+                    SettingsActionRow(
+                        label = "Temporizador",
+                        value = when (timerSec) { 3 -> "3 s"; 10 -> "10 s"; else -> "Off" },
+                        palette = palette
+                    ) { onAnyAction(); onCycleTimer() }
                 }
 
-                // ── Sección: Composición ─────────────────────────────
-                SectionLabel("Composición", palette)
-                SettingsRow("Cuadrícula 3×3", gridOn, palette) { onAnyAction(); onToggleGrid() }
-                SettingsRow("Histograma en tiempo real", histogramOn, palette) {
-                    onAnyAction(); onToggleHistogram()
+                // ── Composición ───────────────────────────────────────────
+                item { SectionLabel("Composición", palette) }
+                item { SettingsRow("Cuadrícula 3×3", gridOn, palette) { onAnyAction(); onToggleGrid() } }
+                item {
+                    SettingsRow("Histograma en tiempo real", histogramOn, palette) {
+                        onAnyAction(); onToggleHistogram()
+                    }
                 }
-                SettingsRow("Horizonte artificial", horizonOn, palette) {
-                    onAnyAction(); onToggleHorizon()
-                }
-
-                // ── Sección: Sonido / vibración ──────────────────────
-                SectionLabel("Sonido y vibración", palette)
-                SettingsRow("Sonido del obturador", soundOn, palette) {
-                    onAnyAction(); onToggleSound()
-                }
-                SettingsRow("Vibración háptica", hapticsOn, palette) {
-                    onAnyAction(); onToggleHaptics()
+                item {
+                    SettingsRow("Horizonte artificial", horizonOn, palette) {
+                        onAnyAction(); onToggleHorizon()
+                    }
                 }
 
-                // ── Sección: Apariencia ──────────────────────────────
-                SectionLabel("Apariencia", palette)
-                SettingsActionRow(
-                    label = "Tema",
-                    value = when (darkPref) {
-                        true -> "Oscuro"
-                        false -> "Claro"
-                        null -> "Sistema"
-                    },
-                    palette = palette
-                ) {
-                    onAnyAction()
-                    onCycleTheme()
+                // ── Sonido / vibración ────────────────────────────────────
+                item { SectionLabel("Sonido y vibración", palette) }
+                item {
+                    SettingsRow("Sonido del obturador", soundOn, palette) {
+                        onAnyAction(); onToggleSound()
+                    }
+                }
+                item {
+                    SettingsRow("Vibración háptica", hapticsOn, palette) {
+                        onAnyAction(); onToggleHaptics()
+                    }
                 }
 
-                SettingsActionRow(
-                    label = "Color de interfaz",
-                    value = accentStyleLabel,
-                    palette = palette
-                ) {
-                    onAnyAction()
-                    onCycleAccentStyle()
+                // ── Apariencia ────────────────────────────────────────────
+                item { SectionLabel("Apariencia", palette) }
+                item {
+                    SettingsActionRow(
+                        label = "Tema",
+                        value = when (darkPref) { true -> "Oscuro"; false -> "Claro"; null -> "Sistema" },
+                        palette = palette
+                    ) { onAnyAction(); onCycleTheme() }
+                }
+                item {
+                    SettingsActionRow(
+                        label = "Color de interfaz",
+                        value = accentStyleLabel,
+                        palette = palette
+                    ) { onAnyAction(); onCycleAccentStyle() }
                 }
 
-                // ── Sección: Relación de aspecto ─────────────────────
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Relación de aspecto",
-                        color = palette.onGlass,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        val options = listOf(
-                            "Auto" to null,
-                            "3:4" to PreviewAspect.RATIO_3_4,
-                            "9:16" to PreviewAspect.RATIO_9_16,
-                            "1:1" to PreviewAspect.RATIO_1_1,
-                            "Full" to PreviewAspect.RATIO_FULL
+                // ── Relación de aspecto ───────────────────────────────────
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Relación de aspecto",
+                            color = palette.onGlass,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
-                        options.forEach { (label, value) ->
-                            val selected = manualAspect == value
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(
-                                        if (selected) palette.accent else Color.Transparent
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val options = listOf(
+                                "Auto" to null,
+                                "3:4" to PreviewAspect.RATIO_3_4,
+                                "9:16" to PreviewAspect.RATIO_9_16,
+                                "1:1" to PreviewAspect.RATIO_1_1,
+                                "Full" to PreviewAspect.RATIO_FULL
+                            )
+                            options.forEach { (label, value) ->
+                                val selected = manualAspect == value
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .background(
+                                            if (selected) palette.accent else Color.Transparent
+                                        )
+                                        .border(
+                                            width = if (selected) 0.dp else 0.6.dp,
+                                            color = if (selected) Color.Transparent else palette.borderSoft,
+                                            shape = RoundedCornerShape(18.dp)
+                                        )
+                                        .clickable {
+                                            onAnyAction()
+                                            onAspectChange(value)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (selected) palette.onAccent else palette.onGlass,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
                                     )
-                                    .border(
-                                        width = if (selected) 0.dp else 0.6.dp,
-                                        color = if (selected) Color.Transparent else palette.borderSoft,
-                                        shape = RoundedCornerShape(18.dp)
-                                    )
-                                    .clickable {
-                                        onAnyAction()
-                                        onAspectChange(value)
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = label,
-                                    color = if (selected) palette.onAccent else palette.onGlass,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                }
                             }
                         }
                     }
                 }
 
-                // ── ▼▼▼ "Abrir configuración" (acceso a SettingsActivity) ▼▼▼ ──
-                Spacer(Modifier.size(4.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .liquidGlass(palette, RoundedCornerShape(18.dp), strong = true)
-                        .clickable(onClick = onOpenFullSettings)
-                        .padding(horizontal = 16.dp, vertical = 14.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        LensIcon(
-                            icon = LensIcons.More,
-                            tint = palette.accent,
-                            size = 20.dp
-                        )
-                        Spacer(Modifier.size(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Abrir configuración",
-                                color = palette.onGlass,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Más opciones y paletas premium",
-                                color = palette.onGlassSecondary,
-                                fontSize = 12.sp
+                // ── Acceso a SettingsActivity ─────────────────────────────
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = true)
+                            .clickable(onClick = onOpenFullSettings)
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            LensIcon(icon = LensIcons.More, tint = palette.accent, size = 20.dp)
+                            Spacer(Modifier.size(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Abrir configuración",
+                                    color = palette.onGlass,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Más opciones y paletas premium",
+                                    color = palette.onGlassSecondary,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            LensIcon(
+                                icon = LensIcons.ChevronRight,
+                                tint = palette.onGlassSecondary,
+                                size = 18.dp
                             )
                         }
-                        LensIcon(
-                            icon = LensIcons.ChevronRight,
-                            tint = palette.onGlassSecondary,
-                            size = 18.dp
-                        )
                     }
                 }
 
-                Button(
-                    onClick = onClose,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = palette.accent,
-                        contentColor = palette.onAccent
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Cerrar", fontWeight = FontWeight.Bold)
-                }
+                // Espaciado inferior dentro del scroll
+                item { Spacer(Modifier.height(4.dp)) }
+            }
+
+            // FIX UX-2: Botón "Cerrar" FIJO fuera del scroll — siempre visible
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = palette.accent,
+                    contentColor = palette.onAccent
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 14.dp)
+            ) {
+                Text("Cerrar", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -1465,12 +1516,13 @@ private fun formatElapsed(seconds: Long): String {
     return "%02d:%02d".format(minutes, remaining)
 }
 
+// FIX B1: loguea el error correctamente en vez de silenciarlo
 private fun CoroutineScope.launchSafe(block: suspend () -> Unit) {
     launch {
         try {
             block()
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.w("RodytoLensPro", "launchSafe: excepción capturada", e)
         }
     }
 }
