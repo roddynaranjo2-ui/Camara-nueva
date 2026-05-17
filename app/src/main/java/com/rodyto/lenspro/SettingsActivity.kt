@@ -2,6 +2,7 @@ package com.rodyto.lenspro
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -47,6 +48,17 @@ class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // FIX CRÍTICO: registrar OnBackPressedCallback para el sistema moderno
+        // (android:enableOnBackInvokedCallback="true" está en el manifest).
+        // Sin esto, el botón físico "atrás" no cerraba SettingsActivity
+        // correctamente cuando se usa la API predictive back de Android 13+.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                finish()
+            }
+        })
+
         setContent {
             val context = LocalContext.current
             val repo = remember { SettingsRepository(context) }
@@ -103,11 +115,16 @@ private fun SettingsScreen(
             contentPadding = PaddingValues(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // ─── Cabecera con botón "atrás" funcional ─────────────────────────
             item {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Botón "‹" conectado tanto al lambda onBack como al
+                    // dispatcher de sistema para consistencia
                     Box(
                         modifier = Modifier
                             .size(40.dp)
@@ -117,7 +134,12 @@ private fun SettingsScreen(
                             .clickable(onClick = onBack),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("‹", color = palette.onGlass, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "‹",
+                            color = palette.onGlass,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                     Spacer(Modifier.size(14.dp))
                     Text(
@@ -129,6 +151,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Apariencia ──────────────────────────────────────────────────
             item { SectionTitle("Apariencia", palette) }
             item {
                 GlassCard(palette) {
@@ -157,6 +180,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Composición ─────────────────────────────────────────────────
             item { SectionTitle("Composición", palette) }
             item {
                 GlassCard(palette) {
@@ -183,6 +207,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Captura ─────────────────────────────────────────────────────
             item { SectionTitle("Captura", palette) }
             item {
                 GlassCard(palette) {
@@ -209,6 +234,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Archivos y galería ───────────────────────────────────────────
             item { SectionTitle("Archivos y galería", palette) }
             item {
                 GlassCard(palette) {
@@ -221,6 +247,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Paleta de colores ────────────────────────────────────────────
             item { SectionTitle("Paleta de colores", palette) }
             item {
                 GlassCard(palette) {
@@ -236,6 +263,7 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── Footer ───────────────────────────────────────────────────────
             item {
                 Text(
                     "LensPro v2.1 • Glass UI • Camera2 + NDK\nRAW DNG real · Manual focus · EXIF dinámico",
@@ -247,6 +275,8 @@ private fun SettingsScreen(
         }
     }
 }
+
+// ─── Componentes privados ────────────────────────────────────────────────────
 
 @Composable
 private fun SectionTitle(text: String, palette: GlassPalette) {
@@ -283,11 +313,16 @@ private fun Divider(palette: GlassPalette) {
 
 @Composable
 private fun SettingsRowSwitch(
-    label: String, sub: String? = null, checked: Boolean,
-    palette: GlassPalette, onChange: (Boolean) -> Unit
+    label: String,
+    sub: String? = null,
+    checked: Boolean,
+    palette: GlassPalette,
+    onChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -309,7 +344,10 @@ private fun SettingsRowSwitch(
 
 @Composable
 private fun SettingsRowAction(
-    label: String, value: String, palette: GlassPalette, onClick: () -> Unit
+    label: String,
+    value: String,
+    palette: GlassPalette,
+    onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
