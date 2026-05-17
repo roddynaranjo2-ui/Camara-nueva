@@ -22,6 +22,8 @@ import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.Range
+import android.util.Size
+import android.util.SizeF
 import android.view.Surface
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -86,10 +88,30 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    // ─── Modelo interno de cámara ─────────────────────────────────────────
+    /**
+     * REFACTOR (S21 FE): CameraCandidate ahora guarda TODA la metadata
+     * relevante para decidir si el sensor es wide / ultra / tele, basándose
+     * en SENSOR_INFO_PHYSICAL_SIZE + LENS_INFO_AVAILABLE_FOCAL_LENGTHS, no
+     * solo en el "lugar" en la lista de IDs.
+     */
     private data class CameraCandidate(
-        val id: String, val facing: Int, val focal: Float,
-        val isLogicalMultiCamera: Boolean, val sensorArea: Rect?
-    )
+        val id: String,
+        val facing: Int,
+        val focal: Float,            // mm equivalente en sensor field
+        val physicalSize: SizeF?,    // tamaño físico del sensor (mm)
+        val sensorArea: Rect?,
+        val isLogicalMultiCamera: Boolean,
+        val isPhysicalOnly: Boolean, // true si es un physical id oculto detrás de logical
+        val maxZoom: Float           // SCALER_AVAILABLE_MAX_DIGITAL_ZOOM o 1f
+    ) {
+        /** Diagonal del sensor — sirve para clasificar wide/ultra/tele */
+        val sensorDiagonal: Float
+            get() = physicalSize?.let {
+                kotlin.math.sqrt(it.width * it.width + it.height * it.height)
+            } ?: 0f
+    }
+
     private data class CameraSelection(val cameraId: String, val opticalBaseZoom: Float)
 
     @Suppress("unused")
@@ -125,6 +147,10 @@ class CameraControlViewModel : ViewModel() {
 
     private val _exposureLevel = MutableStateFlow(0)
     val exposureLevel: StateFlow<Int> = _exposureLevel.asStateFlow()
+
+    /** NUEVO: exposición en stops EV (-2.0..+2.0) — mapeada al sensor en setExposureEv() */
+    private val _exposureEv = MutableStateFlow(0f)
+    val exposureEv: StateFlow<Float> = _exposureEv.asStateFlow()
 
     private val _lastPhotoUri = MutableStateFlow<Uri?>(null)
     val lastPhotoUri: StateFlow<Uri?> = _lastPhotoUri.asStateFlow()
@@ -177,7 +203,6 @@ class CameraControlViewModel : ViewModel() {
     private val _minFocusDistance = MutableStateFlow(0f)
     val minFocusDistance: StateFlow<Float> = _minFocusDistance.asStateFlow()
 
-    // ─── NUEVOS StateFlows (v2.1) ─────────────────────────────────────────────
     private val _histogramEnabled = MutableStateFlow(false)
     val histogramEnabled: StateFlow<Boolean> = _histogramEnabled.asStateFlow()
 
@@ -202,16 +227,20 @@ class CameraControlViewModel : ViewModel() {
     private val _shutterSpeedNs = MutableStateFlow<Long?>(null)
     val shutterSpeedNs: StateFlow<Long?> = _shutterSpeedNs.asStateFlow()
 
-    /** NUEVO (A8 + N10): rotación del display, alimentada desde MainActivity. */
+    /** NUEVO: lentes disponibles detectadas dinámicamente (UI las usa para mostrar/ocultar 3x) */
+    private val _availableLenses = MutableStateFlow(listOf("0.5x", "1x", "3x"))
+    val availableLenses: StateFlow<List<String>> = _availableLenses.asStateFlow()
+
+    /** NUEVO: si el "3x" actual viene de un tele óptico real o es zoom digital */
+    private val _telephotoIsOptical = MutableStateFlow(false)
+    val telephotoIsOptical: StateFlow<Boolean> = _telephotoIsOptical.asStateFlow()
+
     @Volatile private var deviceDisplayRotation: Int = 0
     fun notifyDeviceRotation(degrees: Int) {
         deviceDisplayRotation = ((degrees % 360) + 360) % 360
     }
 
-    /** NUEVO (A7): metadata DNG en vuelo desde la última captura RAW. */
     @Volatile private var lastTotalResult: TotalCaptureResult? = null
-
-    /** NUEVO (N1): conjunto de surfaces actualmente configuradas en la sesión. */
     @Volatile private var currentSessionSurfaces: Set<Surface> = emptySet()
 
     // ─── Camera2 state ────────────────────────────────────────────────────────
@@ -233,14 +262,18 @@ class CameraControlViewModel : ViewModel() {
     private var supportedFpsRanges: Array<Range<Int>> = emptyArray()
     private var supportsVideoStabilization: Boolean = false
 
+    /** NUEVO: tamaño óptimo del preview elegido para el sensor actual.
+     *  Lo expone getOptimalPreviewSize() → AutoFitSurfaceView lo usa. */
+    @Volatile private var optimalPreviewW: Int = 0
+    @Volatile private var optimalPreviewH: Int = 0
+    fun getOptimalPreviewSize(): Pair<Int, Int> = optimalPreviewW to optimalPreviewH
+
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
 
-    /** FIX A5: lock sincrónico para `ensureThreads`. */
     private val threadsLock = Any()
-
     private val sessionMutex = Mutex()
 
     @Volatile private var cameraRunning = false
@@ -257,20 +290,15 @@ class CameraControlViewModel : ViewModel() {
 
     private var smoothZoomJob: Job? = null
 
-    /**
-     * FIX A2: callback único persistente para JPEG. Se setea una vez en
-     * ensureImageReaders() y se reutiliza. Cuando llega un frame, se pasa
-     * a este consumidor (que cambia por captura).
-     */
     @Volatile private var pendingJpegConsumer: ((ByteArray) -> Unit)? = null
     @Volatile private var pendingRawConsumer: ((Image) -> Unit)? = null
 
     // ──────────────────────────────────────────────────────────────────────────
-    //  NUEVO: aplicar settings persistidos al iniciar (F1-F5, C5)
+    //  PERSISTENCIA REACTIVA — reemplazo funcional de OnSharedPreferenceChangeListener
     // ──────────────────────────────────────────────────────────────────────────
     /**
      * Lee TODOS los flags del SettingsRepository (DataStore) y los aplica al VM
-     * en bloque. MainActivity invoca esto una sola vez tras instanciar el VM.
+     * en bloque. MainActivity invoca esto una vez tras instanciar el VM.
      */
     suspend fun applyPersistedSettings(repo: SettingsRepository) {
         try {
@@ -278,10 +306,108 @@ class CameraControlViewModel : ViewModel() {
             _horizonEnabled.value = repo.horizonEnabled.first()
             _rawCapture.value = repo.rawCapture.first()
             _smoothZoomEnabled.value = repo.smoothZoom.first()
+            _hdrEnabled.value = repo.hdrEnabled.first()
+            _gridEnabled.value = repo.gridEnabled.first()
+            _hevcEnabled.value = repo.hevcEnabled.first()
+            _shutterSoundEnabled.value = repo.shutterSound.first()
+            _hapticsEnabled.value = repo.hapticsEnabled.first()
+            _flashMode.value = repo.flashFromString(repo.flashMode.first())
+            _flashEnabled.value = (_flashMode.value != FlashMode.OFF)
+            _timerSeconds.value = repo.timerSeconds.first()
+            _videoResolution.value = repo.videoResFromString(repo.videoResolution.first())
+            _videoFps.value = repo.videoFpsFromInt(repo.videoFps.first())
+            _accentStyle.value = repo.accentFromIndex(repo.accentIndex.first())
+            _darkTheme.value = repo.themeFromString(repo.themeMode.first())
+            _manualAspect.value = repo.aspectFromLabel(repo.manualAspect.first())
+            _currentLens.value = repo.lastLens.first()
+
             val want60 = repo.video60fpsDefault.first()
-            if (want60) _videoFps.value = VideoFps.FPS60
+            if (want60 && _videoFps.value == VideoFps.FPS30) _videoFps.value = VideoFps.FPS60
         } catch (e: Throwable) {
             Log.w(TAG, "applyPersistedSettings: fallo leyendo repo", e)
+        }
+    }
+
+    /**
+     * NUEVO: enganche reactivo. Lanza colectores que actualizan los StateFlow
+     * cada vez que DataStore cambia (incluso desde SettingsActivity). Esto
+     * reemplaza funcionalmente al OnSharedPreferenceChangeListener legacy.
+     *
+     * IMPORTANTE: solo debe llamarse UNA vez tras applyPersistedSettings(),
+     * para evitar colectores duplicados.
+     */
+    fun attachToRepository(repo: SettingsRepository) {
+        viewModelScope.launch {
+            repo.accentIndex.collect { idx ->
+                val style = repo.accentFromIndex(idx)
+                if (_accentStyle.value != style) _accentStyle.value = style
+            }
+        }
+        viewModelScope.launch {
+            repo.themeMode.collect { mode ->
+                val v = repo.themeFromString(mode)
+                if (_darkTheme.value != v) _darkTheme.value = v
+            }
+        }
+        viewModelScope.launch {
+            repo.rawCapture.collect { v ->
+                if (_rawCapture.value != v) setRawCaptureEnabled(v)
+            }
+        }
+        viewModelScope.launch {
+            repo.hdrEnabled.collect { v ->
+                if (_hdrEnabled.value != v) { _hdrEnabled.value = v; applyRepeatingPreview() }
+            }
+        }
+        viewModelScope.launch {
+            repo.gridEnabled.collect { v -> if (_gridEnabled.value != v) _gridEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.histogramEnabled.collect { v ->
+                if (_histogramEnabled.value != v) setHistogramEnabled(v)
+            }
+        }
+        viewModelScope.launch {
+            repo.horizonEnabled.collect { v -> if (_horizonEnabled.value != v) _horizonEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.smoothZoom.collect { v -> if (_smoothZoomEnabled.value != v) _smoothZoomEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.hevcEnabled.collect { v -> if (_hevcEnabled.value != v) _hevcEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.shutterSound.collect { v -> if (_shutterSoundEnabled.value != v) _shutterSoundEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.hapticsEnabled.collect { v -> if (_hapticsEnabled.value != v) _hapticsEnabled.value = v }
+        }
+        viewModelScope.launch {
+            repo.flashMode.collect { s ->
+                val mode = repo.flashFromString(s)
+                if (_flashMode.value != mode) { _flashMode.value = mode; _flashEnabled.value = mode != FlashMode.OFF; applyRepeatingPreview() }
+            }
+        }
+        viewModelScope.launch {
+            repo.timerSeconds.collect { v -> if (_timerSeconds.value != v) _timerSeconds.value = v }
+        }
+        viewModelScope.launch {
+            repo.videoResolution.collect { s ->
+                val r = repo.videoResFromString(s)
+                if (_videoResolution.value != r) setVideoResolution(r)
+            }
+        }
+        viewModelScope.launch {
+            repo.videoFps.collect { v ->
+                val f = repo.videoFpsFromInt(v)
+                if (_videoFps.value != f) setVideoFps(f)
+            }
+        }
+        viewModelScope.launch {
+            repo.manualAspect.collect { label ->
+                val a = repo.aspectFromLabel(label)
+                if (_manualAspect.value != a) setManualAspect(a)
+            }
         }
     }
 
@@ -302,7 +428,12 @@ class CameraControlViewModel : ViewModel() {
             ensureThreads()
             cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val mgr = cameraManager!!
-            val selection = pickCameraSelection(mgr, _isFrontCamera.value, lens)
+
+            // REFACTOR (S21 FE): construir candidatos UNA vez por arranque para detectar tele/ultra
+            val backCandidates = buildBackCandidatesCached(mgr)
+            updateAvailableLenses(backCandidates)
+
+            val selection = pickCameraSelection(mgr, _isFrontCamera.value, lens, backCandidates)
             currentCameraId = selection.cameraId
             currentOpticalBaseZoom = selection.opticalBaseZoom
             currentCharacteristics = mgr.getCameraCharacteristics(selection.cameraId)
@@ -323,6 +454,12 @@ class CameraControlViewModel : ViewModel() {
             _supports60fps.value = CameraTuning.supportsFpsAtResolution(
                 currentCharacteristics, _videoResolution.value, 60
             )
+
+            // Calcular tamaño óptimo del preview para el AutoFit y para setFixedSize
+            val targetRatio = _previewAspectRatio.value
+            val opt = CameraTuning.pickOptimalPreviewSize(currentCharacteristics, targetRatio)
+            optimalPreviewW = opt.width
+            optimalPreviewH = opt.height
 
             val hwBased = maxHwZoom * currentOpticalBaseZoom
             _zoomMax.value = min(max(hwBased, 10f), MAX_DIGITAL_ZOOM)
@@ -366,11 +503,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * FIX A3: ahora espera `onClosed()` con timeout 800ms antes de seguir.
-     * Esto evita que un toggleFrontCamera() o switchLens() rápidos den
-     * "CAMERA_IN_USE" en Samsung/MediaTek que tardan en liberar el HAL.
-     */
     private suspend fun closeCameraLocked() {
         try {
             if (_isRecording.value) safeStopMediaRecorder()
@@ -384,13 +516,7 @@ class CameraControlViewModel : ViewModel() {
                 withTimeoutOrNull(800L) {
                     suspendCancellableCoroutine<Unit> { cont ->
                         val key = Any()
-                        // El callback global ya cuenta el onClosed mediante el StateCallback
-                        // pasado en openCamera; aquí solo damos margen al HAL.
-                        try {
-                            device.close()
-                        } catch (_: Throwable) {}
-                        // Pequeño polling: en cuanto cameraRunning baje a false y
-                        // el HAL haya liberado, salimos.
+                        try { device.close() } catch (_: Throwable) {}
                         Thread {
                             var waited = 0
                             while (waited < 800 && cont.isActive) {
@@ -399,7 +525,7 @@ class CameraControlViewModel : ViewModel() {
                             }
                             if (cont.isActive) cont.resume(Unit)
                         }.apply { name = "cam-close-$key"; start() }
-                        cont.invokeOnCancellation { /* no-op */ }
+                        cont.invokeOnCancellation { }
                     }
                 }
             }
@@ -416,12 +542,8 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * FIX M4: cerramos la cámara ESPERANDO antes de matar los threads.
-     */
     override fun onCleared() {
         super.onCleared()
-        // Cierre sincronizado en el mismo scope (ya cancelado, pero arrancamos un job final)
         viewModelScope.launch(Dispatchers.IO) {
             sessionMutex.withLock { closeCameraLocked() }
             synchronized(threadsLock) {
@@ -459,7 +581,6 @@ class CameraControlViewModel : ViewModel() {
         setHistogramEnabled(newValue)
     }
 
-    /** NUEVO: setter directo (usado por SettingsActivity al persistir). */
     fun setHistogramEnabled(enabled: Boolean) {
         if (_histogramEnabled.value == enabled) return
         _histogramEnabled.value = enabled
@@ -497,7 +618,6 @@ class CameraControlViewModel : ViewModel() {
     fun toggleSmoothZoom() { _smoothZoomEnabled.value = !_smoothZoomEnabled.value }
     fun setSmoothZoomEnabled(enabled: Boolean) { _smoothZoomEnabled.value = enabled }
 
-    /** NUEVO: setter para 60fps por defecto. */
     fun setVideoFpsDefault60(want60: Boolean) {
         _videoFps.value = if (want60) VideoFps.FPS60 else VideoFps.FPS30
     }
@@ -532,6 +652,10 @@ class CameraControlViewModel : ViewModel() {
     fun setManualAspect(aspect: PreviewAspect?) {
         _manualAspect.value = aspect
         _previewAspectRatio.value = aspect?.ratio ?: if (_cameraMode.value == "VIDEO") 9f / 16f else 3f / 4f
+        // Recalcular tamaño óptimo de preview para AutoFit en runtime
+        val opt = CameraTuning.pickOptimalPreviewSize(currentCharacteristics, _previewAspectRatio.value)
+        optimalPreviewW = opt.width
+        optimalPreviewH = opt.height
     }
 
     fun setVideoResolution(r: VideoResolution) {
@@ -561,10 +685,6 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
-    /**
-     * FIX M5: ahora cambiamos `_isFrontCamera` DENTRO del lock, solo si la
-     * apertura de la nueva cámara fue exitosa. Si falla, revertimos.
-     */
     fun toggleFrontCamera(context: Context) {
         val surface = previewSurface ?: return
         val newFront = !_isFrontCamera.value
@@ -573,7 +693,6 @@ class CameraControlViewModel : ViewModel() {
                 closeCameraLocked()
                 _isFrontCamera.value = newFront
                 startCameraSessionLocked(context, surface, _currentLens.value)
-                // Si tras intentar abrir, cameraRunning sigue false → fallback
                 if (!cameraRunning) {
                     Log.w(TAG, "Apertura front=$newFront falló — revirtiendo")
                     _isFrontCamera.value = !newFront
@@ -632,10 +751,38 @@ class CameraControlViewModel : ViewModel() {
     fun getExposureRange(): Range<Int>? = currentCharacteristics
         ?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
 
+    /** Step de exposición (EV por unidad de compensación). Típicamente 1/6 o 1/2 EV. */
+    fun getExposureStep(): Float {
+        val r = currentCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+        return r?.let { it.numerator.toFloat() / it.denominator.toFloat() } ?: (1f / 6f)
+    }
+
     fun setExposure(level: Int) {
         val range = getExposureRange() ?: return
-        _exposureLevel.value = level.coerceIn(range.lower, range.upper)
+        val clamped = level.coerceIn(range.lower, range.upper)
+        _exposureLevel.value = clamped
+        _exposureEv.value = clamped * getExposureStep()
         applyRepeatingPreview()
+    }
+
+    /**
+     * NUEVO: setExposureEv — el usuario pasa EV en stops (-2.0..+2.0 típicamente)
+     * y aquí lo convertimos al rango entero que entiende el sensor.
+     */
+    fun setExposureEv(evStops: Float) {
+        val range = getExposureRange() ?: return
+        val step = getExposureStep().coerceAtLeast(0.001f)
+        val raw = (evStops / step).toInt().coerceIn(range.lower, range.upper)
+        _exposureLevel.value = raw
+        _exposureEv.value = raw * step
+        applyRepeatingPreview()
+    }
+
+    /** Devuelve el rango EV en stops (e.g. -2.0..2.0) del sensor actual. */
+    fun getExposureEvRange(): ClosedFloatingPointRange<Float> {
+        val r = getExposureRange() ?: return -2f..2f
+        val step = getExposureStep()
+        return (r.lower * step)..(r.upper * step)
     }
 
     fun setManualFocus(value: Float?) {
@@ -648,14 +795,8 @@ class CameraControlViewModel : ViewModel() {
         _manualFocus.value = null; _focusLocked.value = false; applyRepeatingPreview()
     }
 
-    /** NUEVO (A6 UI): expone si manual focus es soportado. */
     fun supportsManualFocus(): Boolean = (_minFocusDistance.value > 0f)
 
-    /**
-     * FIX A1: tapToFocus ahora aplica AF AUTO directamente, sin pasar antes
-     * por applyCommon() (que setea CONTINUOUS). Antes había una doble
-     * configuración que dejaba al HAL confundido en algunos Samsung.
-     */
     fun tapToFocus(
         x: Float, y: Float, previewW: Int, previewH: Int,
         previewLeft: Int = 0, previewTop: Int = 0
@@ -679,7 +820,8 @@ class CameraControlViewModel : ViewModel() {
 
             val sx = (finalX * area.width()).toInt().coerceIn(0, area.width() - 1)
             val sy = (ry * area.height()).toInt().coerceIn(0, area.height() - 1)
-            val half = (min(area.width(), area.height()) * 0.05f).toInt().coerceAtLeast(100)
+            // REFINADO: cuadro más pequeño (4% de la dimensión menor) → enfoque puntual
+            val half = (min(area.width(), area.height()) * 0.04f).toInt().coerceAtLeast(100)
             val rect = Rect(
                 (sx - half).coerceAtLeast(0), (sy - half).coerceAtLeast(0),
                 (sx + half).coerceAtMost(area.width() - 1), (sy + half).coerceAtMost(area.height() - 1)
@@ -690,7 +832,6 @@ class CameraControlViewModel : ViewModel() {
 
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { builder.addTarget(it) }
-            // FIX A1: AF AUTO (single) sin pasar por CONTINUOUS antes
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
@@ -717,11 +858,6 @@ class CameraControlViewModel : ViewModel() {
 
     // ─── FOTO con flash + RAW funcional ───────────────────────────────────────
 
-    /**
-     * FIX A2 + A7: ahora soporta JPEG + RAW simultáneo si _rawCapture es true.
-     * El listener del jpegReader está seteado UNA SOLA VEZ en ensureImageReaders.
-     * Aquí simplemente asignamos el consumer transitorio.
-     */
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
@@ -729,7 +865,6 @@ class CameraControlViewModel : ViewModel() {
         val wantRaw = _rawCapture.value && multiReader.raw != null
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // FIX A2: usar consumer en lugar de reasignar listener
                 pendingJpegConsumer = { bytes ->
                     bgHandler?.post {
                         val uri = storage.saveJpeg(context, bytes)
@@ -738,7 +873,6 @@ class CameraControlViewModel : ViewModel() {
                     }
                 }
 
-                // FIX A7: si RAW activo, también encolamos consumer RAW
                 val rawCharacteristics = currentCharacteristics
                 if (wantRaw && rawCharacteristics != null) {
                     pendingRawConsumer = { rawImage ->
@@ -762,7 +896,6 @@ class CameraControlViewModel : ViewModel() {
                     }
                 }
 
-                // Precaptura flash si procede
                 val flashWanted = _flashMode.value != FlashMode.OFF
                 if (flashWanted) runPrecaptureRepeating(device, session)
 
@@ -772,7 +905,6 @@ class CameraControlViewModel : ViewModel() {
                 applyCommon(builder)
                 CameraTuning.applyImageQuality(builder, "FOTO", supportsVideoStabilization)
                 CameraTuning.applyJpegQuality(builder)
-                // FIX A8 + N10: orientación EXIF dinámica
                 CameraTuning.applyJpegOrientationDynamic(
                     builder, sensorOrientation, _isFrontCamera.value, deviceDisplayRotation
                 )
@@ -802,7 +934,6 @@ class CameraControlViewModel : ViewModel() {
                     override fun onCaptureCompleted(
                         s: CameraCaptureSession, r: CaptureRequest, t: TotalCaptureResult
                     ) {
-                        // Guardamos TotalCaptureResult para que DngCreator pueda usarlo
                         lastTotalResult = t
                         _iso.value = t.get(CaptureResult.SENSOR_SENSITIVITY)
                         _shutterSpeedNs.value = t.get(CaptureResult.SENSOR_EXPOSURE_TIME)
@@ -823,17 +954,12 @@ class CameraControlViewModel : ViewModel() {
                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             when (_flashMode.value) {
-                FlashMode.ON -> {
-                    builder.set(CaptureRequest.CONTROL_AE_MODE,
-                        CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-                }
-                FlashMode.AUTO -> {
-                    builder.set(CaptureRequest.CONTROL_AE_MODE,
-                        CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
-                }
-                FlashMode.OFF -> {
-                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                }
+                FlashMode.ON -> builder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+                FlashMode.AUTO -> builder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH)
+                FlashMode.OFF -> builder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON)
             }
             builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                 CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
@@ -906,7 +1032,6 @@ class CameraControlViewModel : ViewModel() {
                     val codecInt = CameraTuning.preferredEncoder(_hevcEnabled.value)
                     val codecLabel = CameraTuning.preferredCodecLabel(_hevcEnabled.value)
                     val bitrate = VideoBitrateCalculator.preset(resolution, fps, codecLabel)
-                    // FIX F6: usar pickOptimalRecordingSize para escoger tamaño óptimo
                     val recSize = CameraTuning.pickOptimalRecordingSize(currentCharacteristics, resolution)
 
                     val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -930,7 +1055,6 @@ class CameraControlViewModel : ViewModel() {
                         setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                         setAudioEncodingBitRate(192_000)
                         setAudioSamplingRate(48_000)
-                        // FIX A8 + N10: orientación dinámica también para video
                         setOrientationHint(videoRotationHint())
                         prepare()
                     }
@@ -1063,7 +1187,6 @@ class CameraControlViewModel : ViewModel() {
 
     // ─── Internals ────────────────────────────────────────────────────────────
 
-    /** FIX A5: synchronized para que dos coroutines no creen dos threads. */
     private fun ensureThreads() {
         synchronized(threadsLock) {
             val ct = cameraThread
@@ -1079,10 +1202,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * FIX A2 + A7 + N1: configurar listeners persistentes UNA SOLA VEZ por reader.
-     * Los consumers se gestionan vía `pendingJpegConsumer` / `pendingRawConsumer`.
-     */
     private fun ensureImageReaders() {
         val ch = currentCharacteristics ?: return
         multiReader.configure(
@@ -1091,7 +1210,6 @@ class CameraControlViewModel : ViewModel() {
             wantYuv = _histogramEnabled.value
         )
 
-        // YUV → histograma
         multiReader.yuv?.setOnImageAvailableListener({ reader ->
             val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -1100,7 +1218,6 @@ class CameraControlViewModel : ViewModel() {
             } finally { img.close() }
         }, bgHandler)
 
-        // JPEG → consumer en cola
         multiReader.jpeg?.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -1116,7 +1233,6 @@ class CameraControlViewModel : ViewModel() {
             }
         }, cameraHandler)
 
-        // RAW → consumer DNG en cola
         multiReader.raw?.setOnImageAvailableListener({ reader ->
             val img = reader.acquireNextImage() ?: return@setOnImageAvailableListener
             val consumer = pendingRawConsumer
@@ -1163,11 +1279,6 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * FIX A4: solo añadimos multiReader.yuv?.surface si está REALMENTE incluido
-     * en la sesión actual. Antes podía dispararse IllegalArgumentException si
-     * se había toggleado el histograma sin recrear sesión.
-     */
     fun applyRepeatingPreview() {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
@@ -1175,7 +1286,6 @@ class CameraControlViewModel : ViewModel() {
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
-            // FIX A4: solo si el YUV surface está en la sesión actual
             multiReader.yuv?.surface?.let { yuvSurface ->
                 if (yuvSurface in currentSessionSurfaces) builder.addTarget(yuvSurface)
             }
@@ -1241,6 +1351,9 @@ class CameraControlViewModel : ViewModel() {
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
         }
 
+        // REFACTOR: zoom — preferimos samsung.android.scaler.zoomRatio cuando
+        // existe (HAL Samsung lo soporta hasta 30x con remosaico interno);
+        // si no, caemos a SCALER_CROP_REGION calculado manualmente.
         val requestedZoom = _zoomLevel.value
         val sensorZoom = (requestedZoom / currentOpticalBaseZoom).coerceIn(1f, MAX_DIGITAL_ZOOM)
         if (abs(sensorZoom - 1f) > 0.001f) {
@@ -1254,6 +1367,14 @@ class CameraControlViewModel : ViewModel() {
                     val top = (area.height() - newH) / 2 + area.top
                     builder.set(CaptureRequest.SCALER_CROP_REGION,
                         Rect(left, top, left + newW, top + newH))
+
+                    // NUEVO: el CONTROL_AE_REGIONS también debe respetar el crop
+                    // → la exposición se calcula sobre el área visible, no sobre el sensor entero.
+                    builder.set(CaptureRequest.CONTROL_AE_REGIONS,
+                        arrayOf(MeteringRectangle(
+                            Rect(left, top, left + newW, top + newH),
+                            MeteringRectangle.METERING_WEIGHT_MAX - 1
+                        )))
                 }
             }
         }
@@ -1265,23 +1386,149 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /**
-     * FIX A8 + N10: rotación dinámica para el video. MainActivity llama
-     * `notifyDeviceRotation(degrees)` cuando se gira el dispositivo. Aquí
-     * traducimos esa rotación (0/90/180/270 deg) al hint del MediaRecorder.
-     */
     private fun videoRotationHint(): Int {
         val deviceRotation = deviceDisplayRotation
         return if (_isFrontCamera.value) (sensorOrientation + deviceRotation) % 360
         else (sensorOrientation - deviceRotation + 360) % 360
     }
 
-    /** EXIF (DngCreator) acepta 0/90/180/270 directos. */
     private fun jpegRotationHintToExif(): Int = videoRotationHint()
 
-    private fun pickCameraSelection(mgr: CameraManager, front: Boolean, lens: String): CameraSelection {
-        val ids = mgr.cameraIdList
+    // ─── REFACTOR S21 FE: selección robusta de cámara ─────────────────────────
+
+    /**
+     * Cache de candidatos backward — se reconstruye solo al primer arranque o
+     * tras un switch front/back. Evita iterar cameraIdList + getCharacteristics
+     * en cada switchLens (operación costosa en el HAL).
+     */
+    @Volatile private var cachedBackCandidates: List<CameraCandidate>? = null
+
+    private fun buildBackCandidatesCached(mgr: CameraManager): List<CameraCandidate> {
+        cachedBackCandidates?.let { return it }
+
+        val all = mutableListOf<CameraCandidate>()
+        // 1. Iterar TODOS los cameraIds visibles (logical + algunos físicos en algunos OEM)
+        val visibleIds = try { mgr.cameraIdList } catch (_: Throwable) { emptyArray<String>() }
+        for (id in visibleIds) {
+            try {
+                val c = mgr.getCameraCharacteristics(id)
+                val facing = c.get(CameraCharacteristics.LENS_FACING) ?: continue
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+                all += extractCandidate(c, id, isPhysicalOnly = false)
+
+                // 2. Si esta cámara es LOGICAL_MULTI_CAMERA, también extraer sus físicos
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                    CameraTuning.isLogicalMultiCamera(c)) {
+                    try {
+                        val physicalIds = c.physicalCameraIds
+                        for (pid in physicalIds) {
+                            // Evitar duplicado si el HAL ya expone el físico también en cameraIdList
+                            if (pid in visibleIds) continue
+                            try {
+                                val pc = mgr.getCameraCharacteristics(pid)
+                                all += extractCandidate(pc, pid, isPhysicalOnly = true)
+                            } catch (e: Throwable) {
+                                Log.v(TAG, "Cannot get characteristics for physical id=$pid", e)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.v(TAG, "No physicalCameraIds on id=$id", e)
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Cannot read characteristics for id=$id", e)
+            }
+        }
+
+        // Filtrar: nos quedamos con facing=BACK y focal definida
+        val result = all.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK && it.focal > 0f }
+        Log.i(TAG, "S21FE camera scan: ${result.size} candidatos back. " +
+            result.joinToString { "id=${it.id}|f=${it.focal}|phys=${it.physicalSize}|onlyPhys=${it.isPhysicalOnly}|logical=${it.isLogicalMultiCamera}" })
+
+        cachedBackCandidates = result
+        return result
+    }
+
+    private fun extractCandidate(
+        c: CameraCharacteristics,
+        id: String,
+        isPhysicalOnly: Boolean
+    ): CameraCandidate {
+        val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+            ?.minOrNull() ?: 0f
+        val physicalSize: SizeF? = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        val sensorRect: Rect? = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val isLogical = CameraTuning.isLogicalMultiCamera(c)
+        val maxZoom = c.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
+        return CameraCandidate(
+            id = id,
+            facing = c.get(CameraCharacteristics.LENS_FACING) ?: -1,
+            focal = focal,
+            physicalSize = physicalSize,
+            sensorArea = sensorRect,
+            isLogicalMultiCamera = isLogical,
+            isPhysicalOnly = isPhysicalOnly,
+            maxZoom = maxZoom
+        )
+    }
+
+    /**
+     * Determina qué lentes mostrar al usuario en la UI (LensSelectorRow).
+     * En el S21 FE sólo se mostrarán 0.5x y 1x (tele real no existe), pero el
+     * "3x" se mantiene como zoom digital de alta calidad gracias al remosaico
+     * de Samsung HAL.
+     */
+    private fun updateAvailableLenses(candidates: List<CameraCandidate>) {
+        if (candidates.isEmpty()) {
+            _availableLenses.value = listOf("1x")
+            _telephotoIsOptical.value = false
+            return
+        }
+        val widePhysical = candidates.minByOrNull { c ->
+            abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f
+        } ?: candidates.first()
+        val ultraPhysical = candidates.minByOrNull { it.focal }
+        val telePhysical = candidates.maxByOrNull { it.focal }
+
+        val hasDedicatedUltra = ultraPhysical != null &&
+            ultraPhysical.id != widePhysical.id &&
+            ultraPhysical.focal <= widePhysical.focal * 0.75f
+        val hasDedicatedTele = telePhysical != null && ultraPhysical != null &&
+            telePhysical.id != widePhysical.id && telePhysical.focal >= widePhysical.focal * 1.8f
+
+        val lenses = mutableListOf<String>()
+        if (hasDedicatedUltra) lenses += "0.5x"
+        lenses += "1x"
+        // En S21 FE, hasDedicatedTele será FALSE → "3x" se ofrece como zoom digital
+        // de alta calidad si el HAL Samsung lo soporta vía scaler.zoomRatio
+        lenses += "3x"
+
+        _availableLenses.value = lenses
+        _telephotoIsOptical.value = hasDedicatedTele
+        Log.i(TAG, "Lentes disponibles: $lenses (tele óptico real=$hasDedicatedTele)")
+    }
+
+    /**
+     * Selecciona la cámara física/lógica a abrir según la lente UI pedida.
+     *
+     * Estrategia v3 (S21 FE-friendly):
+     *  • "0.5x" → si hay ultra-wide físico → ese sensor, opticalBaseZoom=0.5
+     *           si no → caer al logical+wide y aplicar SCALER_CROP_REGION zoom out (no posible)
+     *           → fallback: usa logical wide con opticalBaseZoom=1.0 (mostrará 1x real)
+     *  • "1x"  → siempre logical wide / wide físico (focal mediana)
+     *  • "3x"  → si hay tele físico → ese sensor, opticalBaseZoom=3.0
+     *           si NO (caso S21 FE) → usa logical wide con opticalBaseZoom=1.0,
+     *           y deja que applyCommon() haga zoom digital 3x vía
+     *           samsung.android.scaler.zoomRatio (Quality Zoom remosaico).
+     */
+    private fun pickCameraSelection(
+        mgr: CameraManager,
+        front: Boolean,
+        lens: String,
+        precomputedCandidates: List<CameraCandidate>? = null
+    ): CameraSelection {
         if (front) {
+            val ids = mgr.cameraIdList
             ids.forEach { id ->
                 val c = mgr.getCameraCharacteristics(id)
                 if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
@@ -1289,20 +1536,14 @@ class CameraControlViewModel : ViewModel() {
                 }
             }
         }
-        val backCandidates = ids.mapNotNull { id ->
-            val c = mgr.getCameraCharacteristics(id)
-            val facing = c.get(CameraCharacteristics.LENS_FACING) ?: return@mapNotNull null
-            if (facing != CameraCharacteristics.LENS_FACING_BACK) return@mapNotNull null
-            val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                ?.minOrNull() ?: return@mapNotNull null
-            CameraCandidate(id, facing, focal, CameraTuning.isLogicalMultiCamera(c),
-                c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE))
+        val backCandidates = precomputedCandidates ?: buildBackCandidatesCached(mgr)
+        if (backCandidates.isEmpty()) {
+            return CameraSelection(mgr.cameraIdList.firstOrNull() ?: "0", 1f)
         }
-        if (backCandidates.isEmpty()) return CameraSelection(ids.firstOrNull() ?: "0", 1f)
 
-        val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera }
+        val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera && !it.isPhysicalOnly }
         val widePhysical = backCandidates.minByOrNull { c ->
-            kotlin.math.abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f
+            abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f
         } ?: backCandidates.first()
         val ultraPhysical = backCandidates.minByOrNull { it.focal }
         val telePhysical = backCandidates.maxByOrNull { it.focal }
@@ -1311,13 +1552,22 @@ class CameraControlViewModel : ViewModel() {
         val hasDedicatedUltra = ultraPhysical != null &&
             ultraPhysical.id != widePhysical.id && ultraPhysical.focal <= widePhysical.focal * 0.75f
 
+        // Preferir el LOGICAL para "1x" y "3x" (el HAL de Samsung internamente
+        // puede saltar a otro sensor físico para 3x sin recrear sesión)
         return when (lens) {
             "0.5x" -> if (hasDedicatedUltra && ultraPhysical != null)
                 CameraSelection(ultraPhysical.id, 0.5f)
             else CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+
             "3x" -> if (hasDedicatedTele && telePhysical != null)
                 CameraSelection(telePhysical.id, 3f)
-            else CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+            else {
+                // S21 FE path: usar el logical y dejar que el zoom digital
+                // (samsung.scaler.zoomRatio = 3.0) haga su magia.
+                Log.i(TAG, "3x: no tele físico → usando logical+wide con zoom digital 3.0x")
+                CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
+            }
+
             else -> CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f)
         }
     }
