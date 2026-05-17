@@ -40,7 +40,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -51,6 +50,11 @@ import kotlinx.coroutines.launch
  * al reabrir la activity.
  *
  * FIX N3: accent y dark también se persisten en el repo, no solo localmente.
+ *
+ * FIX CRÍTICO: AccentRow composable estaba completamente ausente — el archivo
+ * estaba truncado antes de cerrar la función SettingsRowAction y antes de
+ * definir AccentRow. El compilador fallaba con "Unresolved reference: AccentRow"
+ * y "Unresolved reference: ChevronRight".
  *
  * El MainActivity, al volver, lee el repo en su LaunchedEffect inicial y propaga
  * los cambios al ViewModel vía `applyPersistedSettings()`.
@@ -333,12 +337,74 @@ private fun SettingsRowAction(
     label: String, value: String, palette: GlassPalette, onClick: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = palette.onGlass, fontSize = 15.sp, modifier = Modifier.weight(1f),
-            fontWeight = FontWeight.Medium)
+        Text(
+            label,
+            color = palette.onGlass,
+            fontSize = 15.sp,
+            modifier = Modifier.weight(1f),
+            fontWeight = FontWeight.Medium
+        )
         Text(value, color = palette.onGlassSecondary, fontSize = 14.sp)
         Spacer(Modifier.size(6.dp))
-        LensIcon(LensIcons.Chevron
+        // FIX CRÍTICO: referencia corregida — antes "LensIcons.Chevron" (no existe),
+        // el nombre correcto es "LensIcons.ChevronRight" definido en IconsKit.kt.
+        LensIcon(LensIcons.ChevronRight, tint = palette.onGlassSecondary, size = 16.dp)
+    }
+}
+
+/**
+ * FIX CRÍTICO: AccentRow estaba completamente ausente. El archivo original
+ * estaba truncado — la función SettingsRowAction tenía la última línea cortada
+ * y AccentRow nunca fue incluida, causando "Unresolved reference: AccentRow"
+ * en SettingsScreen al compilar.
+ */
+@Composable
+private fun AccentRow(
+    style: AccentStyle,
+    selected: Boolean,
+    palette: GlassPalette,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Muestra circular del color del accent
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(style.accent)
+                .border(
+                    width = if (selected) 2.dp else 0.5.dp,
+                    color = if (selected) palette.onGlass else palette.borderSoft,
+                    shape = CircleShape
+                )
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = style.label,
+                color = palette.onGlass,
+                fontSize = 15.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            )
+        }
+        if (selected) {
+            LensIcon(
+                icon = LensIcons.ChevronRight,
+                tint = palette.accent,
+                size = 18.dp
+            )
+        }
+    }
+}
