@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -82,6 +83,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -90,20 +94,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- * LensPro — MainActivity v2.0
+ * LensPro — MainActivity v2.1
  *
- * Cambios respecto a v1.x:
- * • ActionChipBar usa flashMode tri-estado (Off / Auto / On).
- * • Overlay de histograma (esquina sup. derecha del preview).
- * • Overlay de horizonte artificial (centro del preview).
- * • Pill de metadatos sensor (ISO + shutter speed) opcional.
- * • Botón "Abrir configuración" en el panel desplegable → lanza
- * SettingsActivity (pantalla de ajustes avanzados estilo iOS 26).
- * • Toggles añadidos: histograma, horizonte, RAW, 60 fps por res.
- * • Smooth-zoom integrado en switchLens cuando la lente es la misma
- * física (cambia el ratio sin reabrir la cámara).
- * • MediaStorageManager(organizeByDate = true) → carpetas por fecha.
- * • Manejo defensivo: nunca crashea si el HAL no responde.
+ * FIXES aplicados respecto a v2.0:
+ * • FIX CRÍTICO (F1-F5 / C5): applyPersistedSettings() ahora se llama
+ *   en un LaunchedEffect(Unit) en CameraPermissionWrapper después de que
+ *   los permisos son concedidos. Antes NUNCA se llamaba: los flags del
+ *   DataStore (histograma, horizonte, RAW, zoom suave, 60fps) siempre
+ *   arrancaban en sus valores por defecto del VM, ignorando lo guardado.
+ * • FIX CRÍTICO (N8): notifyDeviceRotation() ahora se registra en
+ *   CameraScreen mediante un DisposableEffect que escucha los cambios
+ *   de orientación del display. Antes el VM siempre asumía rotación 0
+ *   → fotos/videos con EXIF incorrecto en landscape.
+ * • FIX CRÍTICO (N9): MediaStorageManager.organizeByDate se sincroniza
+ *   con el valor del repo cada vez que CameraScreen compone. Antes el
+ *   manager se creaba con organizeByDate=true fijo e ignoraba el toggle
+ *   de SettingsActivity.
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -156,6 +162,16 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 
     LaunchedEffect(Unit) {
         if (!granted) launcher.launch(required.toTypedArray())
+    }
+
+    // FIX CRÍTICO (F1-F5 / C5): cargar settings persistidos en el VM.
+    // Este LaunchedEffect solo corre cuando granted pasa a true. Si el usuario
+    // ya había dado permisos previamente, corre en la primera composición.
+    val repo = remember { SettingsRepository(context) }
+    LaunchedEffect(granted) {
+        if (granted) {
+            viewModel.applyPersistedSettings(repo)
+        }
     }
 
     if (granted) {
@@ -219,6 +235,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val view = LocalView.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // ─── Estado del ViewModel (existentes) ────────────────────────────────
     val lens by vm.currentLens.collectAsStateWithLifecycle()
@@ -253,11 +270,44 @@ fun CameraScreen(vm: CameraControlViewModel) {
 
     val palette = glassPalette(darkPref, accentStyle)
 
-    // Storage con organización por fecha (punto 23 del informe)
+    // FIX CRÍTICO (N9): MediaStorageManager.organizeByDate sincronizado con repo.
+    // El repo se crea una sola vez; el valor organizeByDate se actualiza en runtime
+    // cuando cambia el toggle en SettingsActivity.
+    val repo = remember { SettingsRepository(context) }
+    val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
     val storage = remember { MediaStorageManager(organizeByDate = true) }
-    val fx = remember { ShutterFx() }
+    // Sincronizar en cada recomposición
+    storage.organizeByDate = orgByDate
 
+    val fx = remember { ShutterFx() }
     DisposableEffect(Unit) { onDispose { fx.release() } }
+
+    // FIX CRÍTICO (N8): notifyDeviceRotation — propaga la rotación actual del
+    // display al VM para que EXIF y orientación de video sean correctas.
+    // DisposableEffect con lifecycleOwner garantiza que se re-registra en resume.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_CREATE) {
+                val windowManager = context.getSystemService(android.content.Context.WINDOW_SERVICE)
+                    as? android.view.WindowManager
+                val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    context.display?.rotation ?: Surface.ROTATION_0
+                } else {
+                    @Suppress("DEPRECATION")
+                    windowManager?.defaultDisplay?.rotation ?: Surface.ROTATION_0
+                }
+                val degrees = when (rotation) {
+                    Surface.ROTATION_90  -> 90
+                    Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270
+                    else                 -> 0
+                }
+                vm.notifyDeviceRotation(degrees)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // ─── Estado UI local ─────────────────────────────────────────────────
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
