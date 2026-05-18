@@ -13,18 +13,18 @@ import kotlinx.coroutines.flow.map
 private val Context.lensProDataStore by preferencesDataStore(name = "lenspro_settings")
 
 /**
- * SettingsRepository v3 — persistencia completa vía DataStore.
+ * SettingsRepository v3.5 Pro — persistencia completa vía DataStore.
  *
- * NOVEDADES v3 (vs v2):
- *  • Persistencia BIDIRECCIONAL para TODOS los toggles de la UI:
- *      flash, hdr, grid, sound, haptics, hevc, timer, manualAspect,
- *      videoResolution, videoFps, currentLens.
- *  • Esto reemplaza funcionalmente al SharedPreferences.OnSharedPreferenceChangeListener
- *    solicitado: los Flow son reactivos por naturaleza, y el ViewModel los
- *    observa con `collect { }` para aplicar cambios en tiempo real.
- *  • Helpers tipados para cada setting → SettingsActivity y MainActivity los
- *    invocan con una sola línea.
- *  • Conserva 100% de la API anterior (no rompe nada existente).
+ * NOVEDADES v3.5 (sobre v3):
+ *  • Nuevas keys para arquitectura híbrida Camera2 + CameraX:
+ *      - KEY_USE_CAMERAX_ANALYSIS  (Image Analysis vía CameraX para histogram/horizon)
+ *      - KEY_FORCE_TELE_PHYSICAL_ID (forzar physical camera id 52 en S21 FE)
+ *      - KEY_TELE_PHYSICAL_ID      (override del id físico — default "52")
+ *      - KEY_PRO_VENDOR_TAGS       (habilitar tags propietarios Samsung en
+ *                                   CaptureRequests inyectadas por CameraX
+ *                                   vía Camera2Interop)
+ *  • Persistencia BIDIRECCIONAL conservada al 100% para todos los toggles.
+ *  • API legacy preservada → ningún archivo cliente necesita cambios.
  */
 class SettingsRepository(private val context: Context) {
 
@@ -64,6 +64,15 @@ class SettingsRepository(private val context: Context) {
         // ── Apariencia ────────────────────────────────────────────────────
         val KEY_ACCENT_INDEX   = intPreferencesKey("accent_index")
         val KEY_THEME_MODE     = stringPreferencesKey("theme_mode") // system/dark/light
+
+        // ── NUEVO v3.5: arquitectura híbrida ──────────────────────────────
+        val KEY_USE_CAMERAX_ANALYSIS    = booleanPreferencesKey("use_camerax_analysis")
+        val KEY_FORCE_TELE_PHYSICAL_ID  = booleanPreferencesKey("force_tele_physical_id")
+        val KEY_TELE_PHYSICAL_ID        = stringPreferencesKey("tele_physical_id")
+        val KEY_PRO_VENDOR_TAGS         = booleanPreferencesKey("pro_vendor_tags")
+        val KEY_ISO_MANUAL              = intPreferencesKey("iso_manual")        // 0 = AUTO
+        val KEY_SHUTTER_MANUAL_NS       = stringPreferencesKey("shutter_manual_ns") // "" = AUTO
+        val KEY_WB_MANUAL_K             = intPreferencesKey("wb_manual_kelvin") // 0 = AUTO
     }
 
     // ─── Flows reactivos (lectura) ────────────────────────────────────────
@@ -95,6 +104,15 @@ class SettingsRepository(private val context: Context) {
 
     val accentIndex:      Flow<Int>     = context.lensProDataStore.data.map { it[KEY_ACCENT_INDEX] ?: 0 }
     val themeMode:        Flow<String>  = context.lensProDataStore.data.map { it[KEY_THEME_MODE]   ?: "system" }
+
+    // ─── NUEVO v3.5 ───────────────────────────────────────────────────────
+    val useCameraXAnalysis:   Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_USE_CAMERAX_ANALYSIS] ?: true }
+    val forceTelePhysicalId:  Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_FORCE_TELE_PHYSICAL_ID] ?: true }
+    val telePhysicalId:       Flow<String>  = context.lensProDataStore.data.map { it[KEY_TELE_PHYSICAL_ID]   ?: "52" }
+    val proVendorTags:        Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_PRO_VENDOR_TAGS]    ?: true }
+    val isoManual:            Flow<Int>     = context.lensProDataStore.data.map { it[KEY_ISO_MANUAL]         ?: 0 }
+    val shutterManualNs:      Flow<String>  = context.lensProDataStore.data.map { it[KEY_SHUTTER_MANUAL_NS]  ?: "" }
+    val wbManualKelvin:       Flow<Int>     = context.lensProDataStore.data.map { it[KEY_WB_MANUAL_K]        ?: 0 }
 
     // ─── Setters genéricos (compat hacia atrás) ───────────────────────────
 
@@ -138,6 +156,16 @@ class SettingsRepository(private val context: Context) {
     suspend fun setThemeMode(mode: String)      = setString(KEY_THEME_MODE, mode)
     suspend fun setLastLens(lens: String)       = setString(KEY_LAST_LENS, lens)
     suspend fun setManualAspect(label: String?) = setStringOrRemove(KEY_MANUAL_ASPECT, label)
+
+    // ── NUEVO v3.5 setters ───────────────────────────────────────────────
+    suspend fun setUseCameraXAnalysis(v: Boolean)   = set(KEY_USE_CAMERAX_ANALYSIS, v)
+    suspend fun setForceTelePhysicalId(v: Boolean)  = set(KEY_FORCE_TELE_PHYSICAL_ID, v)
+    suspend fun setTelePhysicalId(id: String)       = setString(KEY_TELE_PHYSICAL_ID, id)
+    suspend fun setProVendorTags(v: Boolean)        = set(KEY_PRO_VENDOR_TAGS, v)
+    suspend fun setIsoManual(iso: Int)              = setInt(KEY_ISO_MANUAL, iso)
+    suspend fun setShutterManualNs(ns: Long?)       =
+        setStringOrRemove(KEY_SHUTTER_MANUAL_NS, ns?.toString())
+    suspend fun setWbManualKelvin(k: Int)           = setInt(KEY_WB_MANUAL_K, k)
 
     // ─── Conversiones tipo enum ↔ string/int ──────────────────────────────
 
@@ -183,4 +211,8 @@ class SettingsRepository(private val context: Context) {
         PreviewAspect.RATIO_FULL -> "FULL"
         null -> null
     }
+
+    fun shutterNsFromString(s: String): Long? = try {
+        if (s.isBlank()) null else s.toLong().coerceAtLeast(0L).takeIf { it > 0L }
+    } catch (_: Throwable) { null }
 }
