@@ -1,9 +1,13 @@
 package com.rodyto.lenspro
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,7 +15,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -34,24 +40,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * LensSelectorRow v3.0 — Liquid Glass premium
+ * LensSelectorRow v3.5 Pro — Liquid Glass premium con indicador OPT/DIG.
  *
- * NOVEDADES v3.0 (sobre FIX④):
- *  • Soporta lista dinámica de lentes (parámetro `availableLenses`).
- *    Si no se pasa nada, usa los 3 clásicos ("0.5x", "1x", "3x") para
- *    compatibilidad hacia atrás con el código existente.
- *  • Anillo de glow blanco perimetral en la lente activa (whiteGlow).
- *  • Indicador "OPT" / "DIG" debajo de la lente 3x según si es tele
- *    óptico real o zoom digital con remosaico de Samsung HAL — esta
- *    información viene del VM (telephotoIsOptical).
- *  • Debounce 400ms heredado (anti-doble-tap).
- *  • Tap largo en una lente abre el ZoomControl popup (callback opcional
- *    onLongPressLens) — permite zoom continuo de precisión.
- *  • cornerRadius 30dp+ del contenedor (especificación premium).
- *
- * NOTA IMPORTANTE: las firmas del overload original (currentLens, palette,
- * onSelect, modifier) se mantienen 100% compatibles. MainActivity no
- * necesita cambiar si no quiere usar las nuevas features.
+ * NOVEDADES v3.5:
+ *  • Badge "OPT" / "DIG" debajo de la lente de tele (3x) cuando se selecciona —
+ *    deja claro si estás usando el sensor físico forzado (ID 52 en S21 FE) o
+ *    el zoom digital con remosaico Samsung.
+ *  • Tamaño aumentado (44dp selected / 34dp unselected) para mejor tap-target.
+ *  • Glow blanco más visible (whiteGlow intensity 1.0).
+ *  • cornerRadius del contenedor 36dp (premium).
+ *  • Debounce 400ms anti-doble-tap (preservado).
+ *  • Tap largo abre ZoomControl (preservado).
+ *  • API 100% backwards compatible.
  */
 @Composable
 fun LensSelectorRow(
@@ -63,38 +63,82 @@ fun LensSelectorRow(
     telephotoIsOptical: Boolean = false,
     onLongPressLens: (() -> Unit)? = null
 ) {
-    // Debounce global anti-doble-tap (heredado del FIX④)
     var lastTapMs by remember { mutableLongStateOf(0L) }
 
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(36.dp))
-            .liquidGlass(palette, RoundedCornerShape(36.dp), strong = true)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        availableLenses.forEach { lens ->
-            LensBubblePro(
-                text = labelFor(lens),
-                selected = currentLens == lens,
-                palette = palette,
-                isOpticalIndicator = when (lens) {
-                    "3x" -> telephotoIsOptical
-                    "2x" -> telephotoIsOptical
-                    else -> true
-                },
-                showOpticalDot = (lens == "3x" || lens == "2x"),
-                onClick = {
-                    val now = System.currentTimeMillis()
-                    if (now - lastTapMs >= 400L) {
-                        lastTapMs = now
-                        onSelect(lens)
-                    }
-                },
-                onLongPress = onLongPressLens
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(36.dp))
+                .liquidGlass(palette, RoundedCornerShape(36.dp), strong = true)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            availableLenses.forEach { lens ->
+                LensBubblePro(
+                    text = labelFor(lens),
+                    selected = currentLens == lens,
+                    palette = palette,
+                    isOpticalIndicator = when (lens) {
+                        "3x" -> telephotoIsOptical
+                        "2x" -> telephotoIsOptical
+                        else -> true
+                    },
+                    showOpticalDot = (lens == "3x" || lens == "2x"),
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        if (now - lastTapMs >= 400L) {
+                            lastTapMs = now
+                            onSelect(lens)
+                        }
+                    },
+                    onLongPress = onLongPressLens
+                )
+            }
+        }
+
+        // ── Badge OPT/DIG bajo el selector cuando se está en tele ─────
+        AnimatedVisibility(
+            visible = currentLens == "3x" || currentLens == "2x",
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140))
+        ) {
+            Spacer(Modifier.size(6.dp))
+            OpticalBadge(
+                isOptical = telephotoIsOptical,
+                palette = palette
             )
         }
+    }
+}
+
+@Composable
+private fun OpticalBadge(isOptical: Boolean, palette: GlassPalette) {
+    val color = if (isOptical) palette.accent else Color(0xFFFFB020) // ámbar para digital
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = if (isOptical) "OPT · tele real" else "DIG · zoom Samsung",
+            color = palette.onGlass,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.4.sp
+        )
     }
 }
 
@@ -108,7 +152,7 @@ private fun LensBubblePro(
     onClick: () -> Unit,
     onLongPress: (() -> Unit)? = null
 ) {
-    val targetSize = if (selected) 42.dp else 32.dp
+    val targetSize = if (selected) 44.dp else 34.dp
 
     val animSize by animateDpAsState(
         targetValue = targetSize,
@@ -120,7 +164,7 @@ private fun LensBubblePro(
     )
     val interaction = remember { MutableInteractionSource() }
     val scaleAnim by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.97f,
+        targetValue = if (selected) 1f else 0.96f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -138,14 +182,13 @@ private fun LensBubblePro(
             .clip(CircleShape)
             .background(
                 if (selected) palette.accent.copy(alpha = 0.96f)
-                else Color.White.copy(alpha = if (palette.isDark) 0.06f else 0.32f)
+                else Color.White.copy(alpha = if (palette.isDark) 0.08f else 0.32f)
             )
             .border(
                 width = if (selected) 0.dp else 0.6.dp,
                 color = if (selected) Color.Transparent else palette.borderSoft,
                 shape = CircleShape
             )
-            // Glow blanco premium SOLO en la lente activa
             .whiteGlow(active = selected, shape = CircleShape, intensity = 1f)
             .clickable(
                 interactionSource = interaction,
@@ -167,10 +210,10 @@ private fun LensBubblePro(
             text = text,
             color = if (selected) palette.onAccent else palette.onGlass,
             fontWeight = FontWeight.Bold,
-            fontSize = if (selected) 13.sp else 11.sp
+            fontSize = if (selected) 14.sp else 12.sp
         )
 
-        // Mini-dot indicador óptico/digital para tele
+        // Mini-dot indicador óptico/digital para tele (sólo cuando seleccionado)
         if (showOpticalDot && selected) {
             Box(
                 modifier = Modifier
@@ -178,7 +221,7 @@ private fun LensBubblePro(
                     .clip(CircleShape)
                     .background(
                         if (isOpticalIndicator) Color.White
-                        else Color(0xFFFFB020) // ámbar para indicar zoom digital
+                        else Color(0xFFFFB020)
                     )
                     .align(Alignment.BottomCenter)
                     .graphicsLayer { translationY = -2.dp.toPx() }
