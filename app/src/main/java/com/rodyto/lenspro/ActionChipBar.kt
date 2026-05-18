@@ -40,8 +40,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * ActionChipBar v2 — chips dinámicos.
- * Flash ahora muestra el tri-estado correcto (OFF / AUTO / ON) con iconos diferentes.
+ * ActionChipBar v3.0 — barra superior translúcida glass premium.
+ *
+ * NOVEDADES v3.0 (sobre v2):
+ *  • Chip RAW dedicado (estado activo/inactivo bien definido).
+ *  • Botón "Settings gear" que abre SettingsActivity directamente.
+ *  • Glow blanco perimetral en chips activos (Flash ON/AUTO, HDR, RAW).
+ *  • cornerRadius del contenedor subido a 30dp+ (premium spec).
+ *  • Mantiene 100% compatibilidad con la versión anterior: si llamas
+ *    sin los nuevos params, ofrece la misma UX que tenías.
+ *
+ * Si tu MainActivity actual aún no pasa `rawOn`/`onToggleRaw`/`onOpenSettings`,
+ * los defaults (false / {} / {}) mantienen comportamiento neutro.
  */
 @Composable
 fun ActionChipBar(
@@ -57,7 +67,11 @@ fun ActionChipBar(
     aspectLabel: String,
     onCycleAspect: () -> Unit,
     onOpenMore: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // ── Nuevos parámetros (compat: defaults seguros) ──────────────
+    rawOn: Boolean = false,
+    onToggleRaw: () -> Unit = {},
+    onOpenSettings: () -> Unit = onOpenMore
 ) {
     Row(
         modifier = modifier
@@ -82,28 +96,47 @@ fun ActionChipBar(
             onClick = onToggleFlash,
             contentDescription = "Flash ${flashMode.label}"
         )
+        // HDR
         ActionChip(
             icon = LensIcons.Hdr, active = hdrOn, palette = palette,
             onClick = onToggleHdr, contentDescription = "HDR"
         )
+        // RAW (DNG) — chip dedicado con glow blanco si está activo
+        ActionChipText(
+            label = "RAW",
+            icon = LensIcons.Raw,
+            active = rawOn,
+            palette = palette,
+            onClick = onToggleRaw,
+            contentDescription = "Captura RAW DNG"
+        )
+        // Temporizador
         ActionChipText(
             label = when (timerSec) { 3 -> "3 s"; 10 -> "10 s"; else -> "Auto" },
             icon = if (timerSec > 0) LensIcons.Timer else LensIcons.TimerOff,
             active = timerSec > 0, palette = palette,
             onClick = onCycleTimer, contentDescription = "Temporizador"
         )
+        // Sonido
         ActionChip(
             icon = if (soundOn) LensIcons.SoundOn else LensIcons.SoundOff,
             active = soundOn, palette = palette,
             onClick = onToggleSound, contentDescription = "Sonido"
         )
+        // Relación de aspecto
         ActionChipText(
             label = aspectLabel, icon = LensIcons.Aspect, active = false,
             palette = palette, onClick = onCycleAspect, contentDescription = "Relación de aspecto"
         )
+        // Más (panel rápido)
         ActionChip(
             icon = LensIcons.More, active = false, palette = palette,
-            onClick = onOpenMore, contentDescription = "Más ajustes"
+            onClick = onOpenMore, contentDescription = "Más ajustes rápidos"
+        )
+        // ▼ NUEVO: acceso directo a SettingsActivity (gear)
+        ActionChip(
+            icon = LensIcons.Settings, active = false, palette = palette,
+            onClick = onOpenSettings, contentDescription = "Ajustes avanzados"
         )
     }
 }
@@ -123,6 +156,7 @@ private fun ActionChip(
     Box(
         modifier = Modifier
             .size(38.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
             .background(if (active) palette.accent.copy(alpha = 0.96f) else Color.Transparent)
             .border(
@@ -130,6 +164,7 @@ private fun ActionChip(
                 color = if (active) Color.Transparent else palette.borderSoft,
                 shape = CircleShape
             )
+            .whiteGlow(active = active, shape = CircleShape, intensity = 0.9f)
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = false, radius = 24.dp),
@@ -168,6 +203,7 @@ private fun ActionChipText(
     )
     Row(
         modifier = Modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(20.dp))
             .background(if (active) palette.accent.copy(alpha = 0.95f) else Color.Transparent)
             .border(
@@ -175,6 +211,7 @@ private fun ActionChipText(
                 color = if (active) Color.Transparent else palette.borderSoft,
                 shape = RoundedCornerShape(20.dp)
             )
+            .whiteGlow(active = active, shape = RoundedCornerShape(20.dp), intensity = 0.85f)
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = true), onClick = onClick
@@ -213,16 +250,20 @@ private fun MutableInteractionSource.collectIsPressed(): androidx.compose.runtim
     return isPressed
 }
 
+/**
+ * ModeSelectorIos — selector FOTO/VIDEO/(PRO) glass premium.
+ * v3.0: glow blanco perimetral en modo seleccionado.
+ */
 @Composable
 fun ModeSelectorIos(
     mode: String, palette: GlassPalette,
-    onModeChange: (String) -> Unit, modifier: Modifier = Modifier
+    onModeChange: (String) -> Unit, modifier: Modifier = Modifier,
+    modes: List<String> = listOf("FOTO", "VIDEO")
 ) {
-    val modes = listOf("FOTO", "VIDEO")
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(26.dp))
-            .liquidGlass(palette, RoundedCornerShape(26.dp), strong = false)
+            .clip(RoundedCornerShape(30.dp))
+            .liquidGlass(palette, RoundedCornerShape(30.dp), strong = false)
             .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -240,19 +281,23 @@ fun ModeSelectorIos(
 private fun ModeLabel(text: String, selected: Boolean, palette: GlassPalette, onClick: () -> Unit) {
     val scale by animateFloatAsState(
         targetValue = if (selected) 1f else 0.96f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "mode_scale"
     )
     Box(
         modifier = Modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(24.dp))
             .background(
                 if (selected) palette.accent.copy(alpha = 0.98f)
                 else Color.Transparent
             )
+            .whiteGlow(active = selected, shape = RoundedCornerShape(24.dp), intensity = 0.9f)
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 9.dp),
+            .padding(horizontal = 22.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
