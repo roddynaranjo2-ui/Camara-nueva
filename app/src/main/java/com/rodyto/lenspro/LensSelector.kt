@@ -27,38 +27,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * LensSelectorRow — FIX ④
+ * LensSelectorRow v3.0 — Liquid Glass premium
  *
- * Correcciones aplicadas:
- *  1. Debounce de 400 ms en cada LensBubblePro para evitar taps dobles
- *     accidentales que gatillaban dos switchLens consecutivos, causando
- *     el congelamiento de sesión.
- *  2. La animación de tamaño (animSize) y escala (scaleAnim) ya estaban
- *     bien definidas, pero el spring de StiffnessLow causaba que la
- *     burbuja "rebotara" visiblemente mientras la transición de cámara
- *     aún no terminaba. Se ajusta a StiffnessMediumLow para que la
- *     animación UI termine antes de que la sesión de cámara esté lista,
- *     eliminando el "tirón" visual.
- *  3. Se expone correctamente el estado `selected` con una comparación
- *     estricta de String para evitar falsos positivos si se cambia el
- *     currentLens desde otro hilo.
+ * NOVEDADES v3.0 (sobre FIX④):
+ *  • Soporta lista dinámica de lentes (parámetro `availableLenses`).
+ *    Si no se pasa nada, usa los 3 clásicos ("0.5x", "1x", "3x") para
+ *    compatibilidad hacia atrás con el código existente.
+ *  • Anillo de glow blanco perimetral en la lente activa (whiteGlow).
+ *  • Indicador "OPT" / "DIG" debajo de la lente 3x según si es tele
+ *    óptico real o zoom digital con remosaico de Samsung HAL — esta
+ *    información viene del VM (telephotoIsOptical).
+ *  • Debounce 400ms heredado (anti-doble-tap).
+ *  • Tap largo en una lente abre el ZoomControl popup (callback opcional
+ *    onLongPressLens) — permite zoom continuo de precisión.
+ *  • cornerRadius 30dp+ del contenedor (especificación premium).
+ *
+ * NOTA IMPORTANTE: las firmas del overload original (currentLens, palette,
+ * onSelect, modifier) se mantienen 100% compatibles. MainActivity no
+ * necesita cambiar si no quiere usar las nuevas features.
  */
 @Composable
 fun LensSelectorRow(
     currentLens: String,
     palette: GlassPalette,
     onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    availableLenses: List<String> = listOf("0.5x", "1x", "3x"),
+    telephotoIsOptical: Boolean = false,
+    onLongPressLens: (() -> Unit)? = null
 ) {
-    val options = listOf("0.5x", "1x", "3x")
-
-    // FIX ④: Timestamp del último tap para el debounce global de la fila.
-    // Si dos lentes se pulsan en < 400 ms, el segundo se ignora.
+    // Debounce global anti-doble-tap (heredado del FIX④)
     var lastTapMs by remember { mutableLongStateOf(0L) }
 
     Row(
@@ -69,18 +73,25 @@ fun LensSelectorRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        options.forEach { lens ->
+        availableLenses.forEach { lens ->
             LensBubblePro(
                 text = labelFor(lens),
                 selected = currentLens == lens,
                 palette = palette,
+                isOpticalIndicator = when (lens) {
+                    "3x" -> telephotoIsOptical
+                    "2x" -> telephotoIsOptical
+                    else -> true
+                },
+                showOpticalDot = (lens == "3x" || lens == "2x"),
                 onClick = {
                     val now = System.currentTimeMillis()
                     if (now - lastTapMs >= 400L) {
                         lastTapMs = now
                         onSelect(lens)
                     }
-                }
+                },
+                onLongPress = onLongPressLens
             )
         }
     }
@@ -91,13 +102,13 @@ private fun LensBubblePro(
     text: String,
     selected: Boolean,
     palette: GlassPalette,
-    onClick: () -> Unit
+    isOpticalIndicator: Boolean,
+    showOpticalDot: Boolean,
+    onClick: () -> Unit,
+    onLongPress: (() -> Unit)? = null
 ) {
-    val targetSize = if (selected) 40.dp else 32.dp
+    val targetSize = if (selected) 42.dp else 32.dp
 
-    // FIX ④: StiffnessMediumLow completa la animación ~180 ms antes que
-    // StiffnessLow, evitando que el spring rebote mientras la sesión de
-    // cámara aún está cargando.
     val animSize by animateDpAsState(
         targetValue = targetSize,
         animationSpec = spring(
@@ -133,10 +144,21 @@ private fun LensBubblePro(
                 color = if (selected) Color.Transparent else palette.borderSoft,
                 shape = CircleShape
             )
+            // Glow blanco premium SOLO en la lente activa
+            .whiteGlow(active = selected, shape = CircleShape, intensity = 1f)
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = false, radius = 22.dp),
                 onClick = onClick
+            )
+            .then(
+                if (onLongPress != null) {
+                    Modifier.pointerInput(Unit) {
+                        androidx.compose.foundation.gestures.detectTapGestures(
+                            onLongPress = { onLongPress() }
+                        )
+                    }
+                } else Modifier
             ),
         contentAlignment = Alignment.Center
     ) {
@@ -146,6 +168,21 @@ private fun LensBubblePro(
             fontWeight = FontWeight.Bold,
             fontSize = if (selected) 13.sp else 11.sp
         )
+
+        // Mini-dot indicador óptico/digital para tele
+        if (showOpticalDot && selected) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isOpticalIndicator) Color.White
+                        else Color(0xFFFFB020) // ámbar para indicar zoom digital
+                    )
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer { translationY = -2.dp.toPx() }
+            )
+        }
     }
 }
 
@@ -154,5 +191,7 @@ private fun labelFor(lens: String): String = when (lens) {
     "1x" -> "1×"
     "2x" -> "2×"
     "3x" -> "3×"
+    "5x" -> "5×"
+    "10x" -> "10×"
     else -> lens
 }
