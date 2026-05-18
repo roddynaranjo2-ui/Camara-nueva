@@ -97,28 +97,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- * Rodyto Lens Pro — MainActivity v3.0 (Liquid Glass)
+ *  Rodyto Lens Pro · MainActivity · v3.5 Pro (Liquid Glass + Híbrido)
  *
- * NOVEDADES v3.0:
- *  ✓ Llama `vm.attachToRepository(repo)` justo tras applyPersistedSettings
- *    → activa la persistencia REACTIVA (repo → VM).
- *  ✓ Persistencia BIDIRECCIONAL: cuando la UI cambia un toggle (HDR, RAW,
- *    Flash, etc.), también escribe al SettingsRepository → cualquier
- *    cambio aquí o en SettingsActivity sincroniza ambos lados.
- *  ✓ ExposureSliderEv NUEVO: slider de exposición en STOPS EV dinámicos
- *    leídos del sensor (vm.getExposureEvRange + vm.setExposureEv).
- *  ✓ ZoomControl popup: alternativa al ZoomDial — slider vertical
- *    premium que aparece al hacer pinch o pulsar lente con onLongPress.
- *  ✓ LensSelector usa lista dinámica `availableLenses` del VM + indicador
- *    visual de tele óptico vs digital.
- *  ✓ ActionChipBar incluye chip RAW dedicado y botón gear → SettingsActivity.
- *
- * FIXES heredados de v2.2 (preservados íntegros):
- *  • SettingsPanel scroll con heightIn(max=85%) + LazyColumn
- *  • Botón "Cerrar" SettingsPanel fijo al fondo
- *  • BackHandler cierra panels en vez de salir de app
- *  • launchSafe loguea correctamente
- *  • EXIF dinámico vía notifyDeviceRotation
+ *  NOVEDADES v3.5 (sobre v3.0):
+ *   ✓ Arquitectura HÍBRIDA: Camera2 (motor primario) + CameraX (bridge
+ *     Image Analysis). Se activa CameraXAnalysisBridge cuando el VM
+ *     tiene useCameraXAnalysis = true.
+ *   ✓ Forzado de Physical Camera ID "52" para el teleobjetivo del S21 FE
+ *     (configurable desde SettingsActivity → ID por defecto "52", flag
+ *     forceTelePhysicalId ON por defecto).
+ *   ✓ Badge OPT/DIG visual permanente cuando se está en lente tele.
+ *   ✓ Pill superior con id físico activo en uso (estilo Device Info HW).
+ *   ✓ Persistencia bidireccional preservada al 100%.
+ *   ✓ BackHandler, EXIF dinámico, launchSafe preservados.
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -173,15 +164,11 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
         if (!granted) launcher.launch(required.toTypedArray())
     }
 
-    // ── FIX CRÍTICO v3.0: aplicar settings persistidos Y enganchar el VM
-    // al repo para que CUALQUIER cambio en DataStore (desde SettingsActivity
-    // o desde el panel de quick settings) se refleje automáticamente en
-    // el VM y en la UI. Es lo que faltaba en v2.x.
     val repo = remember { SettingsRepository(context) }
     LaunchedEffect(granted) {
         if (granted) {
             viewModel.applyPersistedSettings(repo)
-            viewModel.attachToRepository(repo)   // ← LA LÍNEA CLAVE
+            viewModel.attachToRepository(repo)
         }
     }
 
@@ -207,7 +194,7 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
                     .padding(horizontal = 24.dp)
                     .fillMaxWidth(),
                 palette = palette,
-                cornerRadius = 30.dp,
+                cornerRadius = 32.dp,
                 strong = true
             ) {
                 Column(
@@ -216,13 +203,13 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        "Rodyto Lens Pro necesita acceso a la cámara y al micrófono.",
+                        "Rodyto Lens Pro v3.5 necesita acceso a la cámara y al micrófono.",
                         color = palette.onGlass,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "La interfaz Liquid Glass también necesita abrir galería y vídeo correctamente.",
+                        "Arquitectura híbrida Camera2 + CameraX. Tele óptico forzado en Samsung S21 FE.",
                         color = palette.onGlassSecondary,
                         fontSize = 14.sp
                     )
@@ -280,10 +267,13 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
     val shutterNs by vm.shutterSpeedNs.collectAsStateWithLifecycle()
     val availableLenses by vm.availableLenses.collectAsStateWithLifecycle()
     val telephotoIsOptical by vm.telephotoIsOptical.collectAsStateWithLifecycle()
+    // ── Nuevo v3.5 ──
+    val useCameraX by vm.useCameraXAnalysis.collectAsStateWithLifecycle()
+    val activePhysicalTeleId by vm.activePhysicalTeleId.collectAsStateWithLifecycle()
+    val sessionState by vm.sessionState.collectAsStateWithLifecycle()
 
     val palette = glassPalette(darkPref, accentStyle)
 
-    // MediaStorageManager sincronizado con repo.organizeByDate
     val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
     val storage = remember { MediaStorageManager(organizeByDate = true) }
     storage.organizeByDate = orgByDate
@@ -291,7 +281,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
     val fx = remember { ShutterFx() }
     DisposableEffect(Unit) { onDispose { fx.release() } }
 
-    // Propagar rotación del display al VM para EXIF correcto
+    // EXIF dinámico vía rotación
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_CREATE) {
@@ -328,7 +318,6 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
     var pinchInProgress by remember { mutableStateOf(false) }
 
-    // Auto-ocultar el ZoomControl tras 2.5s sin interacción tras un pinch
     LaunchedEffect(pinchInProgress, zoomLevel) {
         if (pinchInProgress) {
             zoomControlOpen = true
@@ -338,7 +327,6 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
         }
     }
 
-    // Interceptar atrás cuando hay panels abiertos
     androidx.activity.compose.BackHandler(enabled = settingsOpen || zoomDialOpen || zoomControlOpen) {
         when {
             settingsOpen -> { settingsOpen = false; settingsIconRotation += 180f }
@@ -396,7 +384,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
         }
     }
 
-    // Helpers para persistencia bidireccional (UI → repo)
+    // Helpers persistencia (UI → repo)
     fun persistFlash(mode: FlashMode) = coroutineScope.launch { repo.setFlashMode(mode.name) }
     fun persistHdr(v: Boolean) = coroutineScope.launch { repo.setHdr(v) }
     fun persistGrid(v: Boolean) = coroutineScope.launch { repo.setGrid(v) }
@@ -411,6 +399,14 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
     fun persistLens(s: String) = coroutineScope.launch { repo.setLastLens(s) }
     fun persistAccent(s: AccentStyle) = coroutineScope.launch { repo.setAccentIndex(repo.indexOfAccent(s)) }
     fun persistTheme(v: Boolean?) = coroutineScope.launch { repo.setThemeMode(repo.themeToString(v)) }
+
+    // ── v3.5: CameraX bridge (Image Analysis paralelo) ──
+    // Sólo se monta cuando el usuario lo ha habilitado. Esto evita conflictos
+    // con la sesión Camera2 del VM en dispositivos donde el HAL no soporta
+    // dos clientes simultáneos sobre el mismo id físico.
+    if (useCameraX) {
+        CameraXAnalysisBridge(vm = vm)
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -478,7 +474,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
             palette = palette
         )
 
-        // ─── Punto de enfoque + slider EV dinámico ────────────────────────
+        // ─── Punto de enfoque + slider EV ────────────────────────
         focusPoint?.let { point ->
             val xDp = with(density) { point.x.toDp() }
             val yDp = with(density) { point.y.toDp() }
@@ -496,7 +492,6 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
                     .border(1.5.dp, color, RoundedCornerShape(16.dp))
             )
 
-            // NUEVO v3.0: slider EV en STOPS (-2.0..+2.0 típico) leído del sensor real
             val evRange = vm.getExposureEvRange()
             ExposureSliderEv(
                 valueEv = exposureEv,
@@ -519,7 +514,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
             verticalAlignment = Alignment.Top
         ) {
             GlassBubble(
-                size = 46.dp,
+                size = 48.dp,
                 palette = palette,
                 onClick = {
                     settingsOpen = true
@@ -558,6 +553,14 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
                 ) {
                     SensorMetaPill(iso = iso, shutterNs = shutterNs, palette = palette)
                 }
+                // v3.5: id físico activo (sólo si forzamos tele)
+                AnimatedVisibility(
+                    visible = !isRecording && activePhysicalTeleId.isNotEmpty(),
+                    enter = fadeIn(tween(220)),
+                    exit = fadeOut(tween(180))
+                ) {
+                    PhysicalIdPill(id = activePhysicalTeleId, palette = palette)
+                }
             }
 
             Column(
@@ -565,7 +568,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 GlassBubble(
-                    size = 46.dp,
+                    size = 48.dp,
                     palette = palette,
                     onClick = {
                         Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
@@ -623,7 +626,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(top = 72.dp, end = 16.dp)
+                .padding(top = 76.dp, end = 16.dp)
         ) {
             HistogramView(bins = histogramBins, palette = palette)
         }
@@ -645,7 +648,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
             }
         }
 
-        // ─── ZoomControl flotante (lado derecho, durante pinch o long-press) ──
+        // ─── ZoomControl flotante ──
         AnimatedVisibility(
             visible = zoomControlOpen,
             enter = fadeIn(tween(180)) + slideInHorizontally { it / 2 },
@@ -663,7 +666,9 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
                 onZoomChange = { vm.setZoomContinuous(it) },
                 onSmoothZoomTo = { vm.smoothZoomTo(it) },
                 onHapticTick = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) },
-                onDismiss = { zoomControlOpen = false }
+                onDismiss = { zoomControlOpen = false },
+                showOpticalHint = (zoomLevel >= 1.8f),
+                isOptical = telephotoIsOptical
             )
         }
 
@@ -816,7 +821,7 @@ fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
             }
         }
 
-        // ─── Zoom dial popup (rotatorio premium) ──────────────────────────
+        // ─── Zoom dial popup ──
         AnimatedVisibility(
             visible = zoomDialOpen,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
@@ -1046,6 +1051,36 @@ private fun SensorMetaPill(
     }
 }
 
+/**
+ * NUEVO v3.5: pill mostrando el Physical Camera ID activo del tele forzado.
+ * Inspirado en Device Info HW: "System ID = 52".
+ */
+@Composable
+private fun PhysicalIdPill(id: String, palette: GlassPalette) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(palette.accent)
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = "Tele · System ID = $id",
+            color = palette.onGlass,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.4.sp
+        )
+    }
+}
+
 @Composable
 private fun GalleryThumb(
     lastUri: android.net.Uri?,
@@ -1158,9 +1193,7 @@ fun GridOverlay(previewBounds: Rect?) {
 }
 
 /**
- * ExposureSlider (LEGACY): conservado para compatibilidad hacia atrás
- * con código que aún use el valor Int del compensación AE crudo.
- * El NUEVO slider en stops EV está en GlassUi.kt → ExposureSliderEv.
+ * ExposureSlider LEGACY — conservado para retrocompat.
  */
 @Composable
 fun ExposureSlider(
@@ -1232,7 +1265,7 @@ fun ExposureSlider(
 }
 
 /* ================================================================
- * SETTINGS PANEL — quick settings sheet (heredado v2.2, intacto)
+ * SETTINGS PANEL — quick settings sheet
  * ================================================================ */
 @Composable
 fun SettingsPanel(
@@ -1512,7 +1545,7 @@ fun SettingsPanel(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "RAW, zoom suave, histograma y más",
+                                    text = "RAW, zoom suave, histograma, Camera2/CameraX y más",
                                     color = palette.onGlassSecondary,
                                     fontSize = 12.sp
                                 )
