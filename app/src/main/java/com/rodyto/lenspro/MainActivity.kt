@@ -97,22 +97,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /* ================================================================
- * LensPro — MainActivity v2.2
+ * Rodyto Lens Pro — MainActivity v3.0 (Liquid Glass)
  *
- * FIXES v2.2 (sobre v2.1):
- * • FIX UX-1: SettingsPanel ahora usa LazyColumn con heightIn(max) para
- *   nunca ocupar más del 85% de la pantalla. El usuario siempre puede
- *   cerrar el panel tocando el fondo semitransparente, y nunca queda
- *   atrapado sin poder salir.
- * • FIX UX-2: El botón "Cerrar" del panel de ajustes se fija siempre
- *   VISIBLE al fondo del panel (no desaparece al hacer scroll).
- * • FIX UX-3: El botón "atrás" del sistema cuando el panel de ajustes
- *   está abierto lo CIERRA en vez de salir de la app.
- * • FIX UX-4: ExposureSlider corregido — el slider no desaparecía si el
- *   usuario tocaba fuera del área del preview mientras el slider estaba
- *   abierto. Ahora el focusPoint se limpia solo si la sesión AF converge
- *   (2.2 s), no si el usuario scrollea.
- * • FIX B1: launchSafe ahora loguea el error con tag correcto.
+ * NOVEDADES v3.0:
+ *  ✓ Llama `vm.attachToRepository(repo)` justo tras applyPersistedSettings
+ *    → activa la persistencia REACTIVA (repo → VM).
+ *  ✓ Persistencia BIDIRECCIONAL: cuando la UI cambia un toggle (HDR, RAW,
+ *    Flash, etc.), también escribe al SettingsRepository → cualquier
+ *    cambio aquí o en SettingsActivity sincroniza ambos lados.
+ *  ✓ ExposureSliderEv NUEVO: slider de exposición en STOPS EV dinámicos
+ *    leídos del sensor (vm.getExposureEvRange + vm.setExposureEv).
+ *  ✓ ZoomControl popup: alternativa al ZoomDial — slider vertical
+ *    premium que aparece al hacer pinch o pulsar lente con onLongPress.
+ *  ✓ LensSelector usa lista dinámica `availableLenses` del VM + indicador
+ *    visual de tele óptico vs digital.
+ *  ✓ ActionChipBar incluye chip RAW dedicado y botón gear → SettingsActivity.
+ *
+ * FIXES heredados de v2.2 (preservados íntegros):
+ *  • SettingsPanel scroll con heightIn(max=85%) + LazyColumn
+ *  • Botón "Cerrar" SettingsPanel fijo al fondo
+ *  • BackHandler cierra panels en vez de salir de app
+ *  • launchSafe loguea correctamente
+ *  • EXIF dinámico vía notifyDeviceRotation
  * ================================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -167,16 +173,20 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
         if (!granted) launcher.launch(required.toTypedArray())
     }
 
-    // FIX CRÍTICO (F1-F5 / C5): cargar settings persistidos en el VM.
+    // ── FIX CRÍTICO v3.0: aplicar settings persistidos Y enganchar el VM
+    // al repo para que CUALQUIER cambio en DataStore (desde SettingsActivity
+    // o desde el panel de quick settings) se refleje automáticamente en
+    // el VM y en la UI. Es lo que faltaba en v2.x.
     val repo = remember { SettingsRepository(context) }
     LaunchedEffect(granted) {
         if (granted) {
             viewModel.applyPersistedSettings(repo)
+            viewModel.attachToRepository(repo)   // ← LA LÍNEA CLAVE
         }
     }
 
     if (granted) {
-        CameraScreen(viewModel)
+        CameraScreen(viewModel, repo)
     } else {
         Box(
             modifier = Modifier
@@ -206,13 +216,13 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        "LensPro necesita acceso a la cámara y al micrófono.",
+                        "Rodyto Lens Pro necesita acceso a la cámara y al micrófono.",
                         color = palette.onGlass,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "La nueva interfaz glass también necesita abrir galería y vídeo correctamente.",
+                        "La interfaz Liquid Glass también necesita abrir galería y vídeo correctamente.",
                         color = palette.onGlassSecondary,
                         fontSize = 14.sp
                     )
@@ -232,11 +242,12 @@ fun CameraPermissionWrapper(viewModel: CameraControlViewModel) {
 }
 
 @Composable
-fun CameraScreen(vm: CameraControlViewModel) {
+fun CameraScreen(vm: CameraControlViewModel, repo: SettingsRepository) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
 
     // ─── Estado del ViewModel ───────────────────────────────────────────────
     val lens by vm.currentLens.collectAsStateWithLifecycle()
@@ -245,7 +256,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val focusLocked by vm.focusLocked.collectAsStateWithLifecycle()
     val isRecording by vm.isRecording.collectAsStateWithLifecycle()
     val flashMode by vm.flashMode.collectAsStateWithLifecycle()
-    val exposure by vm.exposureLevel.collectAsStateWithLifecycle()
+    val exposureEv by vm.exposureEv.collectAsStateWithLifecycle()
     val lastUri by vm.lastPhotoUri.collectAsStateWithLifecycle()
     val gridOn by vm.gridEnabled.collectAsStateWithLifecycle()
     val timerSec by vm.timerSeconds.collectAsStateWithLifecycle()
@@ -259,6 +270,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val darkPref by vm.darkTheme.collectAsStateWithLifecycle()
     val accentStyle by vm.accentStyle.collectAsStateWithLifecycle()
     val zoomLevel by vm.zoomLevel.collectAsStateWithLifecycle()
+    val zoomMax by vm.zoomMax.collectAsStateWithLifecycle()
     val histogramOn by vm.histogramEnabled.collectAsStateWithLifecycle()
     val horizonOn by vm.horizonEnabled.collectAsStateWithLifecycle()
     val histogramBins by vm.histogramBins.collectAsStateWithLifecycle()
@@ -266,11 +278,12 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val supports60 by vm.supports60fps.collectAsStateWithLifecycle()
     val iso by vm.iso.collectAsStateWithLifecycle()
     val shutterNs by vm.shutterSpeedNs.collectAsStateWithLifecycle()
+    val availableLenses by vm.availableLenses.collectAsStateWithLifecycle()
+    val telephotoIsOptical by vm.telephotoIsOptical.collectAsStateWithLifecycle()
 
     val palette = glassPalette(darkPref, accentStyle)
 
-    // FIX CRÍTICO (N9): MediaStorageManager.organizeByDate sincronizado con repo.
-    val repo = remember { SettingsRepository(context) }
+    // MediaStorageManager sincronizado con repo.organizeByDate
     val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
     val storage = remember { MediaStorageManager(organizeByDate = true) }
     storage.organizeByDate = orgByDate
@@ -278,7 +291,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
     val fx = remember { ShutterFx() }
     DisposableEffect(Unit) { onDispose { fx.release() } }
 
-    // FIX CRÍTICO (N8): propaga rotación del display al VM para EXIF correcto.
+    // Propagar rotación del display al VM para EXIF correcto
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME || event == Lifecycle.Event.ON_CREATE) {
@@ -307,20 +320,30 @@ fun CameraScreen(vm: CameraControlViewModel) {
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var zoomDialOpen by remember { mutableStateOf(false) }
+    var zoomControlOpen by remember { mutableStateOf(false) }
     var settingsIconRotation by remember { mutableStateOf(0f) }
     var countdown by remember { mutableStateOf(0) }
     var recordingSeconds by remember { mutableStateOf(0L) }
     var blinkKey by remember { mutableStateOf(0) }
     var previewBounds by remember { mutableStateOf<Rect?>(null) }
+    var pinchInProgress by remember { mutableStateOf(false) }
 
-    // FIX UX-3: interceptar el botón "atrás" cuando algún panel está abierto.
-    // De esta forma el usuario nunca sale accidentalmente de la app.
-    androidx.activity.compose.BackHandler(enabled = settingsOpen || zoomDialOpen) {
-        if (settingsOpen) {
-            settingsOpen = false
-            settingsIconRotation += 180f
-        } else if (zoomDialOpen) {
-            zoomDialOpen = false
+    // Auto-ocultar el ZoomControl tras 2.5s sin interacción tras un pinch
+    LaunchedEffect(pinchInProgress, zoomLevel) {
+        if (pinchInProgress) {
+            zoomControlOpen = true
+        } else if (zoomControlOpen) {
+            delay(2500L)
+            if (!pinchInProgress) zoomControlOpen = false
+        }
+    }
+
+    // Interceptar atrás cuando hay panels abiertos
+    androidx.activity.compose.BackHandler(enabled = settingsOpen || zoomDialOpen || zoomControlOpen) {
+        when {
+            settingsOpen -> { settingsOpen = false; settingsIconRotation += 180f }
+            zoomDialOpen -> zoomDialOpen = false
+            zoomControlOpen -> zoomControlOpen = false
         }
     }
 
@@ -373,7 +396,21 @@ fun CameraScreen(vm: CameraControlViewModel) {
         }
     }
 
-    val coroutineScope = rememberCoroutineScope()
+    // Helpers para persistencia bidireccional (UI → repo)
+    fun persistFlash(mode: FlashMode) = coroutineScope.launch { repo.setFlashMode(mode.name) }
+    fun persistHdr(v: Boolean) = coroutineScope.launch { repo.setHdr(v) }
+    fun persistGrid(v: Boolean) = coroutineScope.launch { repo.setGrid(v) }
+    fun persistRaw(v: Boolean) = coroutineScope.launch { repo.setRaw(v) }
+    fun persistHevc(v: Boolean) = coroutineScope.launch { repo.setHevc(v) }
+    fun persistSound(v: Boolean) = coroutineScope.launch { repo.setSound(v) }
+    fun persistHaptics(v: Boolean) = coroutineScope.launch { repo.setHaptics(v) }
+    fun persistTimer(v: Int) = coroutineScope.launch { repo.setTimer(v) }
+    fun persistAspect(a: PreviewAspect?) = coroutineScope.launch { repo.setManualAspect(repo.aspectToLabel(a)) }
+    fun persistVideoRes(r: VideoResolution) = coroutineScope.launch { repo.setVideoResolution(r.name) }
+    fun persistVideoFps(f: VideoFps) = coroutineScope.launch { repo.setVideoFps(f.value) }
+    fun persistLens(s: String) = coroutineScope.launch { repo.setLastLens(s) }
+    fun persistAccent(s: AccentStyle) = coroutineScope.launch { repo.setAccentIndex(repo.indexOfAccent(s)) }
+    fun persistTheme(v: Boolean?) = coroutineScope.launch { repo.setThemeMode(repo.themeToString(v)) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -391,7 +428,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
         val screenW = with(density) { maxWidth.toPx() }.toInt()
         val screenH = with(density) { maxHeight.toPx() }.toInt()
 
-        // ─── Preview ─────────────────────────────────────────────────────
+        // ─── Preview con pinch-to-zoom ──────────────────────────────────
         CameraPreview(
             viewModel = vm,
             modifier = Modifier
@@ -413,7 +450,8 @@ fun CameraScreen(vm: CameraControlViewModel) {
                         }
                     )
                 },
-            onPreviewBoundsChanged = { previewBounds = it }
+            onPreviewBoundsChanged = { previewBounds = it },
+            onPinchInProgress = { pinchInProgress = it }
         )
 
         PreviewLetterboxChrome(
@@ -440,7 +478,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             palette = palette
         )
 
-        // ─── Punto de enfoque + slider exposición ─────────────────────────
+        // ─── Punto de enfoque + slider EV dinámico ────────────────────────
         focusPoint?.let { point ->
             val xDp = with(density) { point.x.toDp() }
             val yDp = with(density) { point.y.toDp() }
@@ -455,21 +493,19 @@ fun CameraScreen(vm: CameraControlViewModel) {
                     .offset(x = xDp - 34.dp, y = yDp - 34.dp)
                     .size(68.dp)
                     .scale(scaleAnim.value)
-                    .border(1.5.dp, color, RoundedCornerShape(12.dp))
+                    .border(1.5.dp, color, RoundedCornerShape(16.dp))
             )
 
-            val range = vm.getExposureRange()
-            if (range != null) {
-                ExposureSlider(
-                    value = exposure,
-                    min = range.lower,
-                    max = range.upper,
-                    onValueChange = { vm.setExposure(it) },
-                    palette = palette,
-                    onHaptic = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) },
-                    modifier = Modifier.offset(x = xDp + 52.dp, y = yDp - 108.dp)
-                )
-            }
+            // NUEVO v3.0: slider EV en STOPS (-2.0..+2.0 típico) leído del sensor real
+            val evRange = vm.getExposureEvRange()
+            ExposureSliderEv(
+                valueEv = exposureEv,
+                rangeEv = evRange,
+                onValueChange = { vm.setExposureEv(it) },
+                palette = palette,
+                onHaptic = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) },
+                modifier = Modifier.offset(x = xDp + 52.dp, y = yDp - 108.dp)
+            )
         }
 
         // ─── Top bar ──────────────────────────────────────────────────────
@@ -499,7 +535,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 )
             }
 
-            // Pill central: grabando o metadatos sensor
+            // Pill central
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -558,7 +594,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                                     VideoResolution.FHD -> VideoResolution.UHD
                                     VideoResolution.UHD -> VideoResolution.HD
                                 }
-                                vm.setVideoResolution(next)
+                                vm.setVideoResolution(next); persistVideoRes(next)
                             }
                         )
                         FpsPillButton(
@@ -571,7 +607,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                                     VideoFps.FPS30 -> VideoFps.FPS60
                                     VideoFps.FPS60 -> VideoFps.FPS30
                                 }
-                                vm.setVideoFps(next)
+                                vm.setVideoFps(next); persistVideoFps(next)
                             }
                         )
                     }
@@ -609,6 +645,28 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
+        // ─── ZoomControl flotante (lado derecho, durante pinch o long-press) ──
+        AnimatedVisibility(
+            visible = zoomControlOpen,
+            enter = fadeIn(tween(180)) + slideInHorizontally { it / 2 },
+            exit = fadeOut(tween(160)) + slideOutHorizontally { it / 2 },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 12.dp)
+        ) {
+            ZoomControl(
+                currentZoom = zoomLevel,
+                minZoom = CameraControlViewModel.MIN_ZOOM,
+                maxZoom = zoomMax,
+                palette = palette,
+                visible = true,
+                onZoomChange = { vm.setZoomContinuous(it) },
+                onSmoothZoomTo = { vm.smoothZoomTo(it) },
+                onHapticTick = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) },
+                onDismiss = { zoomControlOpen = false }
+            )
+        }
+
         // ─── Bottom controls ──────────────────────────────────────────────
         Column(
             modifier = Modifier
@@ -624,8 +682,12 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 onSelect = { selected ->
                     Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn)
                     vm.switchLens(context, selected)
+                    persistLens(selected)
                 },
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(bottom = 12.dp),
+                availableLenses = availableLenses,
+                telephotoIsOptical = telephotoIsOptical,
+                onLongPressLens = { zoomControlOpen = true }
             )
 
             ActionChipBar(
@@ -633,22 +695,22 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 flashMode = flashMode,
                 onToggleFlash = {
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                    vm.toggleFlash()
+                    vm.toggleFlash(); persistFlash(vm.flashMode.value)
                 },
                 hdrOn = hdrOn,
                 onToggleHdr = {
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                    vm.toggleHdr()
+                    vm.toggleHdr(); persistHdr(!hdrOn)
                 },
                 timerSec = timerSec,
                 onCycleTimer = {
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                    vm.cycleTimer()
+                    vm.cycleTimer(); persistTimer(vm.timerSeconds.value)
                 },
                 soundOn = soundOn,
                 onToggleSound = {
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
-                    vm.toggleShutterSound()
+                    vm.toggleShutterSound(); persistSound(!soundOn)
                 },
                 aspectLabel = when (manualAspect) {
                     PreviewAspect.RATIO_3_4 -> "3:4"
@@ -666,11 +728,22 @@ fun CameraScreen(vm: CameraControlViewModel) {
                         PreviewAspect.RATIO_1_1 -> PreviewAspect.RATIO_FULL
                         PreviewAspect.RATIO_FULL -> null
                     }
-                    vm.setManualAspect(next)
+                    vm.setManualAspect(next); persistAspect(next)
                 },
                 onOpenMore = {
                     settingsOpen = true
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                },
+                rawOn = rawOn,
+                onToggleRaw = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                    vm.toggleRaw(); persistRaw(!rawOn)
+                },
+                onOpenSettings = {
+                    Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
+                    runCatching {
+                        context.startActivity(Intent(context, SettingsActivity::class.java))
+                    }
                 },
                 modifier = Modifier.padding(bottom = 12.dp)
             )
@@ -743,7 +816,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Zoom dial popup ──────────────────────────────────────────────
+        // ─── Zoom dial popup (rotatorio premium) ──────────────────────────
         AnimatedVisibility(
             visible = zoomDialOpen,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.92f, animationSpec = tween(220)),
@@ -759,7 +832,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 UltraThinPanel(
                     modifier = Modifier
                         .padding(horizontal = 24.dp)
-                        .clickable(enabled = false, onClick = {}), // consume taps
+                        .clickable(enabled = false, onClick = {}),
                     palette = palette,
                     cornerRadius = 34.dp,
                     strong = true
@@ -779,7 +852,8 @@ fun CameraScreen(vm: CameraControlViewModel) {
                             currentZoom = zoomLevel,
                             palette = palette,
                             onZoomChange = { vm.setZoom(it) },
-                            onHapticTick = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) }
+                            onHapticTick = { Haptics.perform(view, Haptics.Kind.SELECT, hapticsOn) },
+                            onSmoothZoom = { vm.smoothZoomTo(it) }
                         )
                         Spacer(Modifier.size(20.dp))
                         Button(
@@ -796,10 +870,7 @@ fun CameraScreen(vm: CameraControlViewModel) {
             }
         }
 
-        // ─── Settings panel ───────────────────────────────────────────────
-        // FIX UX-1: el panel ahora usa heightIn(max = 85% pantalla) + LazyColumn
-        // para nunca bloquear toda la pantalla. El fondo semitransparente
-        // siempre es tocable para cerrar el panel.
+        // ─── Settings panel (quick) ───────────────────────────────────────
         AnimatedVisibility(
             visible = settingsOpen,
             enter = fadeIn(tween(220)) + scaleIn(initialScale = 0.95f, animationSpec = tween(220)),
@@ -809,31 +880,39 @@ fun CameraScreen(vm: CameraControlViewModel) {
                 palette = palette,
                 maxHeightFraction = 0.85f,
                 flashMode = flashMode,
-                onToggleFlash = { vm.toggleFlash() },
+                onToggleFlash = { vm.toggleFlash(); persistFlash(vm.flashMode.value) },
                 hdrOn = hdrOn,
-                onToggleHdr = { vm.toggleHdr() },
+                onToggleHdr = { vm.toggleHdr(); persistHdr(!hdrOn) },
                 gridOn = gridOn,
-                onToggleGrid = { vm.toggleGrid() },
+                onToggleGrid = { vm.toggleGrid(); persistGrid(!gridOn) },
                 soundOn = soundOn,
-                onToggleSound = { vm.toggleShutterSound() },
+                onToggleSound = { vm.toggleShutterSound(); persistSound(!soundOn) },
                 hapticsOn = hapticsOn,
-                onToggleHaptics = { vm.toggleHaptics() },
+                onToggleHaptics = { vm.toggleHaptics(); persistHaptics(!hapticsOn) },
                 hevcOn = hevcOn,
-                onToggleHevc = { vm.toggleHevc() },
+                onToggleHevc = { vm.toggleHevc(); persistHevc(!hevcOn) },
                 histogramOn = histogramOn,
-                onToggleHistogram = { vm.toggleHistogram() },
+                onToggleHistogram = {
+                    val next = !histogramOn
+                    vm.setHistogramEnabled(next)
+                    coroutineScope.launch { repo.setHistogram(next) }
+                },
                 horizonOn = horizonOn,
-                onToggleHorizon = { vm.toggleHorizon() },
+                onToggleHorizon = {
+                    val next = !horizonOn
+                    vm.setHorizonEnabled(next)
+                    coroutineScope.launch { repo.setHorizon(next) }
+                },
                 rawOn = rawOn,
-                onToggleRaw = { vm.toggleRaw() },
+                onToggleRaw = { vm.toggleRaw(); persistRaw(!rawOn) },
                 timerSec = timerSec,
-                onCycleTimer = { vm.cycleTimer() },
+                onCycleTimer = { vm.cycleTimer(); persistTimer(vm.timerSeconds.value) },
                 darkPref = darkPref,
-                onCycleTheme = { vm.cycleTheme() },
+                onCycleTheme = { vm.cycleTheme(); persistTheme(vm.darkTheme.value) },
                 accentStyleLabel = accentStyle.label,
-                onCycleAccentStyle = { vm.cycleAccentStyle() },
+                onCycleAccentStyle = { vm.cycleAccentStyle(); persistAccent(vm.accentStyle.value) },
                 manualAspect = manualAspect,
-                onAspectChange = { vm.setManualAspect(it) },
+                onAspectChange = { vm.setManualAspect(it); persistAspect(it) },
                 onOpenFullSettings = {
                     Haptics.perform(view, Haptics.Kind.TAP, hapticsOn)
                     settingsOpen = false
@@ -909,8 +988,8 @@ private fun BoxWithConstraintsScope.PreviewLetterboxChrome(
 private fun StatusPill(label: String, palette: GlassPalette, leadingColor: Color) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(22.dp))
-            .liquidGlass(palette, RoundedCornerShape(22.dp), strong = true)
+            .clip(RoundedCornerShape(30.dp))
+            .liquidGlass(palette, RoundedCornerShape(30.dp), strong = true)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -953,8 +1032,8 @@ private fun SensorMetaPill(
 
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = false)
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -975,9 +1054,9 @@ private fun GalleryThumb(
 ) {
     Box(
         modifier = Modifier
-            .size(56.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = false)
+            .size(58.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
             .clickable(enabled = lastUri != null, onClick = onOpen),
         contentAlignment = Alignment.Center
     ) {
@@ -987,7 +1066,7 @@ private fun GalleryThumb(
                 contentDescription = "Última captura",
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(RoundedCornerShape(18.dp)),
+                    .clip(RoundedCornerShape(20.dp)),
                 contentScale = ContentScale.Crop
             )
         } else {
@@ -1004,8 +1083,8 @@ private fun GalleryThumb(
 fun PillButton(text: String, palette: GlassPalette, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = false)
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 7.dp)
     ) {
@@ -1031,8 +1110,8 @@ private fun FpsPillButton(
 
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = false)
+            .clip(RoundedCornerShape(20.dp))
+            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = false)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 7.dp)
     ) {
@@ -1078,6 +1157,11 @@ fun GridOverlay(previewBounds: Rect?) {
     }
 }
 
+/**
+ * ExposureSlider (LEGACY): conservado para compatibilidad hacia atrás
+ * con código que aún use el valor Int del compensación AE crudo.
+ * El NUEVO slider en stops EV está en GlassUi.kt → ExposureSliderEv.
+ */
 @Composable
 fun ExposureSlider(
     value: Int,
@@ -1095,8 +1179,8 @@ fun ExposureSlider(
         modifier = modifier
             .height(190.dp)
             .width(42.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .liquidGlass(palette, RoundedCornerShape(20.dp), strong = true)
+            .clip(RoundedCornerShape(30.dp))
+            .liquidGlass(palette, RoundedCornerShape(30.dp), strong = true)
             .pointerInput(min, max, value) {
                 detectVerticalDragGestures(onDragStart = { accumulator = 0f }) { _, dragAmount ->
                     accumulator += -dragAmount / 8f
@@ -1148,20 +1232,7 @@ fun ExposureSlider(
 }
 
 /* ================================================================
- * SETTINGS PANEL — FIX UX-1 / UX-2
- *
- * Problema original: el panel usaba Column sin scroll dentro de un
- * Box con fillMaxSize. En pantallas pequeñas o con muchos items,
- * ocupaba TODA la pantalla y el usuario quedaba atrapado sin poder
- * tocar el fondo para cerrar ni ver el botón "Cerrar".
- *
- * Solución:
- *  1. Contenedor de ancho completo con heightIn(max = screenH * fraction).
- *     Nunca ocupa más del 85% de la pantalla → siempre queda espacio
- *     visible en la parte superior para que el usuario pueda tocar el
- *     overlay semitransparente y cerrar.
- *  2. Los items del panel van dentro de LazyColumn con scroll interno.
- *  3. El botón "Cerrar" está FUERA del LazyColumn (fijo abajo del panel).
+ * SETTINGS PANEL — quick settings sheet (heredado v2.2, intacto)
  * ================================================================ */
 @Composable
 fun SettingsPanel(
@@ -1197,7 +1268,6 @@ fun SettingsPanel(
     onClose: () -> Unit,
     onAnyAction: () -> Unit
 ) {
-    // FIX UX-1: BoxWithConstraints para altura REAL del dispositivo (no valor fijo en dp)
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -1211,14 +1281,14 @@ fun SettingsPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = maxPanelHeight)
-                .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
+                .clip(RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp))
                 .background(palette.ultraBase)
                 .border(
                     width = 0.8.dp,
                     color = palette.ultraStroke,
-                    shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+                    shape = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp)
                 )
-                .clickable(enabled = false, onClick = {}), // consume taps internos
+                .clickable(enabled = false, onClick = {}),
             verticalArrangement = Arrangement.Top
         ) {
             // Handle pill
@@ -1232,7 +1302,6 @@ fun SettingsPanel(
                     .background(palette.onGlassSecondary.copy(alpha = 0.30f))
             )
 
-            // Título fijo fuera del scroll
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1241,14 +1310,14 @@ fun SettingsPanel(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Ajustes",
+                    text = "Ajustes rápidos",
                     color = palette.onGlass,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(32.dp)
                         .clip(CircleShape)
                         .background(palette.onGlassSecondary.copy(alpha = 0.12f))
                         .clickable(onClick = onClose),
@@ -1258,7 +1327,6 @@ fun SettingsPanel(
                 }
             }
 
-            // FIX UX-2: Contenido scrollable con LazyColumn
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1266,15 +1334,12 @@ fun SettingsPanel(
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // ── Captura ───────────────────────────────────────────────
                 item { SectionLabel("Captura", palette) }
                 item {
                     SettingsActionRow(
                         label = "Flash",
                         value = when (flashMode) {
-                            FlashMode.OFF -> "Off"
-                            FlashMode.AUTO -> "Auto"
-                            FlashMode.ON -> "On"
+                            FlashMode.OFF -> "Off"; FlashMode.AUTO -> "Auto"; FlashMode.ON -> "On"
                         },
                         palette = palette
                     ) { onAnyAction(); onToggleFlash() }
@@ -1290,7 +1355,6 @@ fun SettingsPanel(
                     ) { onAnyAction(); onCycleTimer() }
                 }
 
-                // ── Composición ───────────────────────────────────────────
                 item { SectionLabel("Composición", palette) }
                 item { SettingsRow("Cuadrícula 3×3", gridOn, palette) { onAnyAction(); onToggleGrid() } }
                 item {
@@ -1304,7 +1368,6 @@ fun SettingsPanel(
                     }
                 }
 
-                // ── Sonido / vibración ────────────────────────────────────
                 item { SectionLabel("Sonido y vibración", palette) }
                 item {
                     SettingsRow("Sonido del obturador", soundOn, palette) {
@@ -1317,7 +1380,6 @@ fun SettingsPanel(
                     }
                 }
 
-                // ── Apariencia ────────────────────────────────────────────
                 item { SectionLabel("Apariencia", palette) }
                 item {
                     SettingsActionRow(
@@ -1326,8 +1388,6 @@ fun SettingsPanel(
                         palette = palette
                     ) { onAnyAction(); onCycleTheme() }
                 }
-
-                // ── Selector visual de color con swatches ─────────────────
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
@@ -1342,7 +1402,6 @@ fun SettingsPanel(
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         )
-                        // Fila 1: colores vibrantes + monocromas (primeros 8)
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1363,7 +1422,6 @@ fun SettingsPanel(
                                 )
                             }
                         }
-                        // Fila 2: pasteles
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1387,7 +1445,6 @@ fun SettingsPanel(
                     }
                 }
 
-                // ── Relación de aspecto ───────────────────────────────────
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -1408,20 +1465,20 @@ fun SettingsPanel(
                                 val selected = manualAspect == value
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(16.dp))
+                                        .clip(RoundedCornerShape(20.dp))
                                         .background(
                                             if (selected) palette.accent else Color.Transparent
                                         )
                                         .border(
                                             width = if (selected) 0.dp else 0.6.dp,
                                             color = if (selected) Color.Transparent else palette.borderSoft,
-                                            shape = RoundedCornerShape(16.dp)
+                                            shape = RoundedCornerShape(20.dp)
                                         )
                                         .clickable {
                                             onAnyAction()
                                             onAspectChange(value)
                                         }
-                                        .padding(horizontal = 10.dp, vertical = 7.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
                                 ) {
                                     Text(
                                         text = label,
@@ -1435,13 +1492,12 @@ fun SettingsPanel(
                     }
                 }
 
-                // ── Acceso a SettingsActivity ─────────────────────────────
                 item {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .liquidGlass(palette, RoundedCornerShape(18.dp), strong = true)
+                            .clip(RoundedCornerShape(22.dp))
+                            .liquidGlass(palette, RoundedCornerShape(22.dp), strong = true)
                             .clickable(onClick = onOpenFullSettings)
                             .padding(horizontal = 16.dp, vertical = 14.dp)
                     ) {
@@ -1470,11 +1526,9 @@ fun SettingsPanel(
                     }
                 }
 
-                // Espaciado inferior dentro del scroll
                 item { Spacer(Modifier.height(6.dp)) }
             }
 
-            // FIX UX-2: Botón "Cerrar" FIJO fuera del scroll — siempre visible
             Button(
                 onClick = onClose,
                 colors = ButtonDefaults.buttonColors(
@@ -1490,6 +1544,7 @@ fun SettingsPanel(
         }
     }
 }
+
 @Composable
 private fun SectionLabel(text: String, palette: GlassPalette) {
     Text(
@@ -1562,7 +1617,6 @@ private fun formatElapsed(seconds: Long): String {
     return "%02d:%02d".format(minutes, remaining)
 }
 
-// FIX B1: loguea el error correctamente en vez de silenciarlo
 private fun CoroutineScope.launchSafe(block: suspend () -> Unit) {
     launch {
         try {
