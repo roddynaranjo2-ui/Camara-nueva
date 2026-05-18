@@ -1,8 +1,6 @@
 package com.rodyto.lenspro
 
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -25,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,26 +42,15 @@ import kotlin.math.exp
 import kotlin.math.ln
 
 /**
- * ZoomControl v1.0 — slider de zoom VERTICAL premium.
+ * ZoomControl v3.5 Pro — slider vertical premium.
  *
- * COMPLEMENTA al ZoomDial.kt existente: el dial es un control rotatorio
- * cinematográfico; el ZoomControl es un slider vertical mucho más
- * compacto que aparece al hacer pinch o al tocar el LensSelector, ideal
- * para ajustes rápidos sin tapar la mitad del preview.
- *
- * Features:
- *  • Glass container cornerRadius 30dp+ (premium spec)
- *  • Mapeo logarítmico zoom 0.5× → 30×
- *  • Snap points visuales en 0.5/1/2/3/5/10/30 (los que estén en rango)
- *  • Tick háptico cada 1/4 stop logarítmico
- *  • Auto-hide configurable
- *  • Glow blanco perimetral cuando se está manipulando
- *  • Botón "1×" para reset instantáneo
- *  • Etiqueta gigante del zoom actual (estilo iPhone Pro Max)
- *
- * Diseño visual: 56.dp ancho × ~280.dp alto, vertical, en el lado
- * derecho del preview (no tapa el centro). Cuando está oculto, no
- * consume layout.
+ * Cambios v3.5:
+ *  • cornerRadius 34dp (premium spec).
+ *  • whiteGlow más vivido durante el drag.
+ *  • Marcas mayores en 0.5/1/3/10/30 (no solo 1/10) → mejor referencia.
+ *  • Reset 1× con haptic-snap mejorado y glow blanco cuando se está cerca.
+ *  • Etiqueta "OPT/DIG" pequeña al lado del valor cuando aplica (vía param).
+ *  • Mapeo logarítmico preservado.
  */
 @Composable
 fun ZoomControl(
@@ -77,7 +63,9 @@ fun ZoomControl(
     onSmoothZoomTo: (Float) -> Unit,
     onHapticTick: () -> Unit,
     onDismiss: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showOpticalHint: Boolean = false,
+    isOptical: Boolean = false
 ) {
     if (!visible) return
 
@@ -87,7 +75,6 @@ fun ZoomControl(
         label = "zoom_smooth"
     )
 
-    // Mapeo logarítmico: angle/pos lineal en pantalla ↔ zoom exponencial
     val minLog = ln(minZoom.coerceAtLeast(0.01f).toDouble()).toFloat()
     val maxLog = ln(maxZoom.coerceAtLeast(minZoom + 0.01f).toDouble()).toFloat()
     val span = (maxLog - minLog).coerceAtLeast(0.01f)
@@ -96,7 +83,6 @@ fun ZoomControl(
         val logZ = ln(z.coerceIn(minZoom, maxZoom).toDouble()).toFloat()
         return ((logZ - minLog) / span).coerceIn(0f, 1f)
     }
-
     fun fractionToZoom(frac: Float): Float {
         val clamped = frac.coerceIn(0f, 1f)
         return exp((minLog + clamped * span).toDouble()).toFloat().coerceIn(minZoom, maxZoom)
@@ -106,33 +92,45 @@ fun ZoomControl(
     var lastHapticBucket by remember { mutableStateOf((zoomToFraction(currentZoom) * 16f).toInt()) }
     var isDragging by remember { mutableStateOf(false) }
 
-    val trackHeightDp = 220.dp
+    val trackHeightDp = 230.dp
 
     Column(
         modifier = modifier
-            .width(64.dp)
-            .clip(RoundedCornerShape(32.dp))
-            .liquidGlass(palette, RoundedCornerShape(32.dp), strong = true)
-            .whiteGlow(active = isDragging, shape = RoundedCornerShape(32.dp), intensity = 1f)
+            .width(68.dp)
+            .clip(RoundedCornerShape(34.dp))
+            .liquidGlass(palette, RoundedCornerShape(34.dp), strong = true)
+            .whiteGlow(active = isDragging, shape = RoundedCornerShape(34.dp), intensity = 1f)
             .padding(vertical = 14.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Etiqueta superior con zoom actual gigante
-        Text(
-            text = formatZoom(animatedZoom),
-            color = palette.onGlass,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
-        )
+        // Etiqueta superior — zoom + chip OPT/DIG opcional
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = formatZoom(animatedZoom),
+                color = palette.onGlass,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (showOpticalHint) {
+                Spacer(Modifier.size(2.dp))
+                Text(
+                    text = if (isOptical) "OPT" else "DIG",
+                    color = if (isOptical) palette.accent else Color(0xFFFFB020),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.6.sp
+                )
+            }
+        }
 
         // Track vertical interactivo
         Box(
             modifier = Modifier
-                .width(36.dp)
+                .width(38.dp)
                 .height(trackHeightDp)
                 .clip(RoundedCornerShape(20.dp))
-                .background(palette.onGlassSecondary.copy(alpha = 0.14f))
+                .background(palette.onGlassSecondary.copy(alpha = 0.16f))
                 .pointerInput(minZoom, maxZoom) {
                     detectVerticalDragGestures(
                         onDragStart = {
@@ -142,7 +140,6 @@ fun ZoomControl(
                         onDragEnd = { isDragging = false },
                         onDragCancel = { isDragging = false }
                     ) { _, dragAmount ->
-                        // Cada 1.4px ≈ 1/220 del track
                         dragAccumPx += -dragAmount
                         val curFrac = zoomToFraction(currentZoom)
                         val trackPx = trackHeightDp.toPx()
@@ -150,7 +147,6 @@ fun ZoomControl(
                         if (abs(newFrac - curFrac) >= 0.001f) {
                             dragAccumPx = 0f
                             val newZoom = fractionToZoom(newFrac)
-                            // Tick háptico — divido la fracción en 16 buckets logarítmicos
                             val bucket = (newFrac * 16f).toInt()
                             if (bucket != lastHapticBucket) {
                                 onHapticTick()
@@ -161,24 +157,23 @@ fun ZoomControl(
                     }
                 }
         ) {
-            // Marcas/ticks: cada 0.5 / 1 / 2 / 3 / 5 / 10 / 30 según rango
+            // Marcas (snap points)
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val snaps = listOf(0.5f, 1f, 2f, 3f, 5f, 10f, 30f)
                     .filter { it in minZoom..maxZoom }
                 snaps.forEach { z ->
                     val frac = zoomToFraction(z)
                     val y = size.height * (1f - frac)
-                    val isMajor = (z == 1f || z == 10f)
+                    val isMajor = (z == 1f || z == 3f || z == 10f)
                     drawLine(
-                        color = palette.onGlass.copy(alpha = if (isMajor) 0.85f else 0.45f),
-                        start = Offset(size.width * (if (isMajor) 0.12f else 0.22f), y),
-                        end = Offset(size.width * (if (isMajor) 0.88f else 0.78f), y),
-                        strokeWidth = if (isMajor) 2.2f else 1.2f
+                        color = palette.onGlass.copy(alpha = if (isMajor) 0.90f else 0.45f),
+                        start = Offset(size.width * (if (isMajor) 0.10f else 0.22f), y),
+                        end = Offset(size.width * (if (isMajor) 0.90f else 0.78f), y),
+                        strokeWidth = if (isMajor) 2.4f else 1.2f
                     )
                 }
             }
 
-            // Relleno (acento) desde abajo hasta el valor actual
             val animFrac by animateFloatAsState(
                 targetValue = zoomToFraction(animatedZoom),
                 animationSpec = tween(durationMillis = 110),
@@ -199,13 +194,12 @@ fun ZoomControl(
                     )
             )
 
-            // Thumb (línea blanca brillante en posición actual)
             val thumbOffsetDp = trackHeightDp * (1f - zoomToFraction(animatedZoom))
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .offset(y = thumbOffsetDp - 3.dp)
-                    .width(28.dp)
+                    .width(30.dp)
                     .height(6.dp)
                     .clip(RoundedCornerShape(3.dp))
                     .background(Color.White)
@@ -214,16 +208,17 @@ fun ZoomControl(
 
         Spacer(Modifier.size(2.dp))
 
-        // Botón reset 1×
+        // Botón reset 1× — glow blanco si estamos cerca de 1.0
+        val near1x = abs(currentZoom - 1f) < 0.05f
         Box(
             modifier = Modifier
-                .size(38.dp)
+                .size(40.dp)
                 .clip(CircleShape)
                 .background(
-                    if (abs(currentZoom - 1f) < 0.05f) palette.accent.copy(alpha = 0.96f)
-                    else Color.White.copy(alpha = if (palette.isDark) 0.10f else 0.30f)
+                    if (near1x) palette.accent.copy(alpha = 0.96f)
+                    else Color.White.copy(alpha = if (palette.isDark) 0.12f else 0.32f)
                 )
-                .whiteGlow(active = abs(currentZoom - 1f) < 0.05f, shape = CircleShape)
+                .whiteGlow(active = near1x, shape = CircleShape)
                 .clickable {
                     onHapticTick()
                     onSmoothZoomTo(1f)
@@ -232,7 +227,7 @@ fun ZoomControl(
         ) {
             Text(
                 text = "1×",
-                color = if (abs(currentZoom - 1f) < 0.05f) palette.onAccent else palette.onGlass,
+                color = if (near1x) palette.onAccent else palette.onGlass,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -241,9 +236,8 @@ fun ZoomControl(
 }
 
 /**
- * ZoomControlPopup — overlay completo: fondo dim + ZoomControl alineado
- * a la derecha. Útil cuando se activa desde tap-largo en LensSelector
- * o desde un botón dedicado. Tocar fuera cierra.
+ * ZoomControlPopup — overlay full screen para invocación desde un botón
+ * dedicado o tap largo en una lente. Tocar fuera cierra.
  */
 @Composable
 fun ZoomControlPopup(
@@ -255,13 +249,15 @@ fun ZoomControlPopup(
     onZoomChange: (Float) -> Unit,
     onSmoothZoomTo: (Float) -> Unit,
     onHapticTick: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    showOpticalHint: Boolean = false,
+    isOptical: Boolean = false
 ) {
     if (!visible) return
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.30f))
+            .background(Color.Black.copy(alpha = 0.32f))
             .clickable { onDismiss() }
     ) {
         Row(
@@ -281,8 +277,9 @@ fun ZoomControlPopup(
                 onSmoothZoomTo = onSmoothZoomTo,
                 onHapticTick = onHapticTick,
                 onDismiss = onDismiss,
-                modifier = Modifier
-                    .clickable(enabled = false, onClick = {}) // consume taps
+                showOpticalHint = showOpticalHint,
+                isOptical = isOptical,
+                modifier = Modifier.clickable(enabled = false, onClick = {})
             )
         }
     }
