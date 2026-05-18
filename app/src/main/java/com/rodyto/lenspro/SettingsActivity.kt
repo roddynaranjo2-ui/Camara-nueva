@@ -137,6 +137,15 @@ private fun SettingsScreen(
     // ── Archivos ───────────────────────────────────────────────────────
     val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
 
+    // ── v3.5 Pro: arquitectura híbrida + physical ID ──────────────────
+    val useCameraX by repo.useCameraXAnalysis.collectAsStateWithLifecycle(initialValue = true)
+    val forceTeleId by repo.forceTelePhysicalId.collectAsStateWithLifecycle(initialValue = true)
+    val teleId by repo.telePhysicalId.collectAsStateWithLifecycle(initialValue = "52")
+    val proVendor by repo.proVendorTags.collectAsStateWithLifecycle(initialValue = true)
+    val isoManual by repo.isoManual.collectAsStateWithLifecycle(initialValue = 0)
+    val shutterManualStr by repo.shutterManualNs.collectAsStateWithLifecycle(initialValue = "")
+    val wbManual by repo.wbManualKelvin.collectAsStateWithLifecycle(initialValue = 0)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -410,6 +419,68 @@ private fun SettingsScreen(
                 }
             }
 
+            // ─── v3.5 Pro: Arquitectura híbrida ─────────────────────
+            item { SectionTitle("Arquitectura Pro · v3.5", palette) }
+            item {
+                GlassCard(palette) {
+                    SettingsRowSwitch(
+                        label = "CameraX Image Analysis",
+                        sub = "Pipeline híbrido — análisis robusto (histograma) vía CameraX paralelo a Camera2",
+                        checked = useCameraX, palette = palette,
+                        onChange = { scope.launch { repo.setUseCameraXAnalysis(it) } }
+                    )
+                    Divider(palette)
+                    SettingsRowSwitch(
+                        label = "Forzar Physical Camera ID en tele",
+                        sub = "S21 FE: abre directamente el ID $teleId al pulsar 3× — bypass del recorte digital sobre el sensor wide",
+                        checked = forceTeleId, palette = palette,
+                        onChange = { scope.launch { repo.setForceTelePhysicalId(it) } }
+                    )
+                    Divider(palette)
+                    SettingsRowSwitch(
+                        label = "Vendor Tags Samsung",
+                        sub = "samsung.android.* (scaler.zoomRatio, liveHdrMode, OIS) — desactiva sólo si tu dispositivo no es Samsung",
+                        checked = proVendor, palette = palette,
+                        onChange = { scope.launch { repo.setProVendorTags(it) } }
+                    )
+                    Divider(palette)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Physical ID del teleobjetivo", color = palette.onGlass,
+                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text("S21 FE default = 52. Cambia sólo si conoces tu HAL.",
+                                color = palette.onGlassSecondary, fontSize = 11.sp)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("52", "54", "3").forEach { candidate ->
+                                val selected = teleId == candidate
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(if (selected) palette.accent else Color.Transparent)
+                                        .border(
+                                            width = if (selected) 0.dp else 0.6.dp,
+                                            color = if (selected) Color.Transparent else palette.borderSoft,
+                                            shape = RoundedCornerShape(20.dp)
+                                        )
+                                        .clickable { scope.launch { repo.setTelePhysicalId(candidate) } }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = candidate,
+                                        color = if (selected) palette.onAccent else palette.onGlass,
+                                        fontSize = 13.sp, fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ─── Archivos y galería ──────────────────────────────────
             item { SectionTitle("Archivos y galería", palette) }
             item {
@@ -442,9 +513,9 @@ private fun SettingsScreen(
             // ─── Footer ──────────────────────────────────────────────
             item {
                 Text(
-                    "Rodyto Lens Pro v3.0 · Liquid Glass UI · Camera2 + NDK\n" +
-                    "RAW DNG real · Manual focus · EXIF dinámico\n" +
-                    "${AccentStyle.entries.size} paletas · Samsung Zoom Quality (S21 FE)",
+                    "Rodyto Lens Pro v3.5 Pro · Liquid Glass · Camera2 + CameraX + NDK\n" +
+                    "RAW DNG real · Manual focus · EXIF dinámico · Hybrid Image Analysis\n" +
+                    "${AccentStyle.entries.size} paletas · Samsung Zoom Quality · Physical Tele ID forzado",
                     color = palette.onGlassSecondary,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 18.dp, bottom = 30.dp)
