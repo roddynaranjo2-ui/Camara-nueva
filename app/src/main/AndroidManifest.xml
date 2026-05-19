@@ -27,6 +27,18 @@
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
+    <!--
+        v3.6:
+        • android:requestLegacyExternalStorage="false" → garantizamos uso de
+          MediaStore API moderna (Scoped Storage). En la API 35 el atributo
+          es ignorado pero declararlo explícitamente documenta la intención.
+        • android:preserveLegacyExternalStorage="false" → mismo motivo.
+        • Application: no se usa android:fitsSystemWindows aquí porque la app
+          activa enableEdgeToEdge() en cada activity (que es el método
+          canónico actual). Mantener fitsSystemWindows="false" en el theme
+          XML evitaría conflictos con WindowInsets cuando alguna ventana
+          se crea sin enableEdgeToEdge (p. ej. diálogos del sistema).
+    -->
     <application
         android:allowBackup="true"
         android:hardwareAccelerated="true"
@@ -37,6 +49,8 @@
         android:label="LensPro"
         android:theme="@style/Theme.LensPro"
         android:enableOnBackInvokedCallback="true"
+        android:requestLegacyExternalStorage="false"
+        android:preserveLegacyExternalStorage="false"
         tools:targetApi="35">
 
         <activity
@@ -54,7 +68,6 @@
             </intent-filter>
         </activity>
 
-        <!-- ▼ NUEVO: pantalla de ajustes avanzados ▼ -->
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
