@@ -25,11 +25,20 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * HorizonLevel — horizonte artificial.
+ * HorizonLevel v3.6 — OPTIMIZADO
  *
- * Lee el acelerómetro vía SensorManager. Si la inclinación está dentro de
- * ±2° muestra la línea verde (nivel perfecto); fuera de eso, amarilla.
- * No registra listener si el sensor no existe (defensive).
+ * Cambios v3.6:
+ *  • DisposableEffect SIEMPRE se monta — la lógica de
+ *    enable/disable se mueve DENTRO del effect. Antes el early-return
+ *    `if (!enabled) return` al INICIO de la función impedía que se
+ *    registrara el effect, pero también significaba que al apagar el
+ *    flag mientras estaba activo el listener seguía vivo hasta el
+ *    siguiente recompose. Ahora el unregister es INMEDIATO al cambiar
+ *    enabled=false porque la `key = enabled` del DisposableEffect
+ *    fuerza el onDispose en cuanto el flag cambia.
+ *  • Si enabled=false, el DisposableEffect retorna inmediatamente sin
+ *    registrar el listener (cero coste).
+ *  • SENSOR_DELAY_UI conservado (16ms es suficiente para nivel).
  */
 @Composable
 fun HorizonLevelOverlay(
@@ -38,19 +47,25 @@ fun HorizonLevelOverlay(
     palette: GlassPalette,
     modifier: Modifier = Modifier
 ) {
-    if (!enabled || previewBounds == null) return
     val context = LocalContext.current
     var rollDeg by remember { mutableFloatStateOf(0f) }
 
+    // FIX v3.6: el effect AHORA se monta siempre, pero su contenido
+    // depende del flag `enabled`. Al pasar a false, el onDispose se
+    // ejecuta de inmediato → unregister sensor inmediato.
     DisposableEffect(enabled) {
+        if (!enabled) {
+            return@DisposableEffect onDispose { /* nada que liberar */ }
+        }
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
                 val gx = event.values[0]
                 val gy = event.values[1]
-                // roll en deg respecto al eje vertical del device portrait
-                val angle = Math.toDegrees(kotlin.math.atan2(gx.toDouble(), gy.toDouble())).toFloat()
+                val angle = Math.toDegrees(
+                    kotlin.math.atan2(gx.toDouble(), gy.toDouble())
+                ).toFloat()
                 rollDeg = -angle
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -62,6 +77,8 @@ fun HorizonLevelOverlay(
             runCatching { sm?.unregisterListener(listener) }
         }
     }
+
+    if (!enabled || previewBounds == null) return
 
     val leveled = abs(rollDeg) < 2f
     val color = if (leveled) Color(0xFF34C759) else palette.accent
@@ -80,7 +97,6 @@ fun HorizonLevelOverlay(
                 end = Offset(cx + dx, cy + dy),
                 strokeWidth = 3f
             )
-            // Puntos de referencia fijos
             val refLen = halfLen * 1.35f
             drawLine(
                 color = palette.onGlass.copy(alpha = 0.45f),
