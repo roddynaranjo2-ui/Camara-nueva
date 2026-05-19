@@ -11,6 +11,8 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -24,26 +26,21 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraXBridge.kt · v3.6 Pro · OPTIMIZADO
+ *  Rodyto Lens Pro · CameraXBridge.kt · v3.7 Pro · CORREGIDO
  *
- *  CORRECCIONES v3.6 (sobre v3.5):
- *   ① El executor YA NO se crea si el flag useCameraXAnalysis está
- *      a false → cero consumo de threads/CPU en el caso por defecto.
- *   ② DisposableEffect con key reactiva — si el usuario cambia el
- *      flag en runtime, el bridge se reactiva/desactiva correctamente.
- *   ③ Reset robusto en onDispose: unbindAll + shutdown del executor
- *      + null en provider. Sin fugas si la activity se recrea.
- *   ④ Documentación reforzada del CONFLICTO HAL: en muchos dispositivos
- *      (especialmente Samsung Exynos) no se puede abrir el mismo
- *      cameraId desde dos clientes simultáneos. Si el usuario activa
- *      useCameraXAnalysis y observa preview en negro o crash al
- *      cambiar lente, debe desactivar este flag.
+ *  CORRECCIONES v3.7 (sobre v3.6):
+ *   • setTargetResolution() ELIMINADO — estaba deprecated desde
+ *     CameraX 1.3.0 y fue removido en 1.4.0. Causa ClassNotFound
+ *     en runtime en dispositivos con CameraX 1.4.1.
+ *     Reemplazado por ResolutionSelector + ResolutionStrategy con
+ *     tamaño objetivo 640×480 y fallback CLOSEST_LOWER_THEN_HIGHER.
+ *   • Imports añadidos: ResolutionSelector, ResolutionStrategy.
  *
- *  ⚠️ AVISO PRODUCCIÓN:
- *      Este bridge SOLO debería estar activo cuando el dispositivo
- *      tiene un HAL3.4+ que permite multi-cliente. Para el grueso de
- *      dispositivos Samsung pre-Snapdragon 8 Gen 2 el flag debe
- *      permanecer en OFF.
+ *  Resto de correcciones v3.6 conservadas:
+ *   ① Executor creado solo si useCameraXAnalysis = true.
+ *   ② DisposableEffect con key reactiva.
+ *   ③ Reset robusto en onDispose.
+ *   ④ Aviso HAL multi-cliente documentado.
  * ================================================================ */
 
 @Composable
@@ -51,15 +48,12 @@ fun CameraXAnalysisBridge(vm: CameraControlViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // FIX v3.6: collectAsStateWithLifecycle nos permite reactivar el bridge
-    // sin necesidad de re-componer toda la jerarquía superior.
     val active by vm.useCameraXAnalysis.collectAsStateWithLifecycle()
     val frontFlag by vm.isFrontCamera.collectAsStateWithLifecycle()
 
     // Key reactiva: si cambia `active` o el lensFacing → el effect se relanza
     DisposableEffect(active, frontFlag) {
         if (!active) {
-            // FIX v3.6: salida temprana SIN crear executor ni futures
             return@DisposableEffect onDispose { /* noop */ }
         }
 
@@ -86,12 +80,9 @@ fun CameraXAnalysisBridge(vm: CameraControlViewModel) {
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            // FIX v3.6: reset proper — unbind primero, shutdown después, null al final.
             try { providerRef?.unbindAll() } catch (_: Throwable) {}
             providerRef = null
-            try {
-                executor.shutdownNow()
-            } catch (_: Throwable) {}
+            try { executor.shutdownNow() } catch (_: Throwable) {}
         }
     }
 }
@@ -110,9 +101,21 @@ private fun bindCameraXAnalysisOnly(
         else
             CameraSelector.DEFAULT_BACK_CAMERA
 
+        // FIX v3.7: usar ResolutionSelector en lugar del deprecated setTargetResolution.
+        // ResolutionStrategy con CLOSEST_LOWER_THEN_HIGHER busca la resolución
+        // más cercana a 640×480 por debajo (baja carga de análisis).
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    android.util.Size(640, 480),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                )
+            )
+            .build()
+
         val analysisBuilder = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setTargetResolution(android.util.Size(640, 480))
+            .setResolutionSelector(resolutionSelector)
 
         Camera2Interop.Extender(analysisBuilder).apply {
             val iso = vm.manualIso.value
