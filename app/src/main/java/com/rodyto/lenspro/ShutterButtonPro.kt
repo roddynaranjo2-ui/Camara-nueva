@@ -33,17 +33,21 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /**
- * ShutterButtonPro v3.6 — OPTIMIZADO
+ * ShutterButtonPro v3.8 — OPTIMIZADO
  *
- * CORRECCIÓN v3.6 (sobre v3.5):
- *  ① rememberInfiniteTransition SOLO se instancia cuando isRecording=true.
- *    Antes era SIEMPRE creado y consumía un frame callback de Choreographer
- *    en estado IDLE → drain CPU/batería medible incluso con la app abierta
- *    pero sin grabar (~0.5% CPU continuo).
- *  ② Composable RecordingRingPulse extraído → al cambiar de modo FOTO/VIDEO
- *    se evita recomponer toda la cadena cuando sólo cambia el alpha.
- *  ③ pointerInput keys reducidas — sólo se relanza la lambda cuando cambia
- *    isRecording (era isRecording+mode → 2 relanzamientos por swipe).
+ * NOVEDADES v3.8 (sobre v3.6):
+ *  • FIX bug B-06: el bloque `pointerInput(isRecording)` antiguo dejaba
+ *    una captura STALE del parámetro `mode` cuando cambiaba FOTO↔VIDEO:
+ *    la lambda interna `if (mode != "VIDEO")` seguía evaluando con el
+ *    `mode` de la última vez que el pointerInput se relanzó, lo que
+ *    causaba que los swipes ignoraran cambios de modo recientes.
+ *    Ahora `pointerInput(isRecording, mode)` se relanza también con
+ *    cada cambio de modo y la lambda captura el valor actual.
+ *
+ *  Corrección v3.6 preservada:
+ *  ① rememberInfiniteTransition aislado en RecordingRingPulse (sólo
+ *    vivo durante isRecording=true).
+ *  ② Anillo estático extraído en StaticRing.
  */
 @Composable
 fun ShutterButtonPro(
@@ -84,7 +88,10 @@ fun ShutterButtonPro(
         modifier = Modifier
             .size(size + 8.dp)
             .graphicsLayer { scaleX = scaleAnim.value; scaleY = scaleAnim.value }
-            .pointerInput(isRecording) {
+            // FIX v3.8 (bug B-06): incluir `mode` en la key para que la
+            // lambda capture siempre el valor más reciente. Antes, al
+            // cambiar de modo el swipe seguía evaluando el mode anterior.
+            .pointerInput(isRecording, mode) {
                 detectTapGestures(
                     onPress = {
                         onPressFeedback()
@@ -102,7 +109,8 @@ fun ShutterButtonPro(
                     onTap = { onTap() }
                 )
             }
-            .pointerInput(isRecording) {
+            // FIX v3.8 (bug B-06): mismo motivo — `mode` en la key.
+            .pointerInput(isRecording, mode) {
                 var totalDx = 0f
                 detectHorizontalDragGestures(
                     onDragStart = { totalDx = 0f },
