@@ -15,29 +15,30 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /* ================================================================
- *  Rodyto Lens Pro · MainActivityCore.kt · v3.6 Pro
+ *  Rodyto Lens Pro · MainActivityCore.kt · v3.8 Pro
  *
- *  Archivo 1 de la división de MainActivity. Responsabilidades:
- *    • Permisos modernos (ActivityResultLauncher, no deprecated).
- *    • Lifecycle de la Activity + enableEdgeToEdge.
- *    • Instanciación del ViewModel y composición de las 3 capas:
- *        Preview  ·  Overlays (paneles)  ·  Helpers (controles)
+ *  NOVEDADES v3.8 (sobre v3.6):
+ *   • Estado compartido `previewBounds` entre CameraPreviewLayer
+ *     (que lo emite vía onPreviewBoundsChanged) y SettingsOverlayLayer
+ *     (que lo consume para alimentar HorizonLevelOverlay).
+ *     Esto cierra el bug B-04: el nivel artificial ahora SÍ se dibuja
+ *     porque previewBounds ya no es null literal.
  *
- *  CORRECCIONES sobre el esqueleto v3.5:
- *    • ActivityCompat.requestPermissions → ActivityResultContracts.
- *    • WRITE_EXTERNAL_STORAGE eliminado del set en runtime: en API 33+
- *      no concede nada; el manifest ya lo limita a maxSdkVersion=28.
- *    • Llamada a enableEdgeToEdge() — coherente con SettingsActivity.
- *    • CameraPreviewLayer ahora SÍ monta CameraPreview().
- *    • Tema integrado vía LensProTheme + glassPalette.
+ *  Mantenido v3.6:
+ *   • Permisos modernos vía ActivityResultContracts.
+ *   • enableEdgeToEdge() para coherencia con SettingsActivity.
+ *   • Composición de las 3 capas (Preview / Overlays / Helpers).
  * ================================================================ */
 class MainActivity : ComponentActivity() {
 
@@ -94,7 +95,11 @@ class MainActivity : ComponentActivity() {
 
 /* ================================================================
  *  Composición principal — orquesta las 3 capas refactorizadas.
- *  Las capas viven en MainActivityOverlays.kt / MainActivityHelpers.kt
+ *
+ *  v3.8: Eleva `previewBounds` a estado compartido entre la capa de
+ *  Preview (productor) y la capa de Overlays (consumidor) para que
+ *  HorizonLevelOverlay reciba el rectángulo real del preview y pueda
+ *  dibujar el nivel artificial sobre él (fix bug B-04).
  * ================================================================ */
 @Composable
 fun RodytoLensApp(
@@ -102,15 +107,26 @@ fun RodytoLensApp(
     palette: GlassPalette,
     repo: SettingsRepository
 ) {
+    // FIX v3.8 (bug B-04): estado compartido para HorizonLevel.
+    var previewBounds by remember { mutableStateOf<Rect?>(null) }
+
     // Refresh inicial del repeating preview cuando arranca la composición.
     LaunchedEffect(Unit) { viewModel.applyRepeatingPreview() }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ── 1. Capa de Vista Previa (Camera2 SurfaceView) ──────
-        CameraPreviewLayer(viewModel)
+        CameraPreviewLayer(
+            viewModel = viewModel,
+            onPreviewBoundsChanged = { newBounds -> previewBounds = newBounds }
+        )
 
         // ── 2. Capa de Paneles/Overlays (chips, histograma…) ───
-        SettingsOverlayLayer(viewModel, palette, repo)
+        SettingsOverlayLayer(
+            viewModel = viewModel,
+            palette = palette,
+            repo = repo,
+            previewBounds = previewBounds   // fix B-04
+        )
 
         // ── 3. Capa de Controles inferiores (lentes, shutter…) ─
         MainControlsLayer(viewModel, palette, repo)
@@ -118,11 +134,15 @@ fun RodytoLensApp(
 }
 
 @Composable
-fun CameraPreviewLayer(viewModel: CameraControlViewModel) {
+fun CameraPreviewLayer(
+    viewModel: CameraControlViewModel,
+    onPreviewBoundsChanged: (androidx.compose.ui.geometry.Rect?) -> Unit = {}
+) {
     // Delega 100% en el componente ya existente y testeado.
     CameraPreview(
         viewModel = viewModel,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        onPreviewBoundsChanged = onPreviewBoundsChanged   // v3.8: forward
     )
     // El bridge CameraX se activa o no según el flag persistido.
     CameraXAnalysisBridge(vm = viewModel)
