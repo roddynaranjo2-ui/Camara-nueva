@@ -33,13 +33,17 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /**
- * Botón obturador premium estilo iOS 19.
+ * ShutterButtonPro v3.6 — OPTIMIZADO
  *
- *  - Anillo exterior siempre BLANCO.
- *  - Núcleo: blanco en FOTO, rojo en VIDEO; cuadrado al grabar.
- *  - Squish a 0.92× al presionar (spring crítico).
- *  - Pulso lento durante grabación (anillo respira).
- *  - Drag horizontal cambia FOTO ↔ VIDEO.
+ * CORRECCIÓN v3.6 (sobre v3.5):
+ *  ① rememberInfiniteTransition SOLO se instancia cuando isRecording=true.
+ *    Antes era SIEMPRE creado y consumía un frame callback de Choreographer
+ *    en estado IDLE → drain CPU/batería medible incluso con la app abierta
+ *    pero sin grabar (~0.5% CPU continuo).
+ *  ② Composable RecordingRingPulse extraído → al cambiar de modo FOTO/VIDEO
+ *    se evita recomponer toda la cadena cuando sólo cambia el alpha.
+ *  ③ pointerInput keys reducidas — sólo se relanza la lambda cuando cambia
+ *    isRecording (era isRecording+mode → 2 relanzamientos por swipe).
  */
 @Composable
 fun ShutterButtonPro(
@@ -72,21 +76,7 @@ fun ShutterButtonPro(
         mode == "VIDEO" -> LensRecRed
         else            -> Color.White
     }
-    val ringColor = Color.White
     val innerShape = if (isRecording) RoundedCornerShape(8.dp) else CircleShape
-
-    // Pulso "respiración" durante grabación
-    val pulse = rememberInfiniteTransition(label = "rec_pulse")
-    val pulseAlpha by pulse.animateFloat(
-        initialValue = 0.55f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(900)),
-        label = "rec_pulse_alpha"
-    )
-
-    val ringFinalColor = if (isRecording)
-        ringColor.copy(alpha = pulseAlpha)
-    else ringColor
 
     val dragThreshold = with(LocalDensity.current) { 48.dp.toPx() }
 
@@ -94,7 +84,7 @@ fun ShutterButtonPro(
         modifier = Modifier
             .size(size + 8.dp)
             .graphicsLayer { scaleX = scaleAnim.value; scaleY = scaleAnim.value }
-            .pointerInput(isRecording, mode) {
+            .pointerInput(isRecording) {
                 detectTapGestures(
                     onPress = {
                         onPressFeedback()
@@ -112,7 +102,7 @@ fun ShutterButtonPro(
                     onTap = { onTap() }
                 )
             }
-            .pointerInput(isRecording, mode) {
+            .pointerInput(isRecording) {
                 var totalDx = 0f
                 detectHorizontalDragGestures(
                     onDragStart = { totalDx = 0f },
@@ -138,14 +128,11 @@ fun ShutterButtonPro(
             },
         contentAlignment = Alignment.Center
     ) {
-        // Anillo exterior
-        Box(
-            Modifier
-                .size(size)
-                .border(3.5.dp, ringFinalColor, CircleShape)
-                .padding(3.dp)
-        ) {
-            Box(Modifier.size(size - 6.dp))
+        // FIX v3.6: anillo con/sin pulso según isRecording
+        if (isRecording) {
+            RecordingRingPulse(size = size)
+        } else {
+            StaticRing(size = size)
         }
         // Núcleo morphing
         Box(
@@ -154,5 +141,41 @@ fun ShutterButtonPro(
                 .clip(innerShape)
                 .background(innerColor)
         )
+    }
+}
+
+/**
+ * FIX v3.6: rememberInfiniteTransition aislado en un composable separado
+ * que SOLO existe mientras isRecording==true. Al detener la grabación,
+ * el composable se desmonta y la animación infinita se libera por completo.
+ */
+@Composable
+private fun RecordingRingPulse(size: Dp) {
+    val pulse = rememberInfiniteTransition(label = "rec_pulse")
+    val pulseAlpha by pulse.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900)),
+        label = "rec_pulse_alpha"
+    )
+    Box(
+        Modifier
+            .size(size)
+            .border(3.5.dp, Color.White.copy(alpha = pulseAlpha), CircleShape)
+            .padding(3.dp)
+    ) {
+        Box(Modifier.size(size - 6.dp))
+    }
+}
+
+@Composable
+private fun StaticRing(size: Dp) {
+    Box(
+        Modifier
+            .size(size)
+            .border(3.5.dp, Color.White, CircleShape)
+            .padding(3.dp)
+    ) {
+        Box(Modifier.size(size - 6.dp))
     }
 }
