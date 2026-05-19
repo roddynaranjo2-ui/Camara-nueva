@@ -3,24 +3,25 @@ package com.rodyto.lenspro
 import android.app.Application
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModel.kt · v3.6 Pro
+ *  Rodyto Lens Pro · CameraControlViewModel.kt · v3.8 Pro
  *
- *  Clase FINAL que la UI consume. Hereda toda la pila:
- *      State  →  Core  →  Ops  →  CameraControlViewModel
+ *  NOVEDADES v3.8 (sobre v3.7):
+ *   • override onLensSwitchRequested(lens) — implementa el cambio
+ *     real de cámara: guarda la lente, cierra la sesión, y reabre
+ *     con el nuevo cameraId usando la Surface actual.
+ *     Esto cierra el bug B-03 (cambio de lente no surtía efecto).
  *
- *  Justificación:
- *    • La división en 4 archivos mantiene cada responsabilidad
- *      por debajo de ~250 líneas (objetivo del usuario).
- *    • Esta clase reúne lo que NO encaja perfectamente en una
- *      capa anterior: el companion object con constantes públicas,
- *      el binding nativo JNI, y el contrato de `startCameraSession`.
+ *   • startCameraSession() ya no retiene `pendingPreviewSurface`
+ *     indefinidamente; tras pasarla a onCameraOpened() se mantiene
+ *     accesible (porque la sesión sigue vinculada a ella), pero un
+ *     futuro startCameraSession() la sobreescribe sin fuga.
  *
- *  ⚠ BINDING NATIVO:
- *    El símbolo C++ es
- *      Java_com_rodyto_lenspro_CameraControlViewModel_getPhysicalCameraIdsNative
- *    Por eso esta clase DEBE existir en el package com.rodyto.lenspro
- *    con la función `external fun getPhysicalCameraIdsNative()`.
- *    Si renombras la clase o el package, debes regenerar la firma JNI.
+ *   • lastPreviewContext guardado de forma debil — necesario para
+ *     que setLens pueda reabrir la cámara sin que la UI tenga que
+ *     llamar a startCameraSession explícitamente otra vez.
+ *
+ *  ⚠ BINDING NATIVO inalterado:
+ *    Java_com_rodyto_lenspro_CameraControlViewModel_getPhysicalCameraIdsNative
  * ================================================================ */
 class CameraControlViewModel(application: Application) :
     CameraControlViewModelOps(application) {
@@ -46,19 +47,21 @@ class CameraControlViewModel(application: Application) :
     external fun getPhysicalCameraIdsNative(): Array<String>
 
     /* ── API que CameraPreview.kt invoca para arrancar la sesión ── */
+
+    /** Surface objetivo del repeating preview — la pasa la UI tras crear el SurfaceView. */
+    @Volatile private var pendingPreviewSurface: android.view.Surface? = null
+
+    /**
+     * v3.8: referencia débil al último Context usado, para que un
+     * cambio de lente desde la UI (vía setLens → onLensSwitchRequested)
+     * pueda reabrir la cámara sin requerir que la UI reenvíe el context.
+     * Se limpia explícitamente en onCleared() para evitar leaks de Activity.
+     */
+    @Volatile private var lastPreviewContext: java.lang.ref.WeakReference<android.content.Context>? = null
+
     /**
      * Punto de entrada desde la UI: el SurfaceView ya está creado y
      * pasa su Surface; el caller indica qué lente seleccionar.
-     *
-     * Esta es la implementación SEGURA y verificable:
-     *   1. Asegura background thread.
-     *   2. Si ya hay una cámara abierta, la cierra.
-     *   3. Llama openCamera() con el cameraId resuelto.
-     *
-     * La lógica completa de configurar MultiChannelImageReader, vendor
-     * tags Samsung, RAW, y crear la CaptureSession final se delega
-     * al onCameraOpened() — que aquí se sobreescribe pero queda como
-     * extensión point: rellena ahí tu lógica original cuando la migres.
      */
     fun startCameraSession(
         context: android.content.Context,
@@ -85,8 +88,12 @@ class CameraControlViewModel(application: Application) :
             )
         } catch (_: Throwable) { /* defensive: el HAL responderá luego */ }
 
-        // Guardamos la Surface objetivo para que onCameraOpened pueda usarla.
+        // Guardamos la Surface objetivo + context (weakref) para futuros switches.
         pendingPreviewSurface = surface
+        lastPreviewContext = java.lang.ref.WeakReference(context.applicationContext ?: context)
+
+        // Reflejar la lente solicitada en el StateFlow (la UI lo necesita inmediatamente)
+        if (lens != null) setCurrentLensInternal(lens)
 
         try {
             openCamera(manager, resolvedId)
@@ -94,9 +101,6 @@ class CameraControlViewModel(application: Application) :
             android.util.Log.e("CameraVM", "Permisos: $sec")
         }
     }
-
-    /** Surface objetivo del repeating preview — la pasa la UI tras crear el SurfaceView. */
-    @Volatile private var pendingPreviewSurface: android.view.Surface? = null
 
     override fun onCameraOpened(camera: android.hardware.camera2.CameraDevice) {
         val surface = pendingPreviewSurface ?: return
@@ -125,12 +129,37 @@ class CameraControlViewModel(application: Application) :
         }
     }
 
+    /* ── v3.8: override del hook de cambio de lente (fix B-03) ──── */
+
+    /**
+     * Implementación REAL del cambio de lente:
+     *  1. Recupera el último context usado para abrir la cámara.
+     *  2. Recupera la Surface actual del preview.
+     *  3. Cierra limpiamente la sesión existente.
+     *  4. Reabre con el nuevo cameraId resuelto a partir de `lens`.
+     *
+     * Si falta cualquiera de las dependencias (context o surface),
+     * la UI tendrá que disparar el reopen llamando a startCameraSession
+     * explícitamente cuando el SurfaceView esté listo (esto sucede en
+     * ON_RESUME / surfaceCreated por el Lifecycle observer ya existente).
+     */
+    override fun onLensSwitchRequested(lens: LensInfo) {
+        val ctx = lastPreviewContext?.get()
+        val surface = pendingPreviewSurface
+        if (ctx == null || surface == null || !surface.isValid) {
+            android.util.Log.w("CameraVM", "onLensSwitchRequested: sin context/surface vivos — diferido")
+            // No bloqueamos: el StateFlow ya refleja la lente; cuando el
+            // SurfaceView se recree, startCameraSession() leerá la lente
+            // actual desde currentLens.value en la UI.
+            return
+        }
+        // Reabrir con la nueva lente.
+        startCameraSession(context = ctx, surface = surface, lens = lens)
+    }
+
     /**
      * Resuelve qué cameraId abrir según la lente solicitada y los flags
-     * de hardware (forceTelePhysicalId, isFrontCamera). Estrategia:
-     *  • Front → primer ID con LENS_FACING_FRONT.
-     *  • Tele forzada con flag activo → activePhysicalTeleId si está cargado.
-     *  • Resto → primer ID lógico back.
+     * de hardware (forceTelePhysicalId, isFrontCamera).
      */
     private fun resolveCameraIdFor(
         lens: LensInfo?,
@@ -161,5 +190,16 @@ class CameraControlViewModel(application: Application) :
         } catch (t: Throwable) {
             android.util.Log.e("CameraVM", "resolveCameraIdFor falló", t); null
         }
+    }
+
+    /**
+     * v3.8: limpieza explícita de la weak-ref al context, para que ningún
+     * componente externo pueda mantener una referencia indirecta a la
+     * Activity tras destrucción.
+     */
+    override fun onCleared() {
+        lastPreviewContext = null
+        pendingPreviewSurface = null
+        super.onCleared()
     }
 }
