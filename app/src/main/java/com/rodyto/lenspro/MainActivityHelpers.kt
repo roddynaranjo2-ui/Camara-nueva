@@ -16,21 +16,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  Rodyto Lens Pro · MainActivityHelpers.kt · v3.6 Pro
+ *  Rodyto Lens Pro · MainActivityHelpers.kt · v3.8 Pro
  *
- *  Archivo 3 de la división de MainActivity. Capa inferior:
- *    • LensSelectorRow (0.5x / 1x / 3x).
- *    • ModeSelectorIos (FOTO / VIDEO).
- *    • ShutterGlass (botón de disparo con swipe FOTO/VIDEO).
- *    • ZoomControlPopup (slider vertical bajo tap largo en tele).
+ *  NOVEDADES v3.8 (sobre v3.6):
+ *   • LensSelectorRow.onSelect ahora hace DOS cosas:
+ *        1. Persiste el label en DataStore (UX: recordar última lente).
+ *        2. Llama a `viewModel.setLens(...)` para que la cámara REALMENTE
+ *           conmute al cameraId correspondiente. Antes solo persistía →
+ *           el tap parecía no responder (fix bug B-03).
+ *   • Se construye un LensInfo mínimo a partir del label, con
+ *     isOptical=true para "3x" (el HAL lo refina al abrir).
  *
- *  CORRECCIONES sobre el esqueleto v3.5:
- *    • Eliminados los Composables fantasma:
- *        – ShutterButton (duplicaba ShutterButtonPro / ShutterGlass).
- *        – ZoomSlider    (duplicaba ZoomControl / ZoomDial).
- *      Mantenerlos generaba conflictos de UX y código muerto.
- *    • Háptica unificada usando View.performHapticFeedback().
- *    • Formato de timestamp preservado como utilidad genérica.
+ *  CORRECCIONES previas conservadas:
+ *   • Eliminados ShutterButton/ZoomSlider fantasma.
+ *   • Háptica unificada con View.performHapticFeedback().
  * ================================================================ */
 
 @Composable
@@ -63,7 +62,15 @@ fun MainControlsLayer(
             palette = palette,
             onSelect = { lens ->
                 haptic()
-                scope.launch { repo.setLastLens(lens) }
+                scope.launch {
+                    // 1. UX: recordar la lente para próximo arranque.
+                    repo.setLastLens(lens)
+                }
+                // 2. FIX v3.8 (bug B-03): notificar al ViewModel para que
+                //    cierre la sesión actual y reabra la cámara con el
+                //    cameraId asociado a esta lente. Sin esta llamada el
+                //    tap NO surtía efecto visual.
+                viewModel.setLens(buildLensInfoFromLabel(lens))
             },
             availableLenses = listOf("0.5x", "1x", "3x"),
             telephotoIsOptical = true, // la clase final lo determina por HAL
@@ -123,6 +130,25 @@ fun MainControlsLayer(
             onDismiss      = { showZoomPopup = false }
         )
     }
+}
+
+/**
+ * v3.8: helper local — construye un LensInfo mínimo a partir del label
+ * del LensSelector. El HAL refinará los valores reales (focalLength,
+ * aperture, isPhysical, isOptical) cuando `resolveCameraIdFor()` abra
+ * el characteristics y los lea. El "id" se deja vacío para que el VM
+ * use la heurística por label.
+ */
+private fun buildLensInfoFromLabel(label: String): LensInfo {
+    val isOpticalGuess = label == "3x" || label == "2x" || label == "5x" || label == "10x"
+    return LensInfo(
+        id = "",            // resuelto por resolveCameraIdFor()
+        label = label,
+        focalLength = 0f,   // refinado por HAL
+        aperture = 0f,
+        isPhysical = false,
+        isOptical = isOpticalGuess
+    )
 }
 
 /* ── Utilidad pública preservada de la versión anterior ────────── */
