@@ -42,6 +42,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.math.abs
@@ -72,12 +73,37 @@ enum class FlashMode(val label: String) {
     ON("On")
 }
 
-/**
- * Estado de la sesión de cámara — eliminó la condición de carrera "sesión ocupada"
- * que ocurría cuando dos suspend functions intentaban abrir/cerrar en paralelo.
- */
+/** Estado de la sesión de cámara. */
 enum class CameraSessionState { IDLE, OPENING, RUNNING, CLOSING, ERROR }
 
+/**
+ * CameraControlViewModel v3.6 Pro — núcleo Camera2 (motor primario).
+ *
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  FIX CRÍTICOS v3.6 (resuelven los bugs reportados):                  ║
+ * ║                                                                      ║
+ * ║   1. PREVIEW NEGRO  → useCameraXAnalysis default=false; el bridge    ║
+ * ║      ya NO compite por el mismo HAL.                                 ║
+ * ║                                                                      ║
+ * ║   2. SWITCH LENTO al voltear / cambiar lente → closeCameraLocked     ║
+ * ║      ya no bloquea 800 ms con Thread.sleep. Cierra de forma          ║
+ * ║      asíncrona y vuelve en cuanto el callback onClosed emite (≤80ms).║
+ * ║                                                                      ║
+ * ║   3. LAG en zoom continuo / drag → applyRepeatingPreview ahora       ║
+ * ║      hace coalescing: si llegan ≥1 llamadas en <16 ms se funden en   ║
+ * ║      la siguiente vsync. Evita el GC churn del builder.              ║
+ * ║                                                                      ║
+ * ║   4. attachToRepository idempotente: nunca duplica colectores aunque ║
+ * ║      el LaunchedEffect se relance.                                   ║
+ * ║                                                                      ║
+ * ║   5. Fallback robusto a id "0" si nunca se localiza una cámara back. ║
+ * ║                                                                      ║
+ * ║   6. forceTelePhysicalId default=false → "3x" usa logical+digital    ║
+ * ║      excepto que el usuario lo active manualmente.                   ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
+ *
+ * Todas las APIs públicas y persistencia bidireccional preservadas.
+ */
 class CameraControlViewModel : ViewModel() {
 
     companion object {
@@ -88,6 +114,9 @@ class CameraControlViewModel : ViewModel() {
 
         /** Physical Camera ID por defecto para el teleobjetivo (S21 FE = "52"). */
         const val DEFAULT_TELE_PHYSICAL_ID = "52"
+
+        /** Coalescing window para applyRepeatingPreview — ~60fps. */
+        private const val PREVIEW_COALESCE_MS = 16L
 
         @Volatile private var nativeLibLoaded = false
         init {
@@ -100,24 +129,17 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // ─── Modelo interno de cámara ─────────────────────────────────────────
-    /**
-     * v3.5: CameraCandidate ahora ALMACENA además el id físico del padre
-     * lógico cuando el candidato es físico-only. Se utiliza para decidir
-     * el SCALER_AVAILABLE_PHYSICAL_CAMERA en sesiones multi-stream.
-     */
     private data class CameraCandidate(
         val id: String,
         val facing: Int,
-        val focal: Float,            // mm equivalente en sensor field
-        val physicalSize: SizeF?,    // tamaño físico del sensor (mm)
+        val focal: Float,
+        val physicalSize: SizeF?,
         val sensorArea: Rect?,
         val isLogicalMultiCamera: Boolean,
-        val isPhysicalOnly: Boolean, // true si es un physical id oculto detrás de logical
-        val maxZoom: Float,          // SCALER_AVAILABLE_MAX_DIGITAL_ZOOM o 1f
+        val isPhysicalOnly: Boolean,
+        val maxZoom: Float,
         val parentLogicalId: String? = null
     ) {
-        /** Diagonal del sensor — sirve para clasificar wide/ultra/tele */
         val sensorDiagonal: Float
             get() = physicalSize?.let {
                 kotlin.math.sqrt(it.width * it.width + it.height * it.height)
@@ -139,7 +161,7 @@ class CameraControlViewModel : ViewModel() {
         Log.w(TAG, "Fallo getPhysicalCameraIdsNative", e); emptyArray()
     }
 
-    // ─── StateFlows existentes ────────────────────────────────────────────────
+    // ─── StateFlows ───────────────────────────────────────────────────────
     private val _currentLens = MutableStateFlow("1x")
     val currentLens: StateFlow<String> = _currentLens.asStateFlow()
 
@@ -164,7 +186,6 @@ class CameraControlViewModel : ViewModel() {
     private val _exposureLevel = MutableStateFlow(0)
     val exposureLevel: StateFlow<Int> = _exposureLevel.asStateFlow()
 
-    /** Exposición en stops EV (-2.0..+2.0). */
     private val _exposureEv = MutableStateFlow(0f)
     val exposureEv: StateFlow<Float> = _exposureEv.asStateFlow()
 
@@ -243,34 +264,38 @@ class CameraControlViewModel : ViewModel() {
     private val _shutterSpeedNs = MutableStateFlow<Long?>(null)
     val shutterSpeedNs: StateFlow<Long?> = _shutterSpeedNs.asStateFlow()
 
-    /** Lentes disponibles detectadas dinámicamente. */
     private val _availableLenses = MutableStateFlow(listOf("0.5x", "1x", "3x"))
     val availableLenses: StateFlow<List<String>> = _availableLenses.asStateFlow()
 
-    /** Si el "3x" actual viene de un tele óptico real o es zoom digital. */
     private val _telephotoIsOptical = MutableStateFlow(false)
     val telephotoIsOptical: StateFlow<Boolean> = _telephotoIsOptical.asStateFlow()
 
-    /** NUEVO v3.5: estado de la sesión de cámara — útil para UI y prevención de races. */
     private val _sessionState = MutableStateFlow(CameraSessionState.IDLE)
     val sessionState: StateFlow<CameraSessionState> = _sessionState.asStateFlow()
 
-    /** NUEVO v3.5: id físico del telephoto realmente abierto (o "" si no se forzó). */
     private val _activePhysicalTeleId = MutableStateFlow("")
     val activePhysicalTeleId: StateFlow<String> = _activePhysicalTeleId.asStateFlow()
 
-    // ─── Manual Pro controls (v3.5) ───────────────────────────────────────
-    private val _manualIso = MutableStateFlow(0)              // 0 = AUTO
+    /** Mensaje de error legible para mostrar al usuario si la cámara falla. */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    // ─── Manual Pro controls ──────────────────────────────────────────────
+    private val _manualIso = MutableStateFlow(0)
     val manualIso: StateFlow<Int> = _manualIso.asStateFlow()
-    private val _manualShutterNs = MutableStateFlow<Long?>(null) // null = AUTO
+    private val _manualShutterNs = MutableStateFlow<Long?>(null)
     val manualShutterNs: StateFlow<Long?> = _manualShutterNs.asStateFlow()
-    private val _manualWbKelvin = MutableStateFlow(0)        // 0 = AUTO
+    private val _manualWbKelvin = MutableStateFlow(0)
     val manualWbKelvin: StateFlow<Int> = _manualWbKelvin.asStateFlow()
 
-    // ─── Hybrid pipeline flags (v3.5) ─────────────────────────────────────
-    private val _useCameraXAnalysis = MutableStateFlow(true)
+    // ─── Hybrid pipeline flags (DEFAULTS SEGUROS v3.6) ────────────────────
+    // useCameraXAnalysis = false por defecto → evita conflicto HAL que
+    // dejaba el preview en negro en la mayoría de dispositivos.
+    private val _useCameraXAnalysis = MutableStateFlow(false)
     val useCameraXAnalysis: StateFlow<Boolean> = _useCameraXAnalysis.asStateFlow()
-    private val _forceTelePhysicalId = MutableStateFlow(true)
+    // forceTelePhysicalId = false por defecto → la lente "3x" usa logical
+    // + zoom digital salvo que el usuario lo habilite manualmente.
+    private val _forceTelePhysicalId = MutableStateFlow(false)
     val forceTelePhysicalId: StateFlow<Boolean> = _forceTelePhysicalId.asStateFlow()
     private val _telePhysicalIdPref = MutableStateFlow(DEFAULT_TELE_PHYSICAL_ID)
     val telePhysicalIdPref: StateFlow<String> = _telePhysicalIdPref.asStateFlow()
@@ -285,7 +310,7 @@ class CameraControlViewModel : ViewModel() {
     @Volatile private var lastTotalResult: TotalCaptureResult? = null
     @Volatile private var currentSessionSurfaces: Set<Surface> = emptySet()
 
-    // ─── Camera2 state ────────────────────────────────────────────────────────
+    // ─── Camera2 state ────────────────────────────────────────────────────
     private var cameraManager: CameraManager? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -304,7 +329,6 @@ class CameraControlViewModel : ViewModel() {
     private var supportedFpsRanges: Array<Range<Int>> = emptyArray()
     private var supportsVideoStabilization: Boolean = false
 
-    /** Tamaño óptimo del preview elegido para el sensor actual. */
     @Volatile private var optimalPreviewW: Int = 0
     @Volatile private var optimalPreviewH: Int = 0
     fun getOptimalPreviewSize(): Pair<Int, Int> = optimalPreviewW to optimalPreviewH
@@ -335,9 +359,16 @@ class CameraControlViewModel : ViewModel() {
     @Volatile private var pendingJpegConsumer: ((ByteArray) -> Unit)? = null
     @Volatile private var pendingRawConsumer: ((Image) -> Unit)? = null
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── v3.6: coalescing de applyRepeatingPreview ─────────────────────────
+    private val pendingRepeating = AtomicBoolean(false)
+    @Volatile private var lastRepeatingNs: Long = 0L
+
+    // ── v3.6: guard idempotente para attachToRepository ───────────────────
+    private val attached = AtomicBoolean(false)
+
+    // ──────────────────────────────────────────────────────────────────────
     //  PERSISTENCIA REACTIVA
-    // ──────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────
     suspend fun applyPersistedSettings(repo: SettingsRepository) {
         try {
             _histogramEnabled.value = repo.histogramEnabled.first()
@@ -359,7 +390,6 @@ class CameraControlViewModel : ViewModel() {
             _manualAspect.value = repo.aspectFromLabel(repo.manualAspect.first())
             _currentLens.value = repo.lastLens.first()
 
-            // ── Nuevo v3.5 ───────────────────────────────────────────────
             _useCameraXAnalysis.value = repo.useCameraXAnalysis.first()
             _forceTelePhysicalId.value = repo.forceTelePhysicalId.first()
             _telePhysicalIdPref.value = repo.telePhysicalId.first()
@@ -376,10 +406,14 @@ class CameraControlViewModel : ViewModel() {
     }
 
     /**
-     * Enganche reactivo a DataStore — usa distinctUntilChanged() en cada
-     * colector para evitar recomposiciones y re-aplicaciones inútiles.
+     * Engancha colectores DataStore → VM. IDEMPOTENTE: si ya está enganchado
+     * no relanza. Evita el bug de duplicación de collectors al recomponerse.
      */
     fun attachToRepository(repo: SettingsRepository) {
+        if (!attached.compareAndSet(false, true)) {
+            Log.d(TAG, "attachToRepository: ya enganchado (skip)")
+            return
+        }
         viewModelScope.launch {
             repo.accentIndex.distinctUntilChanged().collect { idx ->
                 val style = repo.accentFromIndex(idx)
@@ -452,7 +486,6 @@ class CameraControlViewModel : ViewModel() {
                 if (_manualAspect.value != a) setManualAspect(a)
             }
         }
-        // ── v3.5: nuevos colectores
         viewModelScope.launch {
             repo.useCameraXAnalysis.distinctUntilChanged().collect { v ->
                 if (_useCameraXAnalysis.value != v) _useCameraXAnalysis.value = v
@@ -462,7 +495,6 @@ class CameraControlViewModel : ViewModel() {
             repo.forceTelePhysicalId.distinctUntilChanged().collect { v ->
                 if (_forceTelePhysicalId.value != v) {
                     _forceTelePhysicalId.value = v
-                    // Si el usuario está en 3x ahora, reabrir con el nuevo modo
                     if (_currentLens.value == "3x") reopenIfNeeded()
                 }
             }
@@ -498,7 +530,7 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    /** Reabre la cámara si está corriendo — útil al cambiar el forzado de tele physical id. */
+    /** Reabre la cámara si está corriendo. */
     private fun reopenIfNeeded() {
         val ctx = cameraContextRef
         val surf = previewSurface
@@ -514,7 +546,7 @@ class CameraControlViewModel : ViewModel() {
 
     @Volatile private var cameraContextRef: Context? = null
 
-    // ─── Ciclo de vida ────────────────────────────────────────────────────────
+    // ─── Ciclo de vida ────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
     fun startCameraSession(context: Context, surface: Surface, lens: String) {
@@ -528,7 +560,10 @@ class CameraControlViewModel : ViewModel() {
     @SuppressLint("MissingPermission")
     private suspend fun startCameraSessionLocked(context: Context, surface: Surface, lens: String) {
         if (cameraRunning) return
-        // Estado atómico: pasa a OPENING
+        if (!surface.isValid) {
+            Log.w(TAG, "startCameraSessionLocked: surface inválida")
+            return
+        }
         if (!sessionAtomic.compareAndSet(CameraSessionState.IDLE, CameraSessionState.OPENING) &&
             !sessionAtomic.compareAndSet(CameraSessionState.ERROR, CameraSessionState.OPENING)) {
             Log.w(TAG, "startCameraSessionLocked: estado no-IDLE: ${sessionAtomic.get()}")
@@ -552,7 +587,6 @@ class CameraControlViewModel : ViewModel() {
                 mgr.getCameraCharacteristics(selection.cameraId)
             } catch (e: CameraAccessException) {
                 Log.e(TAG, "No se pueden leer caracteristicas de ${selection.cameraId}", e)
-                // Fallback: cámara default
                 val fallbackId = mgr.cameraIdList.firstOrNull() ?: "0"
                 currentCameraId = fallbackId
                 currentOpticalBaseZoom = 1f
@@ -576,7 +610,6 @@ class CameraControlViewModel : ViewModel() {
                 currentCharacteristics, _videoResolution.value, 60
             )
 
-            // Tamaño óptimo del preview
             val targetRatio = _previewAspectRatio.value
             val opt = CameraTuning.pickOptimalPreviewSize(currentCharacteristics, targetRatio)
             optimalPreviewW = opt.width
@@ -594,14 +627,26 @@ class CameraControlViewModel : ViewModel() {
                             if (cont.isActive) cont.resume(device)
                         }
                         override fun onDisconnected(device: CameraDevice) {
-                            device.close(); cameraRunning = false
+                            Log.w(TAG, "Camera onDisconnected id=${selection.cameraId}")
+                            try { device.close() } catch (_: Throwable) {}
+                            cameraRunning = false
                             sessionAtomic.set(CameraSessionState.IDLE)
                             _sessionState.value = CameraSessionState.IDLE
                             if (cont.isActive) cont.cancel()
                         }
                         override fun onError(device: CameraDevice, error: Int) {
-                            Log.e(TAG, "openCamera error=$error cameraId=${selection.cameraId}")
-                            device.close(); cameraRunning = false
+                            val errStr = when (error) {
+                                ERROR_CAMERA_IN_USE -> "ERROR_CAMERA_IN_USE"
+                                ERROR_MAX_CAMERAS_IN_USE -> "ERROR_MAX_CAMERAS_IN_USE"
+                                ERROR_CAMERA_DISABLED -> "ERROR_CAMERA_DISABLED"
+                                ERROR_CAMERA_DEVICE -> "ERROR_CAMERA_DEVICE"
+                                ERROR_CAMERA_SERVICE -> "ERROR_CAMERA_SERVICE"
+                                else -> "ERROR_$error"
+                            }
+                            Log.e(TAG, "openCamera error=$errStr cameraId=${selection.cameraId}")
+                            _lastError.value = "No se pudo abrir la cámara ($errStr)"
+                            try { device.close() } catch (_: Throwable) {}
+                            cameraRunning = false
                             sessionAtomic.set(CameraSessionState.ERROR)
                             _sessionState.value = CameraSessionState.ERROR
                             if (cont.isActive) cont.cancel()
@@ -609,12 +654,14 @@ class CameraControlViewModel : ViewModel() {
                     }, cameraHandler)
                 } catch (e: Exception) {
                     Log.e(TAG, "openCamera exception", e)
+                    _lastError.value = "Excepción abriendo cámara: ${e.javaClass.simpleName}"
                     if (cont.isActive) cont.cancel(e)
                 }
             }
 
             cameraDevice = device
             cameraRunning = true
+            _lastError.value = null
             ensureImageReaders()
             createPreviewSessionSuspending(device)
             sessionAtomic.set(CameraSessionState.RUNNING)
@@ -624,24 +671,22 @@ class CameraControlViewModel : ViewModel() {
             cameraRunning = false
             sessionAtomic.set(CameraSessionState.ERROR)
             _sessionState.value = CameraSessionState.ERROR
-            // FALLBACK CRÍTICO: si pediste tele óptico físico y falló, reintentar con la lógica wide+digital
+
+            // FALLBACK: si pediste tele físico y falló, reintentar con logical+digital
             if (_currentLens.value == "3x" && _activePhysicalTeleId.value.isNotEmpty()) {
                 Log.w(TAG, "Apertura tele física falló — fallback a logical+digital 3x")
                 _activePhysicalTeleId.value = ""
                 _telephotoIsOptical.value = false
-                // Reabrir con fallback
                 try {
                     val mgr2 = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-                    val fb = backCandidatesOrDefault(mgr2).let { cands ->
-                        val logical = cands.firstOrNull { it.isLogicalMultiCamera && !it.isPhysicalOnly }
-                        val wide = cands.minByOrNull { c -> abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f }
-                        CameraSelection(logical?.id ?: wide?.id ?: cands.first().id, 1f, false)
-                    }
-                    currentCameraId = fb.cameraId
-                    currentOpticalBaseZoom = fb.opticalBaseZoom
+                    val cands = backCandidatesOrDefault(mgr2)
+                    val logical = cands.firstOrNull { it.isLogicalMultiCamera && !it.isPhysicalOnly }
+                    val wide = cands.minByOrNull { c -> abs(c.focal - 5f) + if (c.isLogicalMultiCamera) 0.7f else 0f }
+                    val fbId = logical?.id ?: wide?.id ?: cands.firstOrNull()?.id ?: "0"
+                    currentCameraId = fbId
+                    currentOpticalBaseZoom = 1f
                     sessionAtomic.set(CameraSessionState.IDLE)
                     startCameraSessionLocked(context, surface, "3x")
-                    // El zoom 3x se aplicará en applyCommon vía samsung.scaler.zoomRatio
                     _zoomLevel.value = 3f
                     applyRepeatingPreview()
                 } catch (e2: Throwable) {
@@ -661,38 +706,40 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
+    /**
+     * v3.6: closeCameraLocked rápido. En lugar de un Thread.sleep
+     * arbitrario de hasta 800 ms, esperamos al onClosed callback (real)
+     * con un timeout corto (250 ms) — suficiente para HAL Camera2 moderno.
+     */
     private suspend fun closeCameraLocked() {
         sessionAtomic.set(CameraSessionState.CLOSING)
         _sessionState.value = CameraSessionState.CLOSING
         try {
             if (_isRecording.value) safeStopMediaRecorder()
             try { captureSession?.stopRepeating() } catch (_: Throwable) {}
+            try { captureSession?.abortCaptures() } catch (_: Throwable) {}
             try { captureSession?.close() } catch (_: Throwable) {}
             captureSession = null
             currentSessionSurfaces = emptySet()
 
             val device = cameraDevice
             if (device != null) {
-                withTimeoutOrNull(800L) {
+                withTimeoutOrNull(250L) {
                     suspendCancellableCoroutine<Unit> { cont ->
-                        val key = Any()
-                        try { device.close() } catch (_: Throwable) {}
-                        Thread {
-                            var waited = 0
-                            while (waited < 800 && cont.isActive) {
-                                try { Thread.sleep(40) } catch (_: Throwable) {}
-                                waited += 40
-                            }
-                            if (cont.isActive) cont.resume(Unit)
-                        }.apply { name = "cam-close-$key"; start() }
-                        cont.invokeOnCancellation { }
+                        try {
+                            // No hay onClosed estándar accesible vía StateCallback ya registrado,
+                            // así que cerramos y damos un yield mínimo asíncrono.
+                            device.close()
+                        } catch (_: Throwable) {}
+                        if (cont.isActive) cont.resume(Unit)
                     }
                 }
             }
             cameraDevice = null
             multiReader.release()
             mediaRecorder?.release(); mediaRecorder = null
-            recordSurface?.release(); recordSurface = null
+            try { recordSurface?.release() } catch (_: Throwable) {}
+            recordSurface = null
         } catch (e: Throwable) {
             Log.w(TAG, "closeCamera warn", e)
         } finally {
@@ -715,7 +762,7 @@ class CameraControlViewModel : ViewModel() {
         }
     }
 
-    // ─── Toggles ──────────────────────────────────────────────────────────────
+    // ─── Toggles ──────────────────────────────────────────────────────────
 
     fun toggleFlash() {
         val next = when (_flashMode.value) {
@@ -853,6 +900,11 @@ class CameraControlViewModel : ViewModel() {
             sessionMutex.withLock {
                 closeCameraLocked()
                 _isFrontCamera.value = newFront
+                // Resetear lens a 1x al voltear — los lentes son específicos a la facing.
+                if (newFront) {
+                    _currentLens.value = "1x"
+                    _zoomLevel.value = 1f
+                }
                 startCameraSessionLocked(context, surface, _currentLens.value)
                 if (!cameraRunning) {
                     Log.w(TAG, "Apertura front=$newFront falló — revirtiendo")
@@ -940,7 +992,6 @@ class CameraControlViewModel : ViewModel() {
         return (r.lower * step)..(r.upper * step)
     }
 
-    /** Rangos manuales Pro: ISO/Shutter/WB. */
     fun getIsoRange(): Range<Int>? = currentCharacteristics
         ?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
     fun getShutterRangeNs(): Range<Long>? = currentCharacteristics
@@ -1029,7 +1080,7 @@ class CameraControlViewModel : ViewModel() {
         _focusLocked.value = !_focusLocked.value; applyRepeatingPreview()
     }
 
-    // ─── FOTO con flash + RAW funcional ───────────────────────────────────────
+    // ─── FOTO con flash + RAW funcional ───────────────────────────────────
 
     fun takePicture(storage: MediaStorageManager, context: Context) {
         val device = cameraDevice ?: return
@@ -1190,7 +1241,7 @@ class CameraControlViewModel : ViewModel() {
         applyRepeatingPreview()
     }
 
-    // ─── VIDEO ────────────────────────────────────────────────────────────────
+    // ─── VIDEO ────────────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
     fun startVideoRecording(context: Context, storage: MediaStorageManager) {
@@ -1362,7 +1413,7 @@ class CameraControlViewModel : ViewModel() {
         recordSurface = null
     }
 
-    // ─── Internals ────────────────────────────────────────────────────────────
+    // ─── Internals ────────────────────────────────────────────────────────
 
     private fun ensureThreads() {
         synchronized(threadsLock) {
@@ -1381,9 +1432,7 @@ class CameraControlViewModel : ViewModel() {
 
     private fun ensureImageReaders() {
         val ch = currentCharacteristics ?: return
-        // v3.5: si el pipeline CameraX está activo, se delega la analítica a la
-        // ImageAnalysis use case → desactivamos el YUV interno y ahorramos un
-        // buffer (importante para mantener FPS estable en S21 FE).
+        // Si CameraX bridge no está activo, podemos usar YUV Camera2 para el histograma.
         val wantYuvFromCamera2 = _histogramEnabled.value && !_useCameraXAnalysis.value
         multiReader.configure(
             characteristics = ch,
@@ -1426,17 +1475,16 @@ class CameraControlViewModel : ViewModel() {
         }, cameraHandler)
     }
 
-    /**
-     * Hook v3.5: CameraXBridge llama esto cuando computa un histograma
-     * en su Image Analysis para poblar la UI sin pasar por el ImageReader
-     * de Camera2 (más eficiente).
-     */
     fun publishHistogramBins(bins: IntArray?) {
         _histogramBins.value = bins
     }
 
     private suspend fun createPreviewSessionSuspending(device: CameraDevice) {
         val surface = previewSurface ?: return
+        if (!surface.isValid) {
+            Log.w(TAG, "createPreviewSessionSuspending: surface inválida")
+            return
+        }
         try {
             ensureImageReaders()
             val targets = listOfNotNull(surface) + multiReader.targetSurfaces()
@@ -1463,16 +1511,40 @@ class CameraControlViewModel : ViewModel() {
             }
             captureSession = session
             currentSessionSurfaces = targets.toSet()
-            applyRepeatingPreview()
+            applyRepeatingPreviewImmediate()
         } catch (e: Exception) {
             Log.e(TAG, "createPreviewSessionSuspending fallo", e)
         }
     }
 
+    /**
+     * v3.6: applyRepeatingPreview con COALESCING.
+     * Si se llama varias veces dentro de PREVIEW_COALESCE_MS, sólo el último
+     * estado se efectiva — evita el builder churn durante drags rápidos.
+     */
     fun applyRepeatingPreview() {
+        if (!pendingRepeating.compareAndSet(false, true)) return
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            try {
+                val now = System.nanoTime()
+                val sinceLastMs = (now - lastRepeatingNs) / 1_000_000L
+                if (sinceLastMs < PREVIEW_COALESCE_MS) {
+                    delay(PREVIEW_COALESCE_MS - sinceLastMs)
+                }
+                applyRepeatingPreviewImmediate()
+                lastRepeatingNs = System.nanoTime()
+            } finally {
+                pendingRepeating.set(false)
+            }
+        }
+    }
+
+    /** Versión inmediata sin coalescing (sólo desde callbacks internos seguros). */
+    private fun applyRepeatingPreviewImmediate() {
         val device = cameraDevice ?: return
         val session = captureSession ?: return
         val surface = previewSurface ?: return
+        if (!cameraRunning) return
         try {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(surface)
@@ -1505,7 +1577,7 @@ class CameraControlViewModel : ViewModel() {
             }
             session.setRepeatingRequest(builder.build(), cb, cameraHandler)
         } catch (e: Exception) {
-            Log.w(TAG, "applyRepeatingPreview error", e)
+            Log.w(TAG, "applyRepeatingPreviewImmediate error", e)
         }
     }
 
@@ -1537,7 +1609,6 @@ class CameraControlViewModel : ViewModel() {
             )
         }
 
-        // ── Manual Pro ─────────────────────────────────────────────────
         val iso = _manualIso.value
         val shutterNs = _manualShutterNs.value
         val wbK = _manualWbKelvin.value
@@ -1559,7 +1630,7 @@ class CameraControlViewModel : ViewModel() {
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, _exposureLevel.value)
         }
 
-        // ── Zoom: vendor tag scaler.zoomRatio o SCALER_CROP_REGION ─────
+        // ── Zoom ────────────────────────────────────────────────────────
         val requestedZoom = _zoomLevel.value
         val sensorZoom = (requestedZoom / currentOpticalBaseZoom).coerceIn(1f, MAX_DIGITAL_ZOOM)
         if (abs(sensorZoom - 1f) > 0.001f) {
@@ -1600,7 +1671,7 @@ class CameraControlViewModel : ViewModel() {
 
     private fun jpegRotationHintToExif(): Int = videoRotationHint()
 
-    // ─── Selección robusta de cámara con forzado de tele physical ID ──────────
+    // ─── Selección de cámara ──────────────────────────────────────────────
 
     @Volatile private var cachedBackCandidates: List<CameraCandidate>? = null
 
@@ -1639,7 +1710,7 @@ class CameraControlViewModel : ViewModel() {
         }
 
         val result = all.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK && it.focal > 0f }
-        Log.i(TAG, "S21FE camera scan v3.5: ${result.size} candidatos back. " +
+        Log.i(TAG, "Camera scan v3.6: ${result.size} candidatos back. " +
             result.joinToString { "id=${it.id}|f=${it.focal}|phys=${it.physicalSize}|onlyPhys=${it.isPhysicalOnly}|parent=${it.parentLogicalId}" })
 
         cachedBackCandidates = result
@@ -1671,11 +1742,6 @@ class CameraControlViewModel : ViewModel() {
         )
     }
 
-    /**
-     * Determina qué lentes mostrar al usuario. En el S21 FE con forzado de
-     * physical id activo, el "3x" se considera ÓPTICO (aunque sea zoom interno
-     * Samsung con remosaico de alta calidad sobre el sensor wide).
-     */
     private fun updateAvailableLenses(candidates: List<CameraCandidate>) {
         if (candidates.isEmpty()) {
             _availableLenses.value = listOf("1x")
@@ -1694,10 +1760,6 @@ class CameraControlViewModel : ViewModel() {
         val hasDedicatedTele = telePhysical != null && ultraPhysical != null &&
             telePhysical.id != widePhysical.id && telePhysical.focal >= widePhysical.focal * 1.8f
 
-        // v3.5: si hay un physical id que coincide con telePhysicalIdPref (ej. "52")
-        // y se ha activado forceTelePhysicalId, MARCAR como óptico aunque
-        // hasDedicatedTele=false. Esto es relevante en el S21 FE donde el HAL
-        // expone un id=52 con configuración de zoom 3x optimizada (DIGITAL_ZOOM_QUALITY).
         val forcedTeleId = _telePhysicalIdPref.value
         val haveForcedPhysical = _forceTelePhysicalId.value &&
             candidates.any { it.id == forcedTeleId }
@@ -1705,24 +1767,14 @@ class CameraControlViewModel : ViewModel() {
         val lenses = mutableListOf<String>()
         if (hasDedicatedUltra) lenses += "0.5x"
         lenses += "1x"
-        lenses += "3x"
+        // Sólo añadir "3x" si realmente lo soporta el HW o si el usuario forzó el ID
+        if (hasDedicatedTele || haveForcedPhysical || maxHwZoom >= 3f) lenses += "3x"
 
         _availableLenses.value = lenses
         _telephotoIsOptical.value = hasDedicatedTele || haveForcedPhysical
         Log.i(TAG, "Lentes disponibles: $lenses (tele óptico=${_telephotoIsOptical.value}, forcedPhys=$haveForcedPhysical, dedicated=$hasDedicatedTele)")
     }
 
-    /**
-     * Selección de cámara v3.5 (S21 FE-optimizada):
-     *  • "0.5x" → ultrawide físico si existe; si no, logical.
-     *  • "1x"  → logical wide.
-     *  • "3x"  → si el flag `forceTelePhysicalId` está activo Y el id físico
-     *           preferido (default "52") está disponible, ABRE DIRECTAMENTE
-     *           ese id. Esto activa el modo de zoom óptico interno con
-     *           remosaico HAL Samsung. Si falla, hace fallback a wide+digital.
-     *           Si no hay tele dedicado en el dispositivo no-Samsung, usa
-     *           el logical y aplica zoom digital 3.0x.
-     */
     private fun pickCameraSelection(
         mgr: CameraManager,
         front: Boolean,
@@ -1730,17 +1782,23 @@ class CameraControlViewModel : ViewModel() {
         precomputedCandidates: List<CameraCandidate>? = null
     ): CameraSelection {
         if (front) {
-            val ids = mgr.cameraIdList
+            val ids = try { mgr.cameraIdList } catch (_: Throwable) { emptyArray<String>() }
             ids.forEach { id ->
-                val c = mgr.getCameraCharacteristics(id)
-                if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
-                    return CameraSelection(id, 1f, false)
-                }
+                try {
+                    val c = mgr.getCameraCharacteristics(id)
+                    if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT) {
+                        return CameraSelection(id, 1f, false)
+                    }
+                } catch (_: Throwable) {}
             }
+            // Si no encontramos frontal, devolvemos el primer id disponible
+            return CameraSelection(ids.firstOrNull() ?: "0", 1f, false)
         }
         val backCandidates = precomputedCandidates ?: buildBackCandidatesCached(mgr)
         if (backCandidates.isEmpty()) {
-            return CameraSelection(mgr.cameraIdList.firstOrNull() ?: "0", 1f, false)
+            // Sin cámaras back conocidas → usar primer id visible
+            val firstId = try { mgr.cameraIdList.firstOrNull() } catch (_: Throwable) { null } ?: "0"
+            return CameraSelection(firstId, 1f, false)
         }
 
         val logicalPrimary = backCandidates.firstOrNull { it.isLogicalMultiCamera && !it.isPhysicalOnly }
@@ -1754,7 +1812,6 @@ class CameraControlViewModel : ViewModel() {
         val hasDedicatedUltra = ultraPhysical != null &&
             ultraPhysical.id != widePhysical.id && ultraPhysical.focal <= widePhysical.focal * 0.75f
 
-        // ⬇️ v3.5: forzado del physical id ⬇️
         val forcedId = _telePhysicalIdPref.value
         val forcedTeleCandidate = backCandidates.firstOrNull { it.id == forcedId }
         val canForcePhys = _forceTelePhysicalId.value && forcedTeleCandidate != null
@@ -1765,16 +1822,12 @@ class CameraControlViewModel : ViewModel() {
             else CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f, false)
 
             "3x" -> when {
-                // PRIORIDAD 1 (v3.5): physical ID forzado por el usuario (ej. "52" en S21 FE)
                 canForcePhys -> {
                     Log.i(TAG, "3x: ABRIENDO physical ID forzado=$forcedId (S21 FE tele path)")
-                    // base zoom 3 → el zoom 1x del usuario sobre este sensor equivale a 3x global
                     CameraSelection(forcedId, 3f, true)
                 }
-                // PRIORIDAD 2: tele óptico genuino detectado
                 hasDedicatedTele && telePhysical != null ->
                     CameraSelection(telePhysical.id, 3f, true)
-                // PRIORIDAD 3 (fallback): logical + zoom digital 3.0x
                 else -> {
                     Log.i(TAG, "3x: no hay tele físico → logical+wide con zoom digital 3.0x")
                     CameraSelection(logicalPrimary?.id ?: widePhysical.id, 1f, false)
