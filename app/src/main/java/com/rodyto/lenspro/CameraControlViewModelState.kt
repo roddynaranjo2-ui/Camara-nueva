@@ -13,23 +13,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModelState.kt · v3.6 Pro
+ *  Rodyto Lens Pro · CameraControlViewModelState.kt · v3.7 Pro
  *
- *  Archivo 2 de la división. Base de la jerarquía:
- *      State  →  Core  →  Ops  →  CameraControlViewModel (final)
+ *  CORRECCIONES v3.7 (sobre v3.6):
+ *   • cameraDevice, captureSession y previewRequestBuilder ahora son
+ *     @Volatile. Estos campos son escritos desde el callback del HAL
+ *     (backgroundHandler thread) y leídos desde el hilo UI (p. ej.
+ *     applyManualSettings, takePhoto, isCameraRunning). Sin @Volatile
+ *     el compilador JIT puede cachear el valor en registros y la UI
+ *     ve un valor stale → crash o comportamiento indefinido.
+ *     @Volatile garantiza visibilidad entre hilos (no atomicidad para
+ *     operaciones compuestas, que se gestionan en Core / Ops).
  *
- *  Aquí viven SOLO:
- *    • StateFlows reactivos consumidos por la UI Compose.
- *    • Persistencia ligera vía SharedPreferences (la app además
- *      cuenta con SettingsRepository basado en DataStore para los
- *      ajustes que sobreviven a la reinstalación).
- *    • Variables protegidas del HAL (cameraDevice, captureSession,
- *      previewRequestBuilder) que las subclases Core/Ops usan.
- *
- *  Reglas de oro:
- *    • NUNCA acceder a HAL desde aquí — eso es responsabilidad de Core.
- *    • Mantener todos los miembros como `protected` u `open` para que
- *      las subclases puedan completarlos.
+ *  Resto de la implementación idéntica a v3.6.
  * ================================================================ */
 open class CameraControlViewModelState(application: Application) : AndroidViewModel(application) {
 
@@ -103,9 +99,13 @@ open class CameraControlViewModelState(application: Application) : AndroidViewMo
     val isRawSupported   = MutableStateFlow(false)
 
     /* ── Variables protegidas (las usan Core / Ops) ──────────────── */
-    protected var cameraDevice: CameraDevice? = null
-    protected var captureSession: CameraCaptureSession? = null
-    protected var previewRequestBuilder: CaptureRequest.Builder? = null
+    // FIX v3.7: @Volatile garantiza visibilidad entre backgroundHandler y UI thread.
+    // Estos campos son escritos desde onCameraOpened/onDisconnected (background thread)
+    // y leídos desde la UI (isCameraRunning, applyManualSettings, takePhoto).
+    @Volatile protected var cameraDevice: CameraDevice? = null
+    @Volatile protected var captureSession: CameraCaptureSession? = null
+    @Volatile protected var previewRequestBuilder: CaptureRequest.Builder? = null
+
     protected val availablePhysicalCameras = mutableListOf<String>()
 
     /** Tamaño óptimo del preview cacheado (lo calcula Core al abrir). */
