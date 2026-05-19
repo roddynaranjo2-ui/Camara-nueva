@@ -4,16 +4,20 @@ plugins {
 }
 
 /* ================================================================
- *  Rodyto Lens Pro  ·  v3.5 Pro  ·  Build configuration
+ *  Rodyto Lens Pro  ·  v3.8 Pro  ·  Build configuration
  *
- *  Cambios v3.5:
- *   • Subido versionName a "3.5" / versionCode 7.
- *   • Añadidas dependencias CameraX (core, camera2, lifecycle, view, video,
- *     extensions) PARA COEXISTIR con la pila Camera2 manual existente.
- *     La arquitectura es HÍBRIDA: Camera2 sigue siendo el motor primario
- *     (RAW DNG, vendor tags Samsung, control fino) y CameraX se usa como
- *     puente opcional de Image Analysis + lifecycle robusto.
- *   • Habilitada opt-in para androidx.camera.camera2.interop.ExperimentalCamera2Interop.
+ *  NOVEDADES v3.8 (sobre v3.5):
+ *   • versionName subido a "3.8" / versionCode 10. Refleja los fixes
+ *     B-01..B-09 aplicados (lens switch, horizon, shutter blink,
+ *     pointerInput stale, equals/hashCode, CMake moderno, weakref).
+ *   • bundle { language { enableSplit=false } } — evita que Play
+ *     Store divida el APK por idioma. DataStore + algunas APIs de
+ *     Compose pueden mostrar strings vacíos con split de language
+ *     activo en OEMs con MIUI/HyperOS.
+ *   • packaging.jniLibs.useLegacyPackaging = false ya estaba; añado
+ *     pickFirsts para *.so duplicados (camera2ndk en algunos OEM).
+ *   • CameraX se mantiene (pipeline híbrido — opcional vía toggle).
+ *   • Opt-in de ExperimentalCamera2Interop preservado.
  * ================================================================ */
 android {
     namespace 'com.rodyto.lenspro'
@@ -25,8 +29,8 @@ android {
         applicationId "com.rodyto.lenspro"
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName "3.5"
+        versionCode 10
+        versionName "3.8"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -78,9 +82,22 @@ android {
                 '/META-INF/LICENSE*',
                 '/META-INF/NOTICE*'
             ]
+            // v3.8: si alguna lib trae *.so duplicado, conservamos solo el primero.
+            pickFirsts += [
+                'lib/arm64-v8a/*.so',
+                'lib/armeabi-v7a/*.so'
+            ]
         }
         jniLibs {
             useLegacyPackaging = false
+        }
+    }
+
+    // v3.8: evitar split por idioma para que DataStore + Compose strings
+    // funcionen igual en todos los devices, sin importar la locale del usuario.
+    bundle {
+        language {
+            enableSplit = false
         }
     }
 
