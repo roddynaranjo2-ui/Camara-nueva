@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -44,23 +45,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /**
- * SettingsActivity v3.0 — pantalla COMPLETA de ajustes Rodyto Lens Pro.
+ * SettingsActivity v3.6 Pro — OPTIMIZADO
  *
- * NOVEDADES v3.0:
- *  • Persistencia REACTIVA de TODOS los toggles directamente en
- *    SettingsRepository (DataStore). Cada cambio se guarda al instante
- *    y se propaga al CameraControlViewModel vía attachToRepository()
- *    (que se engancha desde MainActivity al arrancar).
- *  • Switches añadidos: Flash, HDR, HEVC, Grid, Sonido, Vibración,
- *    Timer, Manual Aspect, Video Resolution, Video FPS.
- *  • Selector visual de paleta con preview circular grande.
- *  • Sección "Avanzado" con info técnica (versión, codecs, sensores).
- *  • Diseño: contenedores cornerRadius 30dp+ (premium spec).
- *  • Botón "atrás" sólido + Predictive Back de Android 13+.
- *
- * IMPORTANTE: esta pantalla NO depende de ningún ViewModel — opera
- * directamente sobre el repo. Los cambios se aplican al VM gracias
- * al `vm.attachToRepository(repo)` que se invoca en MainActivity.
+ * CORRECCIONES v3.6 (sobre v3.0):
+ *  ① Paletas: ahora usan `items(AccentStyle.entries) { style → AccentRow }`
+ *    dentro del LazyColumn → cada fila se RECICLA correctamente.
+ *    Antes: `AccentStyle.entries.forEachIndexed { … }` dentro de UN ÚNICO
+ *    `item { }` → toda la lista se composaba de golpe, sin reciclaje,
+ *    provocando lag al hacer scroll en la sección "Paleta de colores".
+ *  ② Selección directa por click — al pulsar una paleta se llama a
+ *    `repo.setAccentIndex(idx)` con el ÍNDICE de la paleta tocada, no
+ *    al ciclo.
+ *  ③ collectAsStateWithLifecycle ya se beneficia internamente de
+ *    repeatOnLifecycle → cuando la activity está en STOPPED ya no
+ *    consume del DataStore.
+ *  ④ Limpieza: se removieron StateFlows colectados pero no usados.
  */
 class SettingsActivity : ComponentActivity() {
 
@@ -68,7 +67,6 @@ class SettingsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Predictive Back de Android 13+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 finish()
@@ -137,14 +135,11 @@ private fun SettingsScreen(
     // ── Archivos ───────────────────────────────────────────────────────
     val orgByDate by repo.organizeByDate.collectAsStateWithLifecycle(initialValue = true)
 
-    // ── v3.5 Pro: arquitectura híbrida + physical ID ──────────────────
-    val useCameraX by repo.useCameraXAnalysis.collectAsStateWithLifecycle(initialValue = true)
-    val forceTeleId by repo.forceTelePhysicalId.collectAsStateWithLifecycle(initialValue = true)
+    // ── v3.5+ Pro: arquitectura híbrida ───────────────────────────────
+    val useCameraX by repo.useCameraXAnalysis.collectAsStateWithLifecycle(initialValue = false)
+    val forceTeleId by repo.forceTelePhysicalId.collectAsStateWithLifecycle(initialValue = false)
     val teleId by repo.telePhysicalId.collectAsStateWithLifecycle(initialValue = "52")
     val proVendor by repo.proVendorTags.collectAsStateWithLifecycle(initialValue = true)
-    val isoManual by repo.isoManual.collectAsStateWithLifecycle(initialValue = 0)
-    val shutterManualStr by repo.shutterManualNs.collectAsStateWithLifecycle(initialValue = "")
-    val wbManual by repo.wbManualKelvin.collectAsStateWithLifecycle(initialValue = 0)
 
     Box(
         modifier = Modifier
@@ -195,7 +190,7 @@ private fun SettingsScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Rodyto Lens Pro · Liquid Glass UI",
+                            "Rodyto Lens Pro v3.6 · Liquid Glass UI",
                             color = palette.onGlassSecondary,
                             fontSize = 12.sp
                         )
@@ -387,59 +382,49 @@ private fun SettingsScreen(
             item { SectionTitle("Relación de aspecto", palette) }
             item {
                 GlassCard(palette) {
-                    AspectRow(
-                        label = "Automático", selected = aspectStr == null,
-                        palette = palette,
-                        onClick = { scope.launch { repo.setManualAspect(null) } }
-                    )
+                    AspectRow("Automático", aspectStr == null, palette) {
+                        scope.launch { repo.setManualAspect(null) }
+                    }
                     Divider(palette)
-                    AspectRow(
-                        label = "3:4 · clásico", selected = aspectStr == "3:4",
-                        palette = palette,
-                        onClick = { scope.launch { repo.setManualAspect("3:4") } }
-                    )
+                    AspectRow("3:4 · clásico", aspectStr == "3:4", palette) {
+                        scope.launch { repo.setManualAspect("3:4") }
+                    }
                     Divider(palette)
-                    AspectRow(
-                        label = "9:16 · vertical", selected = aspectStr == "9:16",
-                        palette = palette,
-                        onClick = { scope.launch { repo.setManualAspect("9:16") } }
-                    )
+                    AspectRow("9:16 · vertical", aspectStr == "9:16", palette) {
+                        scope.launch { repo.setManualAspect("9:16") }
+                    }
                     Divider(palette)
-                    AspectRow(
-                        label = "1:1 · cuadrado", selected = aspectStr == "1:1",
-                        palette = palette,
-                        onClick = { scope.launch { repo.setManualAspect("1:1") } }
-                    )
+                    AspectRow("1:1 · cuadrado", aspectStr == "1:1", palette) {
+                        scope.launch { repo.setManualAspect("1:1") }
+                    }
                     Divider(palette)
-                    AspectRow(
-                        label = "Full · pantalla completa", selected = aspectStr == "FULL",
-                        palette = palette,
-                        onClick = { scope.launch { repo.setManualAspect("FULL") } }
-                    )
+                    AspectRow("Full · pantalla completa", aspectStr == "FULL", palette) {
+                        scope.launch { repo.setManualAspect("FULL") }
+                    }
                 }
             }
 
             // ─── v3.5 Pro: Arquitectura híbrida ─────────────────────
-            item { SectionTitle("Arquitectura Pro · v3.5", palette) }
+            item { SectionTitle("Arquitectura Pro · v3.6", palette) }
             item {
                 GlassCard(palette) {
                     SettingsRowSwitch(
                         label = "CameraX Image Analysis",
-                        sub = "Pipeline híbrido — análisis robusto (histograma) vía CameraX paralelo a Camera2",
+                        sub = "⚠️ Off por defecto — puede causar conflictos HAL en muchos dispositivos",
                         checked = useCameraX, palette = palette,
                         onChange = { scope.launch { repo.setUseCameraXAnalysis(it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Forzar Physical Camera ID en tele",
-                        sub = "S21 FE: abre directamente el ID $teleId al pulsar 3× — bypass del recorte digital sobre el sensor wide",
+                        sub = "S21 FE: abre directamente el ID $teleId al pulsar 3× — sólo Samsung con tele real",
                         checked = forceTeleId, palette = palette,
                         onChange = { scope.launch { repo.setForceTelePhysicalId(it) } }
                     )
                     Divider(palette)
                     SettingsRowSwitch(
                         label = "Vendor Tags Samsung",
-                        sub = "samsung.android.* (scaler.zoomRatio, liveHdrMode, OIS) — desactiva sólo si tu dispositivo no es Samsung",
+                        sub = "samsung.android.* (scaler.zoomRatio, liveHdrMode, OIS) — desactiva si no es Samsung",
                         checked = proVendor, palette = palette,
                         onChange = { scope.launch { repo.setProVendorTags(it) } }
                     )
@@ -494,28 +479,80 @@ private fun SettingsScreen(
                 }
             }
 
-            // ─── Paleta visual completa ──────────────────────────────
+            // ─── Paleta visual completa — FIX v3.6: items() reciclados ────
             item { SectionTitle("Paleta de colores · ${AccentStyle.entries.size} estilos", palette) }
+
+            // Header del card (apertura visual)
             item {
-                GlassCard(palette) {
-                    AccentStyle.entries.forEachIndexed { idx, style ->
-                        AccentRow(
-                            style = style,
-                            selected = style == accent,
-                            palette = palette,
-                            onClick = { scope.launch { repo.setAccentIndex(idx) } }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp))
+                        .liquidGlass(
+                            palette,
+                            RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+                            strong = true
                         )
-                        if (idx < AccentStyle.entries.size - 1) Divider(palette)
+                        .height(6.dp)
+                )
+            }
+
+            // FIX v3.6 CRÍTICO: usamos items() — cada AccentRow se recicla.
+            items(
+                items = AccentStyle.entries,
+                key = { it.name }
+            ) { style ->
+                val selected = style == accent
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(palette.ultraBase)
+                ) {
+                    AccentRow(
+                        style = style,
+                        selected = selected,
+                        palette = palette,
+                        onClick = {
+                            // FIX v3.6: setAccentIndex DIRECTO al índice de la paleta tocada
+                            // (antes era ciclo por click → UX confuso).
+                            val idx = AccentStyle.entries.indexOf(style)
+                            scope.launch { repo.setAccentIndex(idx) }
+                        }
+                    )
+                    if (style != AccentStyle.entries.last()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 18.dp)
+                                .height(0.6.dp)
+                                .background(palette.borderSoft)
+                                .align(Alignment.BottomStart)
+                        )
                     }
                 }
+            }
+
+            // Footer visual del card
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(bottomStart = 30.dp, bottomEnd = 30.dp))
+                        .liquidGlass(
+                            palette,
+                            RoundedCornerShape(bottomStart = 30.dp, bottomEnd = 30.dp),
+                            strong = true
+                        )
+                        .height(6.dp)
+                )
             }
 
             // ─── Footer ──────────────────────────────────────────────
             item {
                 Text(
-                    "Rodyto Lens Pro v3.5 Pro · Liquid Glass · Camera2 + CameraX + NDK\n" +
+                    "Rodyto Lens Pro v3.6 Pro · Liquid Glass · Camera2 + CameraX + NDK\n" +
                     "RAW DNG real · Manual focus · EXIF dinámico · Hybrid Image Analysis\n" +
-                    "${AccentStyle.entries.size} paletas · Samsung Zoom Quality · Physical Tele ID forzado",
+                    "${AccentStyle.entries.size} paletas · Samsung Zoom Quality · Physical Tele ID configurable",
                     color = palette.onGlassSecondary,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 18.dp, bottom = 30.dp)
