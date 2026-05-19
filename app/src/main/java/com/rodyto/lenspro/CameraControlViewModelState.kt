@@ -13,19 +13,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModelState.kt · v3.7 Pro
+ *  Rodyto Lens Pro · CameraControlViewModelState.kt · v3.8 Pro
  *
- *  CORRECCIONES v3.7 (sobre v3.6):
- *   • cameraDevice, captureSession y previewRequestBuilder ahora son
- *     @Volatile. Estos campos son escritos desde el callback del HAL
- *     (backgroundHandler thread) y leídos desde el hilo UI (p. ej.
- *     applyManualSettings, takePhoto, isCameraRunning). Sin @Volatile
- *     el compilador JIT puede cachear el valor en registros y la UI
- *     ve un valor stale → crash o comportamiento indefinido.
- *     @Volatile garantiza visibilidad entre hilos (no atomicidad para
- *     operaciones compuestas, que se gestionan en Core / Ops).
+ *  NOVEDADES v3.8 (sobre v3.7):
+ *   • _shutterBlinkKey: StateFlow<Int> incremental que la UI observa
+ *     para disparar ShutterBlinkOverlay (fix bug B-05). El contador se
+ *     incrementa cada vez que se ejecuta `takePhoto()` con éxito.
+ *   • helper `bumpShutterBlinkKey()` interno — accesible desde Ops para
+ *     publicar el blink sin exponer `_shutterBlinkKey` mutable fuera del VM.
+ *   • helper `setCurrentLensInternal(LensInfo?)` que las subclases pueden
+ *     llamar para reflejar la lente activa (fix bug B-03).
  *
- *  Resto de la implementación idéntica a v3.6.
+ *  CORRECCIONES v3.7 preservadas:
+ *   • cameraDevice, captureSession, previewRequestBuilder con @Volatile.
  * ================================================================ */
 open class CameraControlViewModelState(application: Application) : AndroidViewModel(application) {
 
@@ -98,10 +98,18 @@ open class CameraControlViewModelState(application: Application) : AndroidViewMo
     val isFlashSupported = MutableStateFlow(false)
     val isRawSupported   = MutableStateFlow(false)
 
+    /* ── v3.8: Shutter blink trigger (fix bug B-05) ─────────────── */
+    /**
+     * Contador monotónico incremental. La UI observa este flow con
+     * collectAsStateWithLifecycle y se lo pasa como `triggerKey` a
+     * `ShutterBlinkOverlay`. Cada vez que cambia, el overlay reproduce
+     * la animación de oscurecimiento. Empieza en 0 → primera captura = 1.
+     */
+    protected val _shutterBlinkKey = MutableStateFlow(0)
+    val shutterBlinkKey: StateFlow<Int> = _shutterBlinkKey.asStateFlow()
+
     /* ── Variables protegidas (las usan Core / Ops) ──────────────── */
     // FIX v3.7: @Volatile garantiza visibilidad entre backgroundHandler y UI thread.
-    // Estos campos son escritos desde onCameraOpened/onDisconnected (background thread)
-    // y leídos desde la UI (isCameraRunning, applyManualSettings, takePhoto).
     @Volatile protected var cameraDevice: CameraDevice? = null
     @Volatile protected var captureSession: CameraCaptureSession? = null
     @Volatile protected var previewRequestBuilder: CaptureRequest.Builder? = null
@@ -132,5 +140,27 @@ open class CameraControlViewModelState(application: Application) : AndroidViewMo
     /** API pública usada por CameraXBridge para publicar bins YUV→Histograma. */
     fun publishHistogramBins(bins: IntArray) {
         _histogramBins.value = bins
+    }
+
+    /* ── v3.8 helpers internos para subclases Ops/final ─────────── */
+
+    /**
+     * fix B-03: setter interno para reflejar la lente activa tras un
+     * cambio de cámara. Lo invoca CameraControlViewModelOps.setLens()
+     * para mantener el StateFlow `currentLens` sincronizado con la
+     * sesión Camera2 realmente abierta.
+     */
+    protected fun setCurrentLensInternal(lens: LensInfo?) {
+        _currentLens.value = lens
+        updateUiState { it.copy(currentLens = lens) }
+    }
+
+    /**
+     * fix B-05: incrementa el contador de blink. Idempotente y thread-safe
+     * (StateFlow.update es atómico). Lo invocan takePhoto() y cualquier
+     * pipeline de captura futuro para notificar a la UI.
+     */
+    protected fun bumpShutterBlinkKey() {
+        _shutterBlinkKey.update { current -> if (current >= Int.MAX_VALUE - 1) 1 else current + 1 }
     }
 }
