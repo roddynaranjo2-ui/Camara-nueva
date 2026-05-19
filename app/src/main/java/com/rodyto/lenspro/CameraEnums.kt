@@ -5,15 +5,22 @@ import android.util.Range
 import android.util.Size
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraEnums.kt · v3.6 Pro (refactor)
+ *  Rodyto Lens Pro · CameraEnums.kt · v3.8 Pro
  *
- *  Archivo 1 de la división del antiguo CameraControlViewModel.
- *  Contiene TODAS las definiciones de datos, enums y constantes
- *  que el resto del proyecto referencia. La unificación de tipos
- *  evita la dispersión de declaraciones a lo largo del módulo.
+ *  NOVEDADES v3.8 (sobre v3.6):
+ *   • CameraHardwareInfo: equals/hashCode/toString manuales que
+ *     comparan capabilities por contenido (no por referencia).
+ *     Esto elimina el warning "Arrays in 'CameraHardwareInfo' should
+ *     be considered for content-based equality" y previene
+ *     re-emisiones espurias de StateFlow cuando el HAL devuelve la
+ *     misma info pero en arrays distintos.
  *
- *  IMPORTANTE: package = com.rodyto.lenspro (igual que el namespace
- *  declarado en app/build.gradle). NO usar com.rodyto.rodyto_lens_pro.
+ *  Resto v3.6:
+ *   • Enums consolidados (CameraMode, FocusMode, WhiteBalanceMode,
+ *     FlashMode, VideoResolution, VideoFps, PreviewAspect,
+ *     CameraSessionState).
+ *   • Estructuras de datos del HAL.
+ *   • Constantes globales en CameraConstants.
  * ================================================================ */
 
 // ─── Modos de cámara ─────────────────────────────────────────────
@@ -69,13 +76,43 @@ enum class CameraSessionState {
 }
 
 // ─── Estructuras de datos del HAL ────────────────────────────────
-data class CameraHardwareInfo(
+/**
+ * CameraHardwareInfo — v3.8: equals/hashCode manuales para tratar
+ * IntArray con semántica de contenido. Si se dejara como `data class`
+ * pura, dos instancias con el mismo cameraId pero arrays diferentes
+ * (devueltos por el HAL en consultas separadas) serían "distintas" y
+ * forzarían re-emisiones de StateFlow.
+ */
+class CameraHardwareInfo(
     val id: String,
     val facing: Int,
     val sensorOrientation: Int,
     val capabilities: IntArray,
     val physicalIds: Set<String> = emptySet()
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is CameraHardwareInfo) return false
+        return id == other.id &&
+                facing == other.facing &&
+                sensorOrientation == other.sensorOrientation &&
+                capabilities.contentEquals(other.capabilities) &&
+                physicalIds == other.physicalIds
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + facing
+        result = 31 * result + sensorOrientation
+        result = 31 * result + capabilities.contentHashCode()
+        result = 31 * result + physicalIds.hashCode()
+        return result
+    }
+
+    override fun toString(): String =
+        "CameraHardwareInfo(id='$id', facing=$facing, orientation=$sensorOrientation, " +
+            "capabilities=${capabilities.contentToString()}, physicalIds=$physicalIds)"
+}
 
 data class LensInfo(
     val id: String,
