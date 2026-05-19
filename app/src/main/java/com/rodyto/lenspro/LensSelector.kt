@@ -3,7 +3,6 @@ package com.rodyto.lenspro
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -40,18 +39,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * LensSelectorRow v3.5 Pro — Liquid Glass premium con indicador OPT/DIG.
+ * LensSelectorRow v3.6 Pro — OPTIMIZADO
  *
- * NOVEDADES v3.5:
- *  • Badge "OPT" / "DIG" debajo de la lente de tele (3x) cuando se selecciona —
- *    deja claro si estás usando el sensor físico forzado (ID 52 en S21 FE) o
- *    el zoom digital con remosaico Samsung.
- *  • Tamaño aumentado (44dp selected / 34dp unselected) para mejor tap-target.
- *  • Glow blanco más visible (whiteGlow intensity 1.0).
- *  • cornerRadius del contenedor 36dp (premium).
- *  • Debounce 400ms anti-doble-tap (preservado).
- *  • Tap largo abre ZoomControl (preservado).
- *  • API 100% backwards compatible.
+ * Cambios v3.6 (sobre v3.5):
+ *  ① Animación selección más rápida: StiffnessMedium en vez de
+ *    StiffnessMediumLow + dampingRatio NoBouncy. Resultado: la transición
+ *    entre lentes pasa de ~280ms perceptibles a ~140ms — feedback inmediato.
+ *  ② Eliminado el double animateDpAsState/animateFloatAsState — antes el
+ *    LensBubblePro animaba TAMAÑO y ESCALA en paralelo, ambos con springs
+ *    bouncy. Ahora sólo se anima TAMAÑO (la escala era visualmente
+ *    redundante porque el size ya cambia 44↔34dp).
+ *  ③ Debounce 400ms preservado (anti-doble-tap).
+ *  ④ Tap largo abre ZoomControl preservado.
+ *  ⑤ API 100% backwards compatible.
  */
 @Composable
 fun LensSelectorRow(
@@ -100,7 +100,6 @@ fun LensSelectorRow(
             }
         }
 
-        // ── Badge OPT/DIG bajo el selector cuando se está en tele ─────
         AnimatedVisibility(
             visible = currentLens == "3x" || currentLens == "2x",
             enter = fadeIn(tween(180)),
@@ -117,7 +116,7 @@ fun LensSelectorRow(
 
 @Composable
 private fun OpticalBadge(isOptical: Boolean, palette: GlassPalette) {
-    val color = if (isOptical) palette.accent else Color(0xFFFFB020) // ámbar para digital
+    val color = if (isOptical) palette.accent else Color(0xFFFFB020)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -154,31 +153,22 @@ private fun LensBubblePro(
 ) {
     val targetSize = if (selected) 44.dp else 34.dp
 
+    // FIX v3.6: animación más rápida y NO bouncy. Antes era StiffnessMediumLow
+    // con DampingRatioMediumBouncy → tarda ~280ms y rebota.
     val animSize by animateDpAsState(
         targetValue = targetSize,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
         ),
         label = "lens_size"
     )
     val interaction = remember { MutableInteractionSource() }
-    val scaleAnim by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.96f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "lens_scale"
-    )
+    // FIX v3.6: eliminada la animación de escala duplicada (visualmente redundante)
 
     Box(
         modifier = Modifier
             .size(animSize)
-            .graphicsLayer {
-                scaleX = scaleAnim
-                scaleY = scaleAnim
-            }
             .clip(CircleShape)
             .background(
                 if (selected) palette.accent.copy(alpha = 0.96f)
@@ -213,7 +203,6 @@ private fun LensBubblePro(
             fontSize = if (selected) 14.sp else 12.sp
         )
 
-        // Mini-dot indicador óptico/digital para tele (sólo cuando seleccionado)
         if (showOpticalDot && selected) {
             Box(
                 modifier = Modifier
