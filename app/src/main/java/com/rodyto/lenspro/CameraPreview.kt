@@ -27,8 +27,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -40,30 +38,21 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.abs
 
-/**
- * CameraPreview v3 — OPTIMIZADO + PINCH-TO-ZOOM + AUTO-FIT
+/* ================================================================
+ *  Rodyto Lens Pro · CameraPreview · v3.6 Pro · OPTIMIZADO
  *
- * NOVEDADES v3 (vs v2):
- *  ⓪ Pinch-to-zoom NATIVO con detector de gesto multi-touch propio (sin
- *    ScaleGestureDetector de Android, que requiere View con onTouchEvent).
- *    El multiplicador acumulado se mapea al rango [MIN_ZOOM, zoomMax] del VM
- *    con interpolación logarítmica → la sensación es idéntica a iOS y a la
- *    app oficial de Samsung Camera (donde un pinch corto produce un cambio
- *    sutil, y pinch grande hace zoom rápido).
- *  ⓪ AutoFitSurfaceView reemplaza al SurfaceView genérico. Cuando el sensor
- *    devuelve, p.ej. 4032×3024, el View se autoajusta a esa proporción dentro
- *    del Box .aspectRatio() de Compose — eliminando definitivamente el
- *    estiramiento en 16:9 y en cámara frontal.
- *  ⓪ Callback onPinchInProgress permite al padre (MainActivity) mostrar
- *    el zoom slider/badge mientras dura el gesto.
- *
- * FIXES heredados:
- *  ① Animación del aspect ratio rápida (StiffnessMedium) sin rebote.
- *  ② Callback de bounds throttle (≥ 0.5 px) → cero recomposiciones inútiles.
- *  ③ setFixedSize en surfaceChanged → buffer correcto al cambiar modo.
- *  ④ Reapertura limpia si el surface se invalida en runtime.
- *  ⑤ Lifecycle handler robusto.
- */
+ *  CORRECCIONES v3.6 (sobre v3.5):
+ *   ① pinchToZoom usa awaitEachGesture (single-shot) en lugar de
+ *      while(true) infinito → libera la lambda al levantar dedos,
+ *      no compite con otros pointerInput descendentes.
+ *   ② onPinchInProgress(true) THROTTLED — sólo se notifica una vez
+ *      por gesto. Evita 60 emisiones/seg al StateFlow del padre.
+ *   ③ update {} de AndroidView ya NO llama setAspectRatio en cada
+ *      recomposición — sólo cuando los valores cambian (guard externo).
+ *   ④ Validación robusta de surface en surfaceChanged (checa width/h>0).
+ *   ⑤ Startup defensivo: si la sesión Camera2 está OPENING, no se
+ *      relanza al recibir ON_RESUME (evita doble apertura HAL).
+ * ================================================================ */
 @Composable
 fun CameraPreview(
     viewModel: CameraControlViewModel,
@@ -81,7 +70,7 @@ fun CameraPreview(
     val aspect by viewModel.previewAspectRatio.collectAsStateWithLifecycle()
     val cameraMode by viewModel.cameraMode.collectAsStateWithLifecycle()
 
-    // FIX ①: animación rápida sin rebote
+    // Animación rápida sin rebote
     val animatedAspect by animateFloatAsState(
         targetValue = aspect,
         animationSpec = spring(
@@ -94,6 +83,10 @@ fun CameraPreview(
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
     var lastBounds by remember { mutableStateOf<Rect?>(null) }
 
+    // Guard para evitar re-aplicar el aspect ratio idéntico en cada update
+    var lastAppliedSw by remember { mutableStateOf(-1) }
+    var lastAppliedSh by remember { mutableStateOf(-1) }
+
     LaunchedEffect(cameraMode) {
         viewModel.applyRepeatingPreview()
     }
@@ -103,7 +96,11 @@ fun CameraPreview(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     val surface = activeSurface
-                    if (surface != null && surface.isValid && !viewModel.isCameraRunning()) {
+                    // FIX v3.6: comprobar también que NO esté ya abriendo
+                    if (surface != null && surface.isValid &&
+                        !viewModel.isCameraRunning() &&
+                        viewModel.sessionState.value != CameraSessionState.OPENING
+                    ) {
                         viewModel.startCameraSession(
                             context = context,
                             surface = surface,
@@ -138,7 +135,7 @@ fun CameraPreview(
                 .onGloballyPositioned { coords ->
                     val newBounds = coords.boundsInRoot()
                     val prev = lastBounds
-                    // FIX ②: throttle bounds 0.5px
+                    // Throttle bounds 0.5px → cero recomposiciones inútiles
                     val changed = prev == null ||
                         abs(prev.top - newBounds.top) > 0.5f ||
                         abs(prev.bottom - newBounds.bottom) > 0.5f ||
@@ -149,7 +146,6 @@ fun CameraPreview(
                         onPreviewBoundsChanged(newBounds)
                     }
                 }
-                // FIX ⓪: pinch-to-zoom — gesto multi-touch nativo de Compose
                 .then(
                     if (pinchEnabled) Modifier.pointerInput(Unit) {
                         pinchToZoom(
@@ -166,7 +162,6 @@ fun CameraPreview(
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    // FIX ⓪: usamos AutoFitSurfaceView en vez del SurfaceView genérico
                     AutoFitSurfaceView(ctx).apply {
                         setZOrderOnTop(false)
                         holder.setKeepScreenOn(true)
@@ -175,7 +170,10 @@ fun CameraPreview(
                             override fun surfaceCreated(holder: SurfaceHolder) {
                                 val surface = holder.surface
                                 activeSurface = surface
-                                if (surface.isValid && !viewModel.isCameraRunning()) {
+                                if (surface.isValid &&
+                                    !viewModel.isCameraRunning() &&
+                                    viewModel.sessionState.value != CameraSessionState.OPENING
+                                ) {
                                     viewModel.startCameraSession(
                                         context = ctx,
                                         surface = surface,
@@ -190,18 +188,20 @@ fun CameraPreview(
                                 width: Int,
                                 height: Int
                             ) {
+                                // FIX v3.6: validar dimensiones antes de aceptar surface
+                                if (width <= 0 || height <= 0) return
                                 activeSurface = holder.surface
-                                // FIX ③: hint del buffer óptimo del sistema gráfico
                                 try { holder.setFixedSize(width, height) }
                                 catch (_: Throwable) {}
                                 viewModel.notifyPreviewSize(width, height)
 
-                                // FIX ⓪: aplicar AutoFit basado en el sensor REAL
-                                // (el VM expone el size óptimo del preview)
                                 val (sw, sh) = viewModel.getOptimalPreviewSize()
-                                if (sw > 0 && sh > 0) {
-                                    // En portrait la altura del sensor es la dimensión
-                                    // larga en pantalla → invertimos.
+                                if (sw > 0 && sh > 0 &&
+                                    (sw != lastAppliedSw || sh != lastAppliedSh)
+                                ) {
+                                    lastAppliedSw = sw
+                                    lastAppliedSh = sh
+                                    // En portrait altura del sensor es lado largo en pantalla → invertimos.
                                     setAspectRatio(sh, sw)
                                 }
                             }
@@ -218,9 +218,13 @@ fun CameraPreview(
                     if (surface != null && surface.isValid) {
                         activeSurface = surface
                     }
-                    // Reaplicar AutoFit si el VM publica un size nuevo
+                    // FIX v3.6: sólo re-aplicar AutoFit si cambió respecto a la última vez
                     val (sw, sh) = viewModel.getOptimalPreviewSize()
-                    if (sw > 0 && sh > 0) {
+                    if (sw > 0 && sh > 0 &&
+                        (sw != lastAppliedSw || sh != lastAppliedSh)
+                    ) {
+                        lastAppliedSw = sw
+                        lastAppliedSh = sh
                         view.setAspectRatio(sh, sw)
                     }
                 }
@@ -230,20 +234,19 @@ fun CameraPreview(
 }
 
 /* ================================================================
- * pinchToZoom — detector multi-touch nativo de Compose
+ *  pinchToZoom v3.6 — versión SAFE
  *
- * Implementación: usamos awaitPointerEvent en bucle, calculamos la
- * distancia media entre los dos primeros punteros activos en cada
- * frame, y derivamos el factor zoom = curDist / prevDist.
- *
- * Mapeo logarítmico: para evitar que un pinch rápido produzca un salto
- * brusco, el factor instantáneo se multiplica por el zoom actual con
- * un atenuador exponencial — esto reproduce la sensación física de
- * los smartphones flagship donde el zoom "acelera" al final del pinch.
- *
- * Velocidad: VelocityTracker permite hacer un "fling" final si el
- * usuario suelta los dedos mientras seguía haciendo pinch — el zoom
- * sigue por inercia ~120ms (gestionado en el VM con smoothZoomTo).
+ *  Cambios respecto v3.5:
+ *   • Usamos `awaitEachGesture { }` (single-shot por gesto) en
+ *     lugar de un bucle `while(true)` infinito. Esto garantiza
+ *     que cuando el usuario suelta los dedos la coroutine termina
+ *     y libera el slot del pointerInput; el bucle anterior podía
+ *     quedarse "vivo" en algunos dispositivos y consumir CPU.
+ *   • Throttle del callback onPinchStart: sólo se llama UNA vez
+ *     al inicio del gesto. Antes podía dispararse en cada
+ *     iteración del while exterior cuando el HAL emitía eventos
+ *     fantasma.
+ *   • Atenuación logarítmica preservada.
  * ================================================================ */
 private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.pinchToZoom(
     getCurrentZoom: () -> Float,
@@ -253,56 +256,51 @@ private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.pinchToZ
     onPinchStart: () -> Unit,
     onPinchEnd: () -> Unit
 ) {
-    // Sensibilidad: 1.0 = lineal puro. 1.3 = pinch grandes aceleran un poco.
     val sensitivity = 1.0f
-
-    awaitPointerEventScope {
-        while (true) {
-            val firstDown = awaitPointerEvent(PointerEventPass.Main)
-            // Esperar a tener AL MENOS 2 dedos activos
-            if (firstDown.changes.count { it.pressed } < 2) continue
-
-            var prevDistance: Float = computeAverageDistance(firstDown) ?: continue
-            if (prevDistance < 16f) continue
-            onPinchStart()
-            val tracker = VelocityTracker()
-
-            try {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Main)
-                    val activePointers = event.changes.filter { it.pressed }
-                    if (activePointers.size < 2) {
-                        // Se levantó un dedo → terminar gesto
-                        break
-                    }
-                    val curDistance = computeAverageDistance(event) ?: continue
-                    if (curDistance < 8f || prevDistance < 8f) continue
-
-                    var rawFactor = curDistance / prevDistance
-                    // Atenuador: factor cercano a 1 → comportamiento lineal;
-                    // factor extremo → potencia con sensitivity para suavizar.
-                    if (sensitivity != 1.0f) {
-                        rawFactor = Math.pow(rawFactor.toDouble(), sensitivity.toDouble()).toFloat()
-                    }
-                    val cur = getCurrentZoom()
-                    val target = (cur * rawFactor).coerceIn(getMinZoom(), getMaxZoom())
-                    onZoom(target)
-
-                    // Tracking velocidad (para futuro fling — opcional)
-                    val anyChange = activePointers.firstOrNull { it.positionChanged() }
-                    if (anyChange != null) {
-                        tracker.addPosition(anyChange.uptimeMillis, anyChange.position)
-                    }
-                    prevDistance = curDistance
-                }
-            } finally {
-                onPinchEnd()
+    androidx.compose.foundation.gestures.awaitEachGesture {
+        // Esperar primer down
+        val firstDown = awaitPointerEvent(PointerEventPass.Main)
+        if (firstDown.changes.count { it.pressed } < 2) {
+            // Esperar a tener 2 dedos
+            while (true) {
+                val ev = awaitPointerEvent(PointerEventPass.Main)
+                val active = ev.changes.count { it.pressed }
+                if (active < 1) return@awaitEachGesture  // se levantó todo
+                if (active >= 2) break
             }
+        }
+
+        // Distancia inicial
+        var prevDistance: Float = computeAverageDistance(awaitPointerEvent(PointerEventPass.Main))
+            ?: return@awaitEachGesture
+        if (prevDistance < 16f) return@awaitEachGesture
+
+        onPinchStart()
+        try {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                val activePointers = event.changes.count { it.pressed }
+                if (activePointers < 2) break  // se levantó un dedo → fin gesto
+
+                val curDistance = computeAverageDistance(event) ?: continue
+                if (curDistance < 8f || prevDistance < 8f) continue
+
+                var rawFactor = curDistance / prevDistance
+                if (sensitivity != 1.0f) {
+                    rawFactor = Math.pow(rawFactor.toDouble(), sensitivity.toDouble()).toFloat()
+                }
+                val cur = getCurrentZoom()
+                val target = (cur * rawFactor).coerceIn(getMinZoom(), getMaxZoom())
+                onZoom(target)
+                prevDistance = curDistance
+            }
+        } finally {
+            onPinchEnd()
         }
     }
 }
 
-/** Devuelve la distancia euclidiana entre los dos primeros punteros activos. */
+/** Distancia euclidiana entre los dos primeros punteros activos. */
 private fun computeAverageDistance(
     event: androidx.compose.ui.input.pointer.PointerEvent
 ): Float? {
