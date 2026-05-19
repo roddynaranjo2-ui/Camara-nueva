@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,15 +43,15 @@ import kotlin.math.exp
 import kotlin.math.ln
 
 /**
- * ZoomControl v3.5 Pro — slider vertical premium.
+ * ZoomControl v3.6 Pro — OPTIMIZADO
  *
- * Cambios v3.5:
- *  • cornerRadius 34dp (premium spec).
- *  • whiteGlow más vivido durante el drag.
- *  • Marcas mayores en 0.5/1/3/10/30 (no solo 1/10) → mejor referencia.
- *  • Reset 1× con haptic-snap mejorado y glow blanco cuando se está cerca.
- *  • Etiqueta "OPT/DIG" pequeña al lado del valor cuando aplica (vía param).
- *  • Mapeo logarítmico preservado.
+ * Cambios v3.6 (sobre v3.5):
+ *  ① Throttle haptic ticks por TIEMPO real (no sólo por bucket).
+ *    Mínimo MIN_HAPTIC_INTERVAL_MS=24ms entre vibraciones — evita
+ *    "buzzy feeling" con drags muy rápidos.
+ *  ② onSmoothZoomTo se llama también desde el snap "1×" → ya conectado
+ *    al VM v3.6.
+ *  ③ Mapeo logarítmico preservado.
  */
 @Composable
 fun ZoomControl(
@@ -90,6 +91,8 @@ fun ZoomControl(
 
     var dragAccumPx by remember { mutableStateOf(0f) }
     var lastHapticBucket by remember { mutableStateOf((zoomToFraction(currentZoom) * 16f).toInt()) }
+    // FIX v3.6: throttle haptic por TIEMPO real
+    var lastHapticMs by remember { mutableLongStateOf(0L) }
     var isDragging by remember { mutableStateOf(false) }
 
     val trackHeightDp = 230.dp
@@ -104,7 +107,6 @@ fun ZoomControl(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Etiqueta superior — zoom + chip OPT/DIG opcional
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = formatZoom(animatedZoom),
@@ -124,7 +126,6 @@ fun ZoomControl(
             }
         }
 
-        // Track vertical interactivo
         Box(
             modifier = Modifier
                 .width(38.dp)
@@ -148,16 +149,20 @@ fun ZoomControl(
                             dragAccumPx = 0f
                             val newZoom = fractionToZoom(newFrac)
                             val bucket = (newFrac * 16f).toInt()
-                            if (bucket != lastHapticBucket) {
+                            // FIX v3.6: dual gate — bucket distinto Y tiempo mínimo
+                            val nowMs = System.currentTimeMillis()
+                            if (bucket != lastHapticBucket &&
+                                nowMs - lastHapticMs >= MIN_HAPTIC_INTERVAL_MS
+                            ) {
                                 onHapticTick()
                                 lastHapticBucket = bucket
+                                lastHapticMs = nowMs
                             }
                             onZoomChange(newZoom)
                         }
                     }
                 }
         ) {
-            // Marcas (snap points)
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val snaps = listOf(0.5f, 1f, 2f, 3f, 5f, 10f, 30f)
                     .filter { it in minZoom..maxZoom }
@@ -208,7 +213,6 @@ fun ZoomControl(
 
         Spacer(Modifier.size(2.dp))
 
-        // Botón reset 1× — glow blanco si estamos cerca de 1.0
         val near1x = abs(currentZoom - 1f) < 0.05f
         Box(
             modifier = Modifier
@@ -235,10 +239,6 @@ fun ZoomControl(
     }
 }
 
-/**
- * ZoomControlPopup — overlay full screen para invocación desde un botón
- * dedicado o tap largo en una lente. Tocar fuera cierra.
- */
 @Composable
 fun ZoomControlPopup(
     visible: Boolean,
@@ -284,6 +284,8 @@ fun ZoomControlPopup(
         }
     }
 }
+
+private const val MIN_HAPTIC_INTERVAL_MS = 24L
 
 private fun formatZoom(z: Float): String = when {
     z < 1f -> "%.1f×".format(z)
