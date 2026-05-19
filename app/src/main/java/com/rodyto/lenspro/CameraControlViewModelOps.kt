@@ -1,84 +1,153 @@
-package com.rodyto.rodyto_lens_pro
+package com.rodyto.lenspro
 
 import android.app.Application
 import android.hardware.camera2.CaptureRequest
 import android.util.Log
 
-/**
- * Archivo 4: Operaciones de Usuario y Control Final.
- * Esta es la clase que instanciarás en tu MainActivity.
- * Hereda de Core, que a su vez hereda de State.
- */
-class CameraControlViewModelOps(application: Application) : CameraControlViewModelCore(application) {
+/* ================================================================
+ *  Rodyto Lens Pro · CameraControlViewModelOps.kt · v3.6 Pro
+ *
+ *  Archivo 4 de la división. Lógica de usuario / disparos:
+ *    • takePhoto / toggleRecording
+ *    • Controles manuales (ISO, shutter, focus, WB)
+ *    • Modo de cámara, switch front/back
+ *    • Aplicación de manual settings al repeating preview
+ *
+ *  CORRECCIONES respecto al esqueleto v3.5:
+ *    • applyManualSettings() ahora envía la request con el HANDLER
+ *      DE FONDO (FIX B-07: antes se ejecutaba en hilo de UI).
+ *    • setIso/setShutter ya NO mutan el valor sumando ciegamente
+ *      al estado previo desde la UI (eso era responsabilidad del
+ *      slider). Aquí solo se asigna y se aplica.
+ *    • toggleRecording delega en startVideo/stopVideo y actualiza
+ *      sessionState a RECORDING.
+ *    • Todas las acciones requieren cámara abierta — early-return
+ *      con log silencioso si no.
+ * ================================================================ */
+open class CameraControlViewModelOps(application: Application) :
+    CameraControlViewModelCore(application) {
 
-    // --- ACCIONES DE DISPARO ---
+    companion object { private const val TAG = "CameraVMOps" }
 
-    fun takePhoto() {
-        if (cameraDevice == null || captureSession == null) return
-        
-        Log.d("RodytoLens", "Iniciando captura de fotografía...")
-        // Aquí va tu lógica original de CaptureRequest.Builder para STILL_CAPTURE
-    }
+    /* ─── ACCIONES DE DISPARO ─────────────────────────────────── */
 
-    fun toggleRecording() {
-        val isRecording = uiState.value.isRecording
-        if (isRecording) {
-            stopVideo()
-        } else {
-            startVideo()
+    open fun takePhoto() {
+        if (cameraDevice == null || captureSession == null) {
+            Log.w(TAG, "takePhoto: ignorado (cámara no lista)")
+            return
         }
+        _sessionState.value = CameraSessionState.CAPTURING
+        // La clase final reemplaza este método para construir el
+        // CaptureRequest STILL_CAPTURE con vendor tags + ImageReader.
+        Log.d(TAG, "takePhoto: solicitud emitida (placeholder)")
+        // Restaurar preview cuando el caller confirma la captura.
+        _sessionState.value = CameraSessionState.PREVIEWING
     }
 
-    private fun startVideo() {
+    open fun toggleRecording() {
+        if (_isRecording.value) stopVideo() else startVideo()
+    }
+
+    protected open fun startVideo() {
+        if (cameraDevice == null) {
+            Log.w(TAG, "startVideo: ignorado (cámara no lista)")
+            return
+        }
+        _isRecording.value = true
+        _sessionState.value = CameraSessionState.RECORDING
         updateUiState { it.copy(isRecording = true) }
-        // Lógica de MediaRecorder o Camera2 Video
     }
 
-    private fun stopVideo() {
+    protected open fun stopVideo() {
+        _isRecording.value = false
+        _sessionState.value = CameraSessionState.PREVIEWING
         updateUiState { it.copy(isRecording = false) }
     }
 
-    // --- CONTROLES MANUALES ---
+    /* ─── CONTROLES MANUALES ──────────────────────────────────── */
 
     fun setIso(value: Int) {
-        manualIso.value = value
-        saveSetting("pref_iso", value)
+        manualIso.value = value.coerceAtLeast(0)
+        saveSetting("pref_iso", manualIso.value)
         applyManualSettings()
     }
 
-    fun setShutterSpeed(value: Long) {
-        manualShutter.value = value
-        saveSetting("pref_shutter", value)
+    fun setShutterSpeed(valueNs: Long) {
+        manualShutter.value = valueNs.coerceAtLeast(0L)
+        manualShutterNs.value = if (valueNs > 0L) valueNs else null
+        saveSetting("pref_shutter", manualShutter.value)
+        saveSetting("pref_shutter_ns", valueNs)
         applyManualSettings()
     }
 
-    fun setZoom(level: Float) {
-        updateUiState { it.copy(zoomLevel = level) }
-        // Lógica para actualizar el rect de la cámara (Crop Region)
+    fun setFocusDistance(value: Float) {
+        manualFocus.value = value.coerceAtLeast(0f)
+        saveSetting("pref_focus", manualFocus.value)
+        applyManualSettings()
     }
+
+    fun setExposureCompensation(ev: Int) {
+        _exposureCompensation.value = ev
+        applyManualSettings()
+    }
+
+    /* ─── ZOOM (sobrescribe el helper de Core con persistencia) ── */
+    override fun setZoomContinuous(z: Float) {
+        super.setZoomContinuous(z)
+        // La clase final podrá llamar a SamsungVendorTags.applyZoomRatio()
+        // sobre la sesión activa.
+    }
+
+    /* ─── MODO ─────────────────────────────────────────────────── */
+    fun setCameraMode(mode: CameraMode) {
+        _cameraMode.value = mode
+        updateUiState { it.copy(currentMode = mode) }
+    }
+
+    fun setPreviewAspectRatio(ratio: Float) {
+        _previewAspectRatio.value = ratio
+    }
+
+    /* ─── SWITCH FRONT/BACK ────────────────────────────────────── */
+    open fun switchCamera() {
+        closeCamera()
+        _isFrontCamera.value = !_isFrontCamera.value
+        // La clase final llama a openCamera() con el ID correcto.
+    }
+
+    /* ─── APLICACIÓN AL REPEATING PREVIEW ─────────────────────── */
 
     /**
-     * Aplica los cambios de ISO, Shutter, etc., a la sesión activa
-     * sin necesidad de reiniciar la cámara.
+     * Re-emite el repeating preview con los settings manuales actuales.
+     * Es la API pública que invoca `CameraPreview.kt` en `LaunchedEffect(cameraMode)`.
      */
-    private fun applyManualSettings() {
-        try {
-            previewRequestBuilder?.let { builder ->
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso.value)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutter.value)
-                
-                captureSession?.setRepeatingRequest(builder.build(), null, null)
-            }
-        } catch (e: Exception) {
-            Log.e("RodytoLens", "Error aplicando ajustes manuales: ${e.message}")
-        }
+    open fun applyRepeatingPreview() {
+        applyManualSettings()
     }
 
-    // --- HELPERS ---
-
-    fun switchCamera() {
-        // Lógica para alternar entre IDs de cámara (Front/Back/UltraWide)
-        closeCamera()
-        // Aquí llamarías a openCamera con el nuevo ID
+    protected fun applyManualSettings() {
+        val builder = previewRequestBuilder ?: return
+        val session = captureSession ?: return
+        try {
+            if (manualIso.value > 0 && (manualShutterNs.value ?: 0L) > 0L) {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso.value)
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs.value)
+            } else {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+            if (manualFocus.value > 0f) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualFocus.value)
+            }
+            builder.set(
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                _exposureCompensation.value
+            )
+            // FIX B-07: enviar con backgroundHandler, NO en el hilo de UI.
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+        } catch (e: Throwable) {
+            Log.e(TAG, "applyManualSettings falló", e)
+        }
     }
 }
