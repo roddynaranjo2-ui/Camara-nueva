@@ -5,24 +5,21 @@ import android.hardware.camera2.CaptureRequest
 import android.util.Log
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModelOps.kt · v3.6 Pro
+ *  Rodyto Lens Pro · CameraControlViewModelOps.kt · v3.7 Pro
  *
- *  Archivo 4 de la división. Lógica de usuario / disparos:
- *    • takePhoto / toggleRecording
- *    • Controles manuales (ISO, shutter, focus, WB)
- *    • Modo de cámara, switch front/back
- *    • Aplicación de manual settings al repeating preview
+ *  CORRECCIONES v3.7 (sobre v3.6):
+ *   • applyManualSettings() ahora posta TODA su lógica al
+ *     backgroundHandler (antes construía el builder y llamaba a
+ *     setRepeatingRequest desde el hilo de UI, lo que viola el
+ *     contrato de Camera2: todas las operaciones sobre un
+ *     CaptureSession deben hacerse desde el handler que se le
+ *     pasó en createCaptureSession, o al menos desde un hilo
+ *     compatible con su looper).
+ *     FIX: se capturan referencias locales de builder/session/handler
+ *     ANTES del post (null-check en UI thread) y el cuerpo pesado
+ *     corre en background → sin violación de thread-safety.
  *
- *  CORRECCIONES respecto al esqueleto v3.5:
- *    • applyManualSettings() ahora envía la request con el HANDLER
- *      DE FONDO (FIX B-07: antes se ejecutaba en hilo de UI).
- *    • setIso/setShutter ya NO mutan el valor sumando ciegamente
- *      al estado previo desde la UI (eso era responsabilidad del
- *      slider). Aquí solo se asigna y se aplica.
- *    • toggleRecording delega en startVideo/stopVideo y actualiza
- *      sessionState a RECORDING.
- *    • Todas las acciones requieren cámara abierta — early-return
- *      con log silencioso si no.
+ *  Resto de la implementación idéntica a v3.6.
  * ================================================================ */
 open class CameraControlViewModelOps(application: Application) :
     CameraControlViewModelCore(application) {
@@ -37,10 +34,7 @@ open class CameraControlViewModelOps(application: Application) :
             return
         }
         _sessionState.value = CameraSessionState.CAPTURING
-        // La clase final reemplaza este método para construir el
-        // CaptureRequest STILL_CAPTURE con vendor tags + ImageReader.
         Log.d(TAG, "takePhoto: solicitud emitida (placeholder)")
-        // Restaurar preview cuando el caller confirma la captura.
         _sessionState.value = CameraSessionState.PREVIEWING
     }
 
@@ -112,7 +106,6 @@ open class CameraControlViewModelOps(application: Application) :
     open fun switchCamera() {
         closeCamera()
         _isFrontCamera.value = !_isFrontCamera.value
-        // La clase final llama a openCamera() con el ID correcto.
     }
 
     /* ─── APLICACIÓN AL REPEATING PREVIEW ─────────────────────── */
@@ -125,29 +118,44 @@ open class CameraControlViewModelOps(application: Application) :
         applyManualSettings()
     }
 
+    /**
+     * FIX v3.7: toda la lógica se posta al backgroundHandler.
+     *
+     * Patrón: capturar referencias locales en el hilo llamante (UI)
+     * para el null-check, luego ejecutar en background.
+     * Esto garantiza:
+     *  1. No se accede a Camera2 desde el hilo UI.
+     *  2. Si cameraDevice o captureSession son null al momento de
+     *     la llamada, retornamos sin postear → sin NPE en background.
+     */
     protected fun applyManualSettings() {
+        // Captura atómica de referencias (campos @Volatile en State v3.7)
         val builder = previewRequestBuilder ?: return
-        val session = captureSession ?: return
-        try {
-            if (manualIso.value > 0 && (manualShutterNs.value ?: 0L) > 0L) {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso.value)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs.value)
-            } else {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        val session = captureSession    ?: return
+        val handler = backgroundHandler ?: return
+
+        // FIX B-07 v3.7: toda la ejecución en backgroundHandler
+        handler.post {
+            try {
+                if (manualIso.value > 0 && (manualShutterNs.value ?: 0L) > 0L) {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                    builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso.value)
+                    builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs.value)
+                } else {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+                if (manualFocus.value > 0f) {
+                    builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                    builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualFocus.value)
+                }
+                builder.set(
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    _exposureCompensation.value
+                )
+                session.setRepeatingRequest(builder.build(), null, handler)
+            } catch (e: Throwable) {
+                Log.e(TAG, "applyManualSettings falló", e)
             }
-            if (manualFocus.value > 0f) {
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualFocus.value)
-            }
-            builder.set(
-                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                _exposureCompensation.value
-            )
-            // FIX B-07: enviar con backgroundHandler, NO en el hilo de UI.
-            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
-        } catch (e: Throwable) {
-            Log.e(TAG, "applyManualSettings falló", e)
         }
     }
 }
