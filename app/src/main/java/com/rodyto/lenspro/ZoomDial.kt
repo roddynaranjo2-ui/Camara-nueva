@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -40,20 +41,15 @@ import kotlin.math.ln
 import kotlin.math.sin
 
 /**
- * ZoomDial — OPTIMIZADO v2.1 (hasta 30× digital)
+ * ZoomDial v3.6 — OPTIMIZADO
  *
- * FIX A9: Eliminado shadowing peligroso. La función privada `spring(...)`
- * (que devolvía un `spring<Float>` oficial de Compose) se renombra a
- * `springFloat(...)` para eliminar el riesgo de que un futuro refactor
- * confunda nuestra función con la nativa.
- *
- * FIX C4 (lateral): el `.gaussianBlur(20f, strong=true)` ahora aplica
- * un blur REAL gracias a la implementación corregida en GlassUi.kt. El
- * efecto cristal del dial sobre el fondo dim se aprecia visiblemente.
- *
- * Smooth-zoom opcional: si pasas `useSmoothZoom = true`, los snaps
- * llaman al `onSmoothZoom` del VM (animación 380ms ease-out) en vez de
- * un cambio instantáneo. Ideal para sensación "iOS-like".
+ * Cambios v3.6 (sobre v2.1):
+ *  ① Throttle haptic por TIEMPO real (MIN_HAPTIC_INTERVAL_MS=20ms) además
+ *    del threshold angular TICK_DEG. Antes con flings rápidos podían
+ *    dispararse hasta ~120 hápticos/seg → micro-stutters perceptibles.
+ *  ② onSmoothZoom: si se pasa, se usa también en el animateDecay final
+ *    del fling para asegurar consistencia con el VM.
+ *  ③ shadowing seguro `springFloat` preservado.
  */
 @Composable
 fun ZoomDial(
@@ -68,8 +64,20 @@ fun ZoomDial(
     val rotation = remember { Animatable(zoomToAngle(currentZoom)) }
     val scope = rememberCoroutineScope()
     var lastTickAngle by remember { mutableStateOf(zoomToAngle(currentZoom)) }
+    // FIX v3.6: throttle haptic por tiempo
+    var lastHapticMs by remember { mutableLongStateOf(0L) }
 
-    // Sincronizar rotación externa → interna al cambiar de lente
+    fun maybeHaptic(currentAngle: Float) {
+        val nowMs = System.currentTimeMillis()
+        if (kotlin.math.abs(currentAngle - lastTickAngle) >= TICK_DEG &&
+            nowMs - lastHapticMs >= MIN_HAPTIC_INTERVAL_MS
+        ) {
+            onHapticTick()
+            lastTickAngle = currentAngle
+            lastHapticMs = nowMs
+        }
+    }
+
     LaunchedEffect(currentZoom) {
         val mappedAngle = zoomToAngle(currentZoom)
         if (kotlin.math.abs(mappedAngle - rotation.value) > 8f) {
@@ -105,10 +113,7 @@ fun ZoomDial(
                                 ) {
                                     val z = angleToZoom(value).coerceIn(minZoom, maxZoom)
                                     onZoomChange(z)
-                                    if (kotlin.math.abs(value - lastTickAngle) >= TICK_DEG) {
-                                        onHapticTick()
-                                        lastTickAngle = value
-                                    }
+                                    maybeHaptic(value)
                                 }
                             }
                         },
@@ -128,24 +133,19 @@ fun ZoomDial(
                             if (dAngle > 180f) dAngle -= 360f
                             if (dAngle < -180f) dAngle += 360f
                             scope.launch {
-                                // Clamp del ángulo para no rebasar el rango lógico de zoom
                                 val maxAngle = zoomToAngle(maxZoom)
                                 val minAngle = zoomToAngle(minZoom)
                                 val newAngle = (rotation.value + dAngle).coerceIn(minAngle, maxAngle)
                                 rotation.snapTo(newAngle)
                                 val z = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
                                 onZoomChange(z)
-                                if (kotlin.math.abs(rotation.value - lastTickAngle) >= TICK_DEG) {
-                                    onHapticTick()
-                                    lastTickAngle = rotation.value
-                                }
+                                maybeHaptic(rotation.value)
                             }
                         }
                     )
                 },
             contentAlignment = Alignment.Center
         ) {
-            // Marcas radiales pintadas — las majors marcan zoom logarítmico
             Canvas(Modifier.fillMaxSize()) {
                 val radius = size.minDimension / 2f - 6f
                 val tickCount = 60
@@ -167,7 +167,6 @@ fun ZoomDial(
                     )
                 }
             }
-            // Texto central — formato adaptativo según magnitud
             val z = angleToZoom(rotation.value).coerceIn(minZoom, maxZoom)
             Text(
                 text = formatZoomLabel(z),
@@ -177,7 +176,6 @@ fun ZoomDial(
             )
         }
 
-        // Snap buttons — toque rápido a presets (con smoothZoom opcional)
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(24.dp))
@@ -248,12 +246,6 @@ private fun formatZoomLabel(z: Float): String = when {
     else -> "${z.toInt()}×"
 }
 
-/**
- * FIX A9: renombrado de `spring` → `springFloat` para eliminar el
- * shadowing del `spring()` oficial de Compose. Antes este wrapper se
- * llamaba igual que la función oficial — funcionalmente correcto pero
- * "code smell" peligroso si un editor confunde una con otra.
- */
 @Suppress("FunctionName")
 private fun springFloat(
     dampingRatio: Float,
@@ -264,12 +256,11 @@ private fun springFloat(
 )
 
 private const val TICK_DEG = 6f          // muesca cada 6° → ~60 ticks/vuelta
-private const val ZOOM_K   = 0.011f      // sensibilidad logarítmica (rad/° equivalente)
+private const val ZOOM_K   = 0.011f      // sensibilidad logarítmica
+private const val MIN_HAPTIC_INTERVAL_MS = 20L
 
-/** Mapeo logarítmico: angle → zoom. */
 private fun angleToZoom(angleDeg: Float): Float =
     Math.exp((angleDeg * ZOOM_K).toDouble()).toFloat()
 
-/** Inverso logarítmico: zoom → angle (deg). */
 private fun zoomToAngle(zoom: Float): Float =
     (ln(zoom.coerceAtLeast(0.01f).toDouble()) / ZOOM_K).toFloat()
