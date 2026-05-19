@@ -8,38 +8,34 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  Rodyto Lens Pro · MainActivityOverlays.kt · v3.6 Pro
+ *  Rodyto Lens Pro · MainActivityOverlays.kt · v3.8 Pro
  *
- *  Archivo 2 de la división de MainActivity. Capa superior:
- *    • ActionChipBar (flash, HDR, RAW, timer, sonido, aspect, settings).
- *    • Histograma en tiempo real (toggle desde SettingsActivity).
- *    • Horizon Level (toggle desde SettingsActivity).
- *    • Shutter Blink overlay tras captura.
+ *  NOVEDADES v3.8 (sobre v3.6):
+ *   • Recibe `previewBounds: Rect?` desde RodytoLensApp y se lo pasa
+ *     a HorizonLevelOverlay para que el nivel artificial REALMENTE
+ *     se dibuje sobre el área del preview (fix bug B-04).
+ *   • Observa `viewModel.shutterBlinkKey` y lo pasa como triggerKey
+ *     a ShutterBlinkOverlay para que la animación de oscurecimiento
+ *     se dispare en cada captura (fix bug B-05).
  *
- *  Esta capa NO contiene controles inferiores — eso vive en
- *  MainActivityHelpers.kt. Mantenemos la separación estricta
- *  para evitar volver a inflar el archivo monolítico.
- *
- *  CORRECCIONES sobre el esqueleto v3.5:
- *    • Elimina las funciones inventadas (ProSettingsPanel,
- *      ManualControlItem, SettingsPanel) que NO casaban con el
- *      diseño Glass premium real del proyecto.
- *    • Usa los Composables verdaderos del módulo:
- *      ActionChipBar, ModeSelectorIos, HistogramView,
- *      HorizonLevelOverlay, ShutterBlinkOverlay.
+ *  Inalterado v3.6:
+ *   • ActionChipBar wiring (flash, HDR, RAW, timer, sonido, aspect).
+ *   • Histograma top-right si está activado.
  * ================================================================ */
 
 @Composable
 fun SettingsOverlayLayer(
     viewModel: CameraControlViewModel,
     palette: GlassPalette,
-    repo: SettingsRepository
+    repo: SettingsRepository,
+    previewBounds: Rect? = null   // v3.8 — fix B-04
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -54,8 +50,10 @@ fun SettingsOverlayLayer(
     val histOn      by repo.histogramEnabled.collectAsStateWithLifecycle(initialValue = false)
     val horizonOn   by repo.horizonEnabled.collectAsStateWithLifecycle(initialValue = false)
 
-    // ── Estados del HAL ─────────────────────────────────────────
-    val histBins    by viewModel.histogramBins.collectAsStateWithLifecycle()
+    // ── Estados del HAL / VM ────────────────────────────────────
+    val histBins        by viewModel.histogramBins.collectAsStateWithLifecycle()
+    // v3.8 — fix B-05: observar el contador de blink expuesto por el VM.
+    val shutterBlinkKey by viewModel.shutterBlinkKey.collectAsStateWithLifecycle()
 
     val flashMode = remember(flashStr) { repo.flashFromString(flashStr) }
 
@@ -116,17 +114,20 @@ fun SettingsOverlayLayer(
         }
 
         // ── Horizon Level (nivel artificial) ────────────────────
+        // FIX v3.8 (bug B-04): previewBounds ya no es null literal sino que
+        // viene del estado compartido en RodytoLensApp. Cuando horizonOn=true
+        // Y previewBounds!=null, el nivel SE DIBUJA realmente.
         HorizonLevelOverlay(
             enabled = horizonOn,
-            previewBounds = null,  // el padre puede setearlo si lo guarda
+            previewBounds = previewBounds,
             palette = palette,
             modifier = Modifier.fillMaxSize()
         )
 
-        // ── Shutter blink (reacciona a contador interno) ────────
-        // Pasamos `_isRecording.hashCode()` simple como triggerKey, o un
-        // contador que el VM expone tras cada `takePhoto`. Aquí lo
-        // usamos como placeholder visual coherente.
-        ShutterBlinkOverlay(triggerKey = 0)
+        // ── Shutter blink (reacciona al contador del VM) ────────
+        // FIX v3.8 (bug B-05): triggerKey ahora es el contador dinámico
+        // expuesto por CameraControlViewModelState._shutterBlinkKey. Cada
+        // takePhoto() lo incrementa y la animación se reproduce.
+        ShutterBlinkOverlay(triggerKey = shutterBlinkKey)
     }
 }
