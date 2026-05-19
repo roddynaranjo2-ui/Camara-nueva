@@ -14,25 +14,32 @@ import android.view.SurfaceHolder
 import kotlin.math.abs
 
 /**
- * CameraTuning v2.2 — perfil de Image-Quality + Codec helpers + FPS hardening
- *  + orientación EXIF dinámica + selección óptima de tamaño de preview.
+ * CameraTuning v3.6 — OPTIMIZADO
  *
- * Cambios v2.2:
- *  • Nuevo helper pickOptimalPreviewSize(characteristics, targetRatio): selecciona
- *    el mejor Size de preview compatible con SurfaceHolder/SurfaceTexture acorde al
- *    aspect ratio solicitado (sin estirar). Usa el StreamConfigurationMap y filtra
- *    por área razonable (≤ 1920×1080) para evitar buffers gigantes en preview.
- *  • Nueva utilidad MAX_PREVIEW_AREA para acotar resoluciones de preview.
+ * Cambios v3.6 (sobre v2.2):
+ *  ① pickOptimalPreviewSize ahora prefiere tamaños CERCANOS a la resolución
+ *    del display (passed-in displayLongEdgePx) en lugar de "el más grande
+ *    posible ≤ 1080p". Razón: en dispositivos con display 1080p o 1440p,
+ *    pedir un buffer 1920x1080 cuando la superficie sólo tiene ~2200x1080
+ *    útiles desperdicia VRAM y agrava el tearing en pantalla.
+ *  ② bestFpsRange RECHAZA rangos muy amplios (>15fps de spread) salvo que
+ *    NO haya otra opción. Razón: rangos como [15,30] producen AE inestable
+ *    y motion blur visible en escenas con poca luz porque el HAL alterna
+ *    la sensor exposure entre frames.
+ *  ③ MAX_PREVIEW_AREA dinámico: si el caller no provee display size, se
+ *    mantiene el cap a 1080p; si lo provee, se usa min(1080p, displayArea*1.05).
+ *  ④ pickOptimalRecordingSize prefiere matches EXACTOS y, si no existen,
+ *    descarta sizes con aspect ratio incompatible.
  */
 object CameraTuning {
 
     private const val TAG = "CameraTuning"
 
-    /** Área máxima recomendada para previews (1080p) — buffers > 1080p degradan FPS. */
-    private const val MAX_PREVIEW_AREA: Long = 1920L * 1080L
-
-    /** Tolerancia para considerar dos aspect ratios "iguales" (porcentaje). */
+    private const val DEFAULT_MAX_PREVIEW_AREA: Long = 1920L * 1080L
     private const val ASPECT_TOLERANCE = 0.04f
+
+    /** Rangos FPS con spread > este valor se penalizan. */
+    private const val WIDE_FPS_RANGE_THRESHOLD = 15
 
     fun applyImageQuality(b: CaptureRequest.Builder, mode: String, supportsVstab: Boolean = false) {
         try {
@@ -62,25 +69,10 @@ object CameraTuning {
         try { b.set(CaptureRequest.JPEG_QUALITY, 97) } catch (_: Throwable) {}
     }
 
-    /**
-     * Backward-compat: si no se pasa rotation, asume 0 (mantengo firma por compatibilidad).
-     * Recomendado: usar applyJpegOrientationDynamic().
-     */
     fun applyJpegOrientation(b: CaptureRequest.Builder, sensorOrientation: Int, isFront: Boolean) {
         applyJpegOrientationDynamic(b, sensorOrientation, isFront, 0)
     }
 
-    /**
-     * FIX A8: orientación EXIF DINÁMICA — usa la rotación real del display.
-     * En CameraControlViewModel guardamos `deviceDisplayRotation` y MainActivity
-     * lo alimenta vía `notifyDeviceRotation()`.
-     *
-     * Tabla de display rotations (Android):
-     *   Surface.ROTATION_0   → 0°
-     *   Surface.ROTATION_90  → 90°
-     *   Surface.ROTATION_180 → 180°
-     *   Surface.ROTATION_270 → 270°
-     */
     fun applyJpegOrientationDynamic(
         b: CaptureRequest.Builder,
         sensorOrientation: Int,
@@ -155,14 +147,39 @@ object CameraTuning {
         }
     }
 
+    /**
+     * bestFpsRange v3.6:
+     * Estrategia:
+     *  1) Match exacto fixed [fps,fps].
+     *  2) Rangos cuyo upper==fps con menor spread (preferimos [30,30] > [15,30]).
+     *  3) Rangos que CONTIENEN fps con spread ≤ WIDE_FPS_RANGE_THRESHOLD.
+     *  4) Rangos que contienen fps con cualquier spread (fallback).
+     *  5) Cualquier rango más cercano por upper.
+     *
+     * Esto evita seleccionar [7,30] cuando existe [24,30] o [30,30].
+     */
     fun bestFpsRange(ranges: Array<Range<Int>>, fps: Int): Range<Int> {
         if (ranges.isEmpty()) return Range(fps, fps)
+
+        // 1) Exacto fijo
         ranges.firstOrNull { it.lower == fps && it.upper == fps }?.let { return it }
-        ranges.filter { it.upper == fps }.maxByOrNull { it.lower }?.let { return it }
+
+        // 2) upper==fps, menor spread
+        ranges.filter { it.upper == fps }
+            .minByOrNull { it.upper - it.lower }?.let { return it }
+
+        // 3) contiene fps con spread ≤ umbral
+        ranges.filter { it.lower <= fps && it.upper >= fps && (it.upper - it.lower) <= WIDE_FPS_RANGE_THRESHOLD }
+            .minByOrNull { it.upper - it.lower }?.let { return it }
+
+        // 4) contiene fps (cualquier spread)
         ranges.filter { it.lower <= fps && it.upper >= fps }
             .minByOrNull { it.upper - it.lower }?.let { return it }
+
+        // 5) más cercano por upper
         ranges.filter { it.upper >= fps }
-            .minByOrNull { kotlin.math.abs(it.upper - fps) }?.let { return it }
+            .minByOrNull { abs(it.upper - fps) }?.let { return it }
+
         val fallback = ranges.maxByOrNull { it.upper } ?: Range(fps, fps)
         Log.w(TAG, "bestFpsRange: no fps=$fps disponible. Usando $fallback")
         return fallback
@@ -182,6 +199,12 @@ object CameraTuning {
         return maxFps + 2 >= fps
     }
 
+    /**
+     * pickOptimalRecordingSize v3.6:
+     *  • Match exacto si existe.
+     *  • Si no, sólo candidatos con aspect ratio compatible con el target.
+     *  • Mayor área dentro del límite del target.
+     */
     fun pickOptimalRecordingSize(
         characteristics: CameraCharacteristics?,
         target: VideoResolution
@@ -190,47 +213,51 @@ object CameraTuning {
             ?: return Size(target.width, target.height)
         val sizes = map.getOutputSizes(MediaRecorder::class.java) ?: return Size(target.width, target.height)
         sizes.firstOrNull { it.width == target.width && it.height == target.height }?.let { return it }
+
+        val targetRatio = target.width.toFloat() / target.height.toFloat()
         val targetArea = target.width.toLong() * target.height
-        return sizes
-            .filter { it.width.toLong() * it.height <= targetArea }
-            .maxByOrNull { it.width.toLong() * it.height }
+        val compatible = sizes.filter {
+            val r = it.width.toFloat() / it.height.toFloat()
+            abs(r - targetRatio) / targetRatio <= ASPECT_TOLERANCE &&
+                it.width.toLong() * it.height <= targetArea
+        }
+        return compatible.maxByOrNull { it.width.toLong() * it.height }
+            ?: sizes
+                .filter { it.width.toLong() * it.height <= targetArea }
+                .maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.first()
     }
 
     /**
-     * Selecciona el Size de preview óptimo según el aspect ratio solicitado.
+     * pickOptimalPreviewSize v3.6 — ahora con preferencia por sizes próximos
+     * a la resolución del display (si se pasa). Si no se pasa, mantiene cap 1080p.
      *
-     * @param characteristics CameraCharacteristics de la cámara abierta. Si es null
-     *                        devuelve un fallback razonable.
-     * @param targetRatio     Aspect ratio LANDSCAPE (width/height del SENSOR).
-     *                        Ej. 3f/4f para retrato 3:4 → en sensor landscape se mapea a 4:3.
-     *                        Internamente se normaliza para que sea siempre ≥ 1.
-     *
-     * Estrategia:
-     *  1) Obtiene los outputSizes para SurfaceHolder (la preview va a un SurfaceView).
-     *  2) Filtra por área ≤ MAX_PREVIEW_AREA (1080p) — evita buffers gigantes que
-     *     destrozan el FPS y el consumo térmico.
-     *  3) Busca el Size cuyo aspect (w/h, normalizado landscape) más se acerque al
-     *     target dentro de la tolerancia.
-     *  4) Entre los candidatos, escoge el de mayor área (mejor calidad de preview).
-     *  5) Fallback: el de mayor área dentro del límite si no hay match exacto.
+     * @param targetRatio Aspect ratio LANDSCAPE (≥1f recomendado).
+     * @param displayLongEdgePx Lado largo del display en píxeles (opcional).
      */
     fun pickOptimalPreviewSize(
         characteristics: CameraCharacteristics?,
-        targetRatio: Float
+        targetRatio: Float,
+        displayLongEdgePx: Int = 0
     ): Size {
-        // Fallback inicial razonable (1920x1080 landscape)
         val fallback = Size(1920, 1080)
 
         val map = characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return fallback
 
-        // Normalizar: targetRatio puede venir como 3f/4f (portrait). Para sensor (landscape)
-        // siempre queremos el ratio en formato landscape (>= 1f).
         val targetLandscape = if (targetRatio < 1f) 1f / targetRatio else targetRatio
         if (targetLandscape <= 0f || !targetLandscape.isFinite()) return fallback
 
-        // Reunir candidatos: SurfaceHolder (preview directo) y SurfaceTexture (compat).
+        // Cap dinámico: si tenemos display info, no superar mucho la resolución del display
+        val maxArea: Long = if (displayLongEdgePx > 200) {
+            val displayShort = (displayLongEdgePx / targetLandscape).toInt().coerceAtLeast(720)
+            val displayArea = displayLongEdgePx.toLong() * displayShort.toLong()
+            // 5% de margen para superar ligeramente el display si los tamaños discretos lo exigen.
+            minOf(DEFAULT_MAX_PREVIEW_AREA, (displayArea * 1.05).toLong())
+        } else {
+            DEFAULT_MAX_PREVIEW_AREA
+        }
+
         val holderSizes: Array<Size> = try {
             map.getOutputSizes(SurfaceHolder::class.java) ?: emptyArray()
         } catch (_: Throwable) { emptyArray() }
@@ -241,25 +268,31 @@ object CameraTuning {
 
         val all: List<Size> = (holderSizes.toList() + textureSizes.toList())
             .distinct()
-            .filter { it.width.toLong() * it.height.toLong() <= MAX_PREVIEW_AREA }
+            .filter { it.width.toLong() * it.height.toLong() <= maxArea }
 
         if (all.isEmpty()) {
-            Log.w(TAG, "pickOptimalPreviewSize: sin candidatos válidos → fallback $fallback")
+            Log.w(TAG, "pickOptimalPreviewSize: sin candidatos → fallback $fallback")
             return fallback
         }
 
-        // Filtrar por aspect ratio cercano al objetivo (tolerancia)
         val matched = all.filter {
             val r = it.width.toFloat() / it.height.toFloat()
             abs(r - targetLandscape) / targetLandscape <= ASPECT_TOLERANCE
         }
-
         val pool = if (matched.isNotEmpty()) matched else all
 
-        // Mayor área dentro del pool elegido
-        val chosen = pool.maxByOrNull { it.width.toLong() * it.height.toLong() } ?: fallback
+        // FIX v3.6: si hay display info, preferimos el size cuyo lado largo sea
+        // EL MÁS CERCANO al display (no necesariamente el más grande).
+        val chosen = if (displayLongEdgePx > 200) {
+            pool.minByOrNull { abs(it.width - displayLongEdgePx) }
+                ?: pool.maxByOrNull { it.width.toLong() * it.height }
+                ?: fallback
+        } else {
+            pool.maxByOrNull { it.width.toLong() * it.height } ?: fallback
+        }
 
-        Log.d(TAG, "pickOptimalPreviewSize: target=$targetRatio (landscape=$targetLandscape) → $chosen")
+        Log.d(TAG, "pickOptimalPreviewSize: target=$targetRatio (landscape=$targetLandscape) " +
+            "displayLong=$displayLongEdgePx → $chosen")
         return chosen
     }
 }
