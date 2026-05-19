@@ -13,18 +13,27 @@ import kotlinx.coroutines.flow.map
 private val Context.lensProDataStore by preferencesDataStore(name = "lenspro_settings")
 
 /**
- * SettingsRepository v3.5 Pro — persistencia completa vía DataStore.
+ * SettingsRepository v3.6 Pro — persistencia completa vía DataStore.
  *
- * NOVEDADES v3.5 (sobre v3):
- *  • Nuevas keys para arquitectura híbrida Camera2 + CameraX:
- *      - KEY_USE_CAMERAX_ANALYSIS  (Image Analysis vía CameraX para histogram/horizon)
- *      - KEY_FORCE_TELE_PHYSICAL_ID (forzar physical camera id 52 en S21 FE)
- *      - KEY_TELE_PHYSICAL_ID      (override del id físico — default "52")
- *      - KEY_PRO_VENDOR_TAGS       (habilitar tags propietarios Samsung en
- *                                   CaptureRequests inyectadas por CameraX
- *                                   vía Camera2Interop)
- *  • Persistencia BIDIRECCIONAL conservada al 100% para todos los toggles.
- *  • API legacy preservada → ningún archivo cliente necesita cambios.
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  FIX v3.6 (críticos sobre v3.5 — corrige cámara negra + lag):        ║
+ * ║                                                                      ║
+ * ║   • useCameraXAnalysis  DEFAULT = false                              ║
+ * ║     (antes true → ABRÍA la misma cámara que Camera2 en paralelo,     ║
+ * ║      provocando ERROR_MAX_CAMERAS_IN_USE en la mayoría de HALs y     ║
+ * ║      dejando el preview en NEGRO. Ahora opt-in desde Settings)       ║
+ * ║                                                                      ║
+ * ║   • forceTelePhysicalId DEFAULT = false                              ║
+ * ║     (antes true → intentaba abrir un id físico "52" exclusivo de     ║
+ * ║      Samsung S21 FE; en otros dispositivos fallaba y el switch de    ║
+ * ║      lente "3x" quedaba lento o no abría la cámara. Ahora opt-in)    ║
+ * ║                                                                      ║
+ * ║   • Resto de claves intactas — persistencia bidireccional 100%.      ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
+ *
+ * NOVEDADES heredadas v3.5:
+ *  • KEY_USE_CAMERAX_ANALYSIS, KEY_FORCE_TELE_PHYSICAL_ID,
+ *    KEY_TELE_PHYSICAL_ID, KEY_PRO_VENDOR_TAGS, ISO/WB/Shutter manuales.
  */
 class SettingsRepository(private val context: Context) {
 
@@ -65,7 +74,7 @@ class SettingsRepository(private val context: Context) {
         val KEY_ACCENT_INDEX   = intPreferencesKey("accent_index")
         val KEY_THEME_MODE     = stringPreferencesKey("theme_mode") // system/dark/light
 
-        // ── NUEVO v3.5: arquitectura híbrida ──────────────────────────────
+        // ── v3.5+ arquitectura híbrida ────────────────────────────────────
         val KEY_USE_CAMERAX_ANALYSIS    = booleanPreferencesKey("use_camerax_analysis")
         val KEY_FORCE_TELE_PHYSICAL_ID  = booleanPreferencesKey("force_tele_physical_id")
         val KEY_TELE_PHYSICAL_ID        = stringPreferencesKey("tele_physical_id")
@@ -105,9 +114,12 @@ class SettingsRepository(private val context: Context) {
     val accentIndex:      Flow<Int>     = context.lensProDataStore.data.map { it[KEY_ACCENT_INDEX] ?: 0 }
     val themeMode:        Flow<String>  = context.lensProDataStore.data.map { it[KEY_THEME_MODE]   ?: "system" }
 
-    // ─── NUEVO v3.5 ───────────────────────────────────────────────────────
-    val useCameraXAnalysis:   Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_USE_CAMERAX_ANALYSIS] ?: true }
-    val forceTelePhysicalId:  Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_FORCE_TELE_PHYSICAL_ID] ?: true }
+    // ─── v3.6 — defaults SEGUROS para evitar conflictos HAL ──────────────
+    // CRÍTICO: useCameraXAnalysis y forceTelePhysicalId ahora DESACTIVADOS
+    // por defecto. El usuario los puede activar manualmente desde Ajustes
+    // avanzados si conoce su HAL (S21 FE etc.).
+    val useCameraXAnalysis:   Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_USE_CAMERAX_ANALYSIS] ?: false }
+    val forceTelePhysicalId:  Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_FORCE_TELE_PHYSICAL_ID] ?: false }
     val telePhysicalId:       Flow<String>  = context.lensProDataStore.data.map { it[KEY_TELE_PHYSICAL_ID]   ?: "52" }
     val proVendorTags:        Flow<Boolean> = context.lensProDataStore.data.map { it[KEY_PRO_VENDOR_TAGS]    ?: true }
     val isoManual:            Flow<Int>     = context.lensProDataStore.data.map { it[KEY_ISO_MANUAL]         ?: 0 }
@@ -157,7 +169,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setLastLens(lens: String)       = setString(KEY_LAST_LENS, lens)
     suspend fun setManualAspect(label: String?) = setStringOrRemove(KEY_MANUAL_ASPECT, label)
 
-    // ── NUEVO v3.5 setters ───────────────────────────────────────────────
+    // ── v3.5 setters ─────────────────────────────────────────────────────
     suspend fun setUseCameraXAnalysis(v: Boolean)   = set(KEY_USE_CAMERAX_ANALYSIS, v)
     suspend fun setForceTelePhysicalId(v: Boolean)  = set(KEY_FORCE_TELE_PHYSICAL_ID, v)
     suspend fun setTelePhysicalId(id: String)       = setString(KEY_TELE_PHYSICAL_ID, id)
