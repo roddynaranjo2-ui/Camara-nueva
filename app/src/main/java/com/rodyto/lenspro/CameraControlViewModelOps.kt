@@ -5,21 +5,22 @@ import android.hardware.camera2.CaptureRequest
 import android.util.Log
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModelOps.kt · v3.7 Pro
+ *  Rodyto Lens Pro · CameraControlViewModelOps.kt · v3.8 Pro
  *
- *  CORRECCIONES v3.7 (sobre v3.6):
- *   • applyManualSettings() ahora posta TODA su lógica al
- *     backgroundHandler (antes construía el builder y llamaba a
- *     setRepeatingRequest desde el hilo de UI, lo que viola el
- *     contrato de Camera2: todas las operaciones sobre un
- *     CaptureSession deben hacerse desde el handler que se le
- *     pasó en createCaptureSession, o al menos desde un hilo
- *     compatible con su looper).
- *     FIX: se capturan referencias locales de builder/session/handler
- *     ANTES del post (null-check en UI thread) y el cuerpo pesado
- *     corre en background → sin violación de thread-safety.
+ *  NOVEDADES v3.8 (sobre v3.7):
+ *   • setLens(LensInfo) — API pública para cambiar de lente desde la
+ *     UI. Persiste el StateFlow `_currentLens` y dispara un hook
+ *     `onLensSwitchRequested(lens)` que la clase final override-ea
+ *     para cerrar la sesión actual y reabrir con el nuevo cameraId.
+ *     Esto cierra el bug B-03 (lens taps no hacían nada).
  *
- *  Resto de la implementación idéntica a v3.6.
+ *   • takePhoto() ahora notifica a la UI vía bumpShutterBlinkKey()
+ *     para que ShutterBlinkOverlay reproduzca su animación (fix B-05).
+ *     La lógica HAL real sigue siendo un hook que la clase final
+ *     puede sobrescribir; el feedback visual ya queda conectado.
+ *
+ *  CORRECCIONES v3.7 preservadas:
+ *   • applyManualSettings() ejecuta todo en backgroundHandler.
  * ================================================================ */
 open class CameraControlViewModelOps(application: Application) :
     CameraControlViewModelCore(application) {
@@ -35,6 +36,13 @@ open class CameraControlViewModelOps(application: Application) :
         }
         _sessionState.value = CameraSessionState.CAPTURING
         Log.d(TAG, "takePhoto: solicitud emitida (placeholder)")
+
+        // FIX v3.8 (bug B-05): notificar a la UI para que ShutterBlinkOverlay
+        // reaccione INMEDIATAMENTE al disparo, independientemente de cuándo
+        // termine la captura HAL real. Esto da el feedback visual instantáneo
+        // que el usuario espera y desacopla el FX de la pipeline de captura.
+        bumpShutterBlinkKey()
+
         _sessionState.value = CameraSessionState.PREVIEWING
     }
 
@@ -100,6 +108,36 @@ open class CameraControlViewModelOps(application: Application) :
 
     fun setPreviewAspectRatio(ratio: Float) {
         _previewAspectRatio.value = ratio
+    }
+
+    /* ─── LENS SWITCH (v3.8 — fix B-03) ───────────────────────── */
+
+    /**
+     * API pública que la UI invoca cuando el usuario pulsa una lente
+     * en LensSelectorRow. La clase final (CameraControlViewModel)
+     * override-ea `onLensSwitchRequested(lens)` para cerrar la sesión
+     * actual y reabrir con el cameraId correspondiente.
+     *
+     * Aquí actualizamos el StateFlow inmediatamente para que la UI
+     * refleje la selección, y disparamos el hook para que la subclase
+     * haga el trabajo HAL pesado.
+     */
+    open fun setLens(lens: LensInfo?) {
+        if (lens == null) return
+        // Reflejar la lente en el StateFlow ANTES del switch HAL para que
+        // los Composables (LensBubblePro selected=...) respondan al instante.
+        setCurrentLensInternal(lens)
+        // Hook para la subclase final. Se ejecuta async vía Core.
+        onLensSwitchRequested(lens)
+    }
+
+    /**
+     * Hook template-method. La clase final lo sobreescribe para invocar
+     * safeCloseCamera() + openCamera() con el nuevo cameraId. Aquí en
+     * Ops queda como no-op para que la pila compile aislada.
+     */
+    protected open fun onLensSwitchRequested(lens: LensInfo) {
+        Log.d(TAG, "onLensSwitchRequested (base no-op): lens=${lens.label}")
     }
 
     /* ─── SWITCH FRONT/BACK ────────────────────────────────────── */
