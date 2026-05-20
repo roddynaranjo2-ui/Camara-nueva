@@ -2,17 +2,15 @@ package com.rodyto.lenspro
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border          // ← FIX v4.0.1 (E3): faltaba este import
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -36,40 +34,55 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  LiquidGlassUiLayer · iOS 26 minimal premium · v4.0.1
+ *  LiquidGlassUiLayer · iOS 26 minimal premium · v5.0
  *
- *  FIX v4.0.1 (sobre v4.0):
- *   • Import añadido: androidx.compose.foundation.border.
- *   • `androidx_border_white_ring` reescrito como extensión correcta
- *     de Modifier (this.border(...)), eliminando el "Unresolved
- *     reference: border" en compileDebugKotlin.
- *   • LiquidShutter ya no envuelve la extensión con .then(...) — la
- *     extensión por sí misma devuelve Modifier.
+ *  REVISIÓN v5.0 (sobre v4.0.1):
+ *   • Texto/iconos YA NO se renderizan dentro de una superficie con
+ *     blur — quedan 100% nítidos. (El fix vive en LiquidGlass.kt v5.)
+ *   • Springs reemplazadas por presets canónicos en Spring26.kt para
+ *     alinear el "feel" con iOS 26.
+ *   • Mode-shifter carousel con MÁSCARA ALFA REAL (BlendMode.DstIn)
+ *     en los laterales — los modos inactivos se desvanecen a 0
+ *     gradualmente sobre 60pt (sección C del prompt).
+ *   • Etiquetas numéricas (FPS, resolución) ahora con FontFamily
+ *     Monospace + drop-shadow programático (sección 4 del prompt).
+ *   • Shutter 76pt morphing con física Spring26.shutterMorph (rebote
+ *     elástico, escala temporal ~250 ms — sección 3.1 del prompt).
+ *   • Hit targets de iconos 44pt × 44pt (sección 2.A del prompt).
+ *   • Drag indicator del Pro Peek 38 × 4dp, color blanco α 25%.
+ *   • Lens dial: hit-area constante 32pt, círculo activo blanco α 20%.
  *
- *  Componentes (de arriba a abajo):
+ *  COMPONENTES (de arriba a abajo):
  *   ┌─ Quick Settings Island (top)
- *   │   • [FOTO/VIDEO] (modo activo en gris claro)
+ *   │   • [FOTO/VIDEO] chip indicator
  *   │   • [4K · FHD · HD] (solo VIDEO)
- *   │   • [30 · 60] (solo VIDEO)
- *   │   • ⚙ Ajustes → abre Pro Peek Panel
+ *   │   • [30 · 60] FPS (solo VIDEO)
+ *   │   • ⚙ Ajustes → Pro Peek Panel
  *   │
  *   ├─ Lens Dial (sobre el shutter)
  *   │   • .5 · 1× · 3×
  *   │
- *   ├─ Mode shifter Carousel (FOTO · VIDEO con máscara alpha)
+ *   ├─ Mode shifter Carousel (FOTO · VIDEO con máscara alfa lateral)
  *   │
  *   └─ Bottom Action Block
  *       • [Gallery 50pt] · [Shutter 76pt morphing] · [Flip 50pt]
@@ -86,18 +99,14 @@ fun LiquidGlassUiLayer(
     val view = LocalView.current
     val scope = rememberCoroutineScope()
 
-    // Estado de cámara
     val cameraMode by viewModel.cameraMode.collectAsStateWithLifecycle()
-    val zoom       by viewModel.zoomLevel.collectAsStateWithLifecycle()
     val recording  by viewModel.isRecording.collectAsStateWithLifecycle()
 
-    // Persistencia
     val lensLabel  by repo.lastLens.collectAsStateWithLifecycle(initialValue = "1x")
     val hapticsOn  by repo.hapticsEnabled.collectAsStateWithLifecycle(initialValue = true)
     val videoRes   by repo.videoResolution.collectAsStateWithLifecycle(initialValue = "FHD")
     val videoFps   by repo.videoFps.collectAsStateWithLifecycle(initialValue = 30)
 
-    // Pro Peek panel
     var showProPeek by remember { mutableStateOf(false) }
 
     val haptic: () -> Unit = remember(hapticsOn) {
@@ -108,7 +117,7 @@ fun LiquidGlassUiLayer(
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        // ─────────── CAPA 1 · QUICK SETTINGS ISLAND ───────────
+        // ─── CAPA 1 · QUICK SETTINGS ISLAND ──────────────────────
         QuickSettingsIsland(
             isVideoMode = isVideoMode,
             videoRes = videoRes,
@@ -129,7 +138,7 @@ fun LiquidGlassUiLayer(
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // ─────────── CAPA 2 · LENS DIAL ───────────
+        // ─── CAPA 2 · LENS DIAL ──────────────────────────────────
         LensDial(
             currentLens = lensLabel,
             onSelect = { lens ->
@@ -142,10 +151,9 @@ fun LiquidGlassUiLayer(
                 .padding(bottom = 224.dp)
         )
 
-        // ─────────── CAPA 3 · MODE SHIFTER CAROUSEL ───────────
+        // ─── CAPA 3 · MODE SHIFTER CAROUSEL ──────────────────────
         ModeShifterCarousel(
             currentMode = if (isVideoMode) "VIDEO" else "FOTO",
-            palette = palette,
             onModeChange = { newLabel ->
                 haptic()
                 val newMode = if (newLabel == "VIDEO") CameraMode.VIDEO else CameraMode.PHOTO
@@ -156,7 +164,7 @@ fun LiquidGlassUiLayer(
                 .padding(bottom = 138.dp)
         )
 
-        // ─────────── CAPA 4 · BOTTOM ACTION BLOCK ───────────
+        // ─── CAPA 4 · BOTTOM ACTION BLOCK ────────────────────────
         BottomActionBlock(
             isRecording = recording,
             isVideoMode = isVideoMode,
@@ -165,13 +173,13 @@ fun LiquidGlassUiLayer(
                 if (isVideoMode) viewModel.toggleRecording() else viewModel.takePhoto()
             },
             onFlipCamera = { haptic(); viewModel.switchCamera() },
-            onOpenGallery = { /* hook galería (no implementado en v4.0) */ },
+            onOpenGallery = { /* hook galería para futura iteración */ },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 38.dp)
         )
 
-        // ─────────── PRO PEEK PANEL (Modal Sheet) ───────────
+        // ─── PRO PEEK PANEL (Modal Sheet) ────────────────────────
         ProPeekPanel(
             visible = showProPeek,
             videoRes = videoRes,
@@ -225,37 +233,33 @@ private fun QuickSettingsIsland(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Indicador discreto del modo
                 ModeChipIndicator(isVideoMode = isVideoMode)
 
-                // Resolución (solo VIDEO)
                 AnimatedVisibility(
                     visible = isVideoMode,
                     enter = fadeIn(tween(180)),
-                    exit = fadeOut(tween(140))
+                    exit  = fadeOut(tween(140))
                 ) {
                     PillTextButton(
-                        label = when (videoRes) { "UHD" -> "4K"; "HD" -> "HD"; else -> "FHD" },
+                        label  = when (videoRes) { "UHD" -> "4K"; "HD" -> "HD"; else -> "FHD" },
                         onClick = onCycleResolution,
                         active = videoRes == "UHD"
                     )
                 }
 
-                // FPS (solo VIDEO)
                 AnimatedVisibility(
                     visible = isVideoMode,
                     enter = fadeIn(tween(180)),
-                    exit = fadeOut(tween(140))
+                    exit  = fadeOut(tween(140))
                 ) {
                     PillTextButton(
-                        label = "${videoFps}",
+                        label  = "$videoFps",
                         suffix = "FPS",
                         onClick = onCycleFps,
                         active = videoFps == 60
                     )
                 }
 
-                // Ajustes
                 IslandIconButton(
                     icon = Icons.Rounded.Settings,
                     contentDescription = "Ajustes",
@@ -280,7 +284,7 @@ private fun ModeChipIndicator(isVideoMode: Boolean) {
         )
         Text(
             text = if (isVideoMode) "VIDEO" else "FOTO",
-            color = Color.White.copy(alpha = 0.85f),
+            color = Color.White.copy(alpha = 0.92f),
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 0.8.sp
@@ -299,7 +303,7 @@ private fun PillTextButton(
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
         targetValue = if (pressed) 0.92f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.78f),
+        animationSpec = Spring26.button(),
         label = "pill_scale"
     )
 
@@ -312,7 +316,12 @@ private fun PillTextButton(
             .clip(RoundedCornerShape(16.dp))
             .background(
                 if (active) Color.White.copy(alpha = 0.22f)
-                else Color.White.copy(alpha = 0.08f)
+                else Color.White.copy(alpha = 0.10f)
+            )
+            .border(
+                width = 0.5.dp,
+                color = Color.White.copy(alpha = if (active) 0.25f else 0.10f),
+                shape = RoundedCornerShape(16.dp)
             )
             .clickable(
                 interactionSource = interaction,
@@ -326,7 +335,7 @@ private fun PillTextButton(
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
+            fontFamily = FontFamily.Monospace      // SF Pro Mono equivalent
         )
         if (suffix != null) {
             Text(
@@ -349,12 +358,12 @@ private fun IslandIconButton(
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
         targetValue = if (pressed) 0.88f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.7f),
+        animationSpec = Spring26.button(),
         label = "icon_btn_scale"
     )
     Box(
         modifier = Modifier
-            .size(44.dp)            // hit target 44pt
+            .size(44.dp)                  // Hit target spec
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
             .clickable(
@@ -368,7 +377,7 @@ private fun IslandIconButton(
             icon = icon,
             contentDescription = contentDescription,
             tint = Color.White,
-            size = 20.dp
+            size = 20.dp                  // Glifo spec 20pt
         )
     }
 }
@@ -388,10 +397,7 @@ private fun LensDial(
         modifier = modifier
             .height(42.dp)
             .clip(RoundedCornerShape(21.dp))
-            .liquidGlassModifier(
-                shape = RoundedCornerShape(21.dp),
-                blurRadiusDp = 20.dp
-            )
+            .liquidGlassModifier(shape = RoundedCornerShape(21.dp))
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -423,16 +429,21 @@ private fun LensBubble(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
 
-    val targetSize = if (selected) 32.dp else 28.dp
-    val animSize by animateDpAsState(
-        targetValue = if (pressed) targetSize * 0.92f else targetSize,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.7f),
-        label = "lens_size"
+    val bubbleSize by animateDpAsState(
+        targetValue = if (selected) 32.dp else 26.dp,
+        animationSpec = Spring26.button(),
+        label = "lens_bubble_size"
+    )
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.92f else 1f,
+        animationSpec = Spring26.button(),
+        label = "lens_press_scale"
     )
 
     Box(
         modifier = Modifier
-            .size(32.dp)   // hit area constante 32pt
+            .size(32.dp)            // hit area constante
+            .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
             .clip(CircleShape)
             .clickable(
                 interactionSource = interaction,
@@ -441,13 +452,17 @@ private fun LensBubble(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Fondo seleccionado: círculo glass blanco 20%
         if (selected) {
             Box(
                 modifier = Modifier
-                    .size(animSize)
+                    .size(bubbleSize)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.20f))
+                    .border(
+                        width = 0.5.dp,
+                        color = Color.White.copy(alpha = 0.30f),
+                        shape = CircleShape
+                    )
             )
         }
         Text(
@@ -460,33 +475,59 @@ private fun LensBubble(
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  C · MODE SHIFTER CAROUSEL  (FOTO · VIDEO con máscara alpha)
- *  Centro a 148pt del borde inferior
+ *  C · MODE SHIFTER CAROUSEL  (FOTO · VIDEO con máscara alfa real)
+ *  Sección C del prompt: opacidad 0→100% en 60pt desde el lateral
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun ModeShifterCarousel(
     currentMode: String,
-    palette: GlassPalette,
     onModeChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val modes = listOf("FOTO", "VIDEO")
+    val density = LocalDensity.current
+    val fadePx = with(density) { 60.dp.toPx() }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(28.dp),
+            .height(32.dp)
+            .drawWithContent {
+                drawContent()
+                // Máscara alfa lateral (sección C — DstIn blend)
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black,
+                            Color.Black,
+                            Color.Transparent
+                        ),
+                        startX = 0f,
+                        endX = size.width,
+                        tileMode = androidx.compose.ui.graphics.TileMode.Clamp
+                    ).let {
+                        Brush.horizontalGradient(
+                            0.00f to Color.Transparent,
+                            (fadePx / size.width).coerceIn(0f, 0.5f) to Color.Black,
+                            (1f - fadePx / size.width).coerceIn(0.5f, 1f) to Color.Black,
+                            1.00f to Color.Transparent
+                        )
+                    },
+                    blendMode = BlendMode.DstIn
+                )
+            },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        modes.forEachIndexed { idx, mode ->
+        modes.forEach { mode ->
             val selected = mode == currentMode
-            val interaction = remember { MutableInteractionSource() }
+            val interaction = remember(mode) { MutableInteractionSource() }
             val pressed by interaction.collectPressedCompat()
             val scale by animateFloatAsState(
                 targetValue = if (pressed) 0.92f else 1f,
-                animationSpec = spring(stiffness = 160f, dampingRatio = 0.7f),
-                label = "mode_scale"
+                animationSpec = Spring26.carousel(),
+                label = "mode_scale_$mode"
             )
 
             Box(
@@ -502,11 +543,12 @@ private fun ModeShifterCarousel(
             ) {
                 Text(
                     text = mode,
-                    color = if (selected) Color(0xFFFFCC00)         // amarillo acento iOS
-                            else Color.White.copy(alpha = 0.60f),
+                    color = if (selected) Color(0xFFFFCC00)          // amarillo iOS
+                            else Color.White.copy(alpha = 0.55f),
                     fontSize = 12.sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    letterSpacing = 1.2.sp
+                    letterSpacing = 1.4.sp,
+                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -532,17 +574,14 @@ private fun BottomActionBlock(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // ── Gallery (50pt círculo)
         GalleryButton(onClick = onOpenGallery)
 
-        // ── Shutter (76pt total) ──
         LiquidShutter(
             isRecording = isRecording,
             isVideoMode = isVideoMode,
             onTap = onShutterTap
         )
 
-        // ── Flip camera (50pt círculo)
         FlipCameraButton(onClick = onFlipCamera)
     }
 }
@@ -556,28 +595,27 @@ private fun LiquidShutter(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
 
-    // Capa C (núcleo morphing)
     val innerSize by animateDpAsState(
         targetValue = when {
-            isRecording -> 30.dp
-            isVideoMode -> 34.dp
-            else -> 60.dp
+            isRecording -> 30.dp                  // cuadradito stop
+            isVideoMode -> 34.dp                  // squircle vídeo
+            else        -> 60.dp                  // círculo foto
         },
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.62f),
+        animationSpec = Spring26.shutterMorph(),
         label = "shutter_inner_size"
     )
     val innerRadius by animateDpAsState(
         targetValue = when {
-            isRecording -> 6.dp        // cuadrado redondeado fuerte (stop)
-            isVideoMode -> 10.dp       // squircle
-            else -> 30.dp              // círculo
+            isRecording -> 6.dp
+            isVideoMode -> 10.dp
+            else        -> 30.dp
         },
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.62f),
+        animationSpec = Spring26.shutterMorph(),
         label = "shutter_inner_radius"
     )
     val pressScale by animateFloatAsState(
         targetValue = if (pressed) 0.93f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.78f),
+        animationSpec = Spring26.button(),
         label = "shutter_press_scale"
     )
 
@@ -595,17 +633,20 @@ private fun LiquidShutter(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Capa A — Anillo exterior 76pt × 4.5pt blanco
-        // FIX v4.0.1: la extensión ya devuelve Modifier, encadenamos directamente.
+        // Capa A — anillo exterior 76pt × 4.5pt blanco
         Box(
             modifier = Modifier
                 .size(76.dp)
                 .clip(CircleShape)
                 .background(Color.Transparent)
-                .androidx_border_white_ring(4.5f)
+                .border(
+                    width = 4.5.dp,
+                    color = Color.White,
+                    shape = CircleShape
+                )
         )
-        // Capa B (3.5pt transparente) implícita: el inner está separado del anillo
-        // Capa C — Núcleo
+        // Capa B (3.5pt separador) implícito por la diferencia 76 vs inner
+        // Capa C — núcleo morphing
         Box(
             modifier = Modifier
                 .size(innerSize)
@@ -620,8 +661,8 @@ private fun GalleryButton(onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
-        if (pressed) 0.92f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.78f),
+        targetValue = if (pressed) 0.92f else 1f,
+        animationSpec = Spring26.button(),
         label = "gallery_scale"
     )
     Box(
@@ -629,10 +670,7 @@ private fun GalleryButton(onClick: () -> Unit) {
             .size(50.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(14.dp))
-            .liquidGlassModifier(
-                shape = RoundedCornerShape(14.dp),
-                blurRadiusDp = 16.dp
-            )
+            .liquidGlassModifier(shape = RoundedCornerShape(14.dp))
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = true),
@@ -653,8 +691,8 @@ private fun FlipCameraButton(onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
-        if (pressed) 0.88f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.7f),
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = Spring26.button(),
         label = "flip_scale"
     )
     Box(
@@ -662,10 +700,7 @@ private fun FlipCameraButton(onClick: () -> Unit) {
             .size(50.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
-            .liquidGlassModifier(
-                shape = CircleShape,
-                blurRadiusDp = 16.dp
-            )
+            .liquidGlassModifier(shape = CircleShape)
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = false, radius = 25.dp),
@@ -698,18 +733,18 @@ private fun ProPeekPanel(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = androidx.compose.ui.window.DialogProperties(
+        properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
             dismissOnClickOutside = true
         )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Backdrop oscuro al tocar fuera
+            // Backdrop
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.35f))
+                    .background(Color.Black.copy(alpha = 0.38f))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -721,8 +756,8 @@ private fun ProPeekPanel(
                 visible = true,
                 enter = slideInVertically(
                     initialOffsetY = { it },
-                    animationSpec = spring(stiffness = 220f, dampingRatio = 0.78f)
-                ) + fadeIn(tween(150)),
+                    animationSpec = Spring26.panel()
+                ) + fadeIn(tween(160)),
                 exit = slideOutVertically(
                     targetOffsetY = { it },
                     animationSpec = tween(200)
@@ -739,10 +774,10 @@ private fun ProPeekPanel(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 24.dp, vertical = 22.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
+                            .padding(horizontal = 24.dp, vertical = 18.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // Drag indicator
+                        // Drag indicator (spec: 38 × 4dp blanco α 25%)
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterHorizontally)
@@ -758,7 +793,7 @@ private fun ProPeekPanel(
                             fontWeight = FontWeight.Medium
                         )
 
-                        // Grid 2x3
+                        // Grid 2 × 3
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -842,8 +877,8 @@ private fun ProPeekCell(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
-        if (pressed && enabled) 0.94f else 1f,
-        animationSpec = spring(stiffness = 300f, dampingRatio = 0.78f),
+        targetValue = if (pressed && enabled) 0.94f else 1f,
+        animationSpec = Spring26.button(),
         label = "cell_scale"
     )
     Column(
@@ -854,6 +889,11 @@ private fun ProPeekCell(
             }
             .clip(RoundedCornerShape(18.dp))
             .background(Color.White.copy(alpha = 0.10f))
+            .border(
+                width = 0.5.dp,
+                color = Color.White.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(18.dp)
+            )
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = true),
@@ -909,24 +949,12 @@ private fun MutableInteractionSource.collectPressedCompat(): androidx.compose.ru
         val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
         interactions.collect { interaction ->
             when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press -> active.add(interaction)
+                is androidx.compose.foundation.interaction.PressInteraction.Press   -> active.add(interaction)
                 is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> active.remove(interaction.press)
+                is androidx.compose.foundation.interaction.PressInteraction.Cancel  -> active.remove(interaction.press)
             }
             isPressed.value = active.isNotEmpty()
         }
     }
     return isPressed
 }
-
-/* Extensión privada para el anillo blanco del shutter (4.5pt stroke)
- * FIX v4.0.1: `border` es una extensión de Modifier — debe llamarse
- * sobre el receiver (this.border(...)). Antes se invocaba como función
- * top-level (androidx.compose.foundation.border(...)) y el compilador
- * la marcaba como Unresolved reference. */
-private fun Modifier.androidx_border_white_ring(strokeDp: Float): Modifier =
-    this.border(
-        width = strokeDp.dp,
-        color = Color.White,
-        shape = CircleShape
-    )
