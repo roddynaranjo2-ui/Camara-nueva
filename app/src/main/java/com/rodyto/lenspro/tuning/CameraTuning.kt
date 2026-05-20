@@ -12,6 +12,8 @@ import android.util.Range
 import android.util.Size
 import android.view.SurfaceHolder
 import kotlin.math.abs
+import com.rodyto.lenspro.VideoResolution
+import com.rodyto.lenspro.capture.VideoBitrateCalculator
 
 /**
  * CameraTuning v4.1 — OPTIMIZADO
