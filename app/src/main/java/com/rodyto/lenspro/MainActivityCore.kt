@@ -14,31 +14,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /* ================================================================
- *  Rodyto Lens Pro · MainActivityCore.kt · v3.8 Pro
- *
- *  NOVEDADES v3.8 (sobre v3.6):
- *   • Estado compartido `previewBounds` entre CameraPreviewLayer
- *     (que lo emite vía onPreviewBoundsChanged) y SettingsOverlayLayer
- *     (que lo consume para alimentar HorizonLevelOverlay).
- *     Esto cierra el bug B-04: el nivel artificial ahora SÍ se dibuja
- *     porque previewBounds ya no es null literal.
- *
- *  Mantenido v3.6:
- *   • Permisos modernos vía ActivityResultContracts.
- *   • enableEdgeToEdge() para coherencia con SettingsActivity.
- *   • Composición de las 3 capas (Preview / Overlays / Helpers).
+ *  MainActivityCore.kt · REDISEÑO v4.0 LIQUID GLASS
+ *  Composición simplificada: Preview + UI minimal iOS 26.
  * ================================================================ */
 class MainActivity : ComponentActivity() {
 
@@ -46,12 +31,11 @@ class MainActivity : ComponentActivity() {
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* No bloqueamos: si CAMERA está denegado, la UI muestra estado vacío. */ }
+    ) { /* no-op */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
         ensurePermissions()
 
         setContent {
@@ -75,7 +59,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /* ── Permisos modernos ─────────────────────────────────────── */
     private fun ensurePermissions() {
         val perms = buildList {
             add(Manifest.permission.CAMERA)
@@ -94,12 +77,10 @@ class MainActivity : ComponentActivity() {
 }
 
 /* ================================================================
- *  Composición principal — orquesta las 3 capas refactorizadas.
- *
- *  v3.8: Eleva `previewBounds` a estado compartido entre la capa de
- *  Preview (productor) y la capa de Overlays (consumidor) para que
- *  HorizonLevelOverlay reciba el rectángulo real del preview y pueda
- *  dibujar el nivel artificial sobre él (fix bug B-04).
+ *  Composición principal — 3 capas limpias:
+ *   0. Camera Preview (hardware)
+ *   1. Top Quick Settings Island (modo, resolución, fps, ajustes)
+ *   2. Bottom Controls (lentes, shutter, gallery, flip, Pro Peek)
  * ================================================================ */
 @Composable
 fun RodytoLensApp(
@@ -107,43 +88,27 @@ fun RodytoLensApp(
     palette: GlassPalette,
     repo: SettingsRepository
 ) {
-    // FIX v3.8 (bug B-04): estado compartido para HorizonLevel.
-    var previewBounds by remember { mutableStateOf<Rect?>(null) }
-
-    // Refresh inicial del repeating preview cuando arranca la composición.
     LaunchedEffect(Unit) { viewModel.applyRepeatingPreview() }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ── 1. Capa de Vista Previa (Camera2 SurfaceView) ──────
-        CameraPreviewLayer(
-            viewModel = viewModel,
-            onPreviewBoundsChanged = { newBounds -> previewBounds = newBounds }
-        )
+        // Capa 0 — Camera Preview
+        CameraPreviewLayer(viewModel = viewModel)
 
-        // ── 2. Capa de Paneles/Overlays (chips, histograma…) ───
-        SettingsOverlayLayer(
+        // Capa 1 + 2 — UI Liquid Glass minimal
+        LiquidGlassUiLayer(
             viewModel = viewModel,
             palette = palette,
-            repo = repo,
-            previewBounds = previewBounds   // fix B-04
+            repo = repo
         )
-
-        // ── 3. Capa de Controles inferiores (lentes, shutter…) ─
-        MainControlsLayer(viewModel, palette, repo)
     }
 }
 
 @Composable
-fun CameraPreviewLayer(
-    viewModel: CameraControlViewModel,
-    onPreviewBoundsChanged: (androidx.compose.ui.geometry.Rect?) -> Unit = {}
-) {
-    // Delega 100% en el componente ya existente y testeado.
+fun CameraPreviewLayer(viewModel: CameraControlViewModel) {
     CameraPreview(
         viewModel = viewModel,
         modifier = Modifier.fillMaxSize(),
-        onPreviewBoundsChanged = onPreviewBoundsChanged   // v3.8: forward
+        onPreviewBoundsChanged = { /* no usado en rediseño minimal */ }
     )
-    // El bridge CameraX se activa o no según el flag persistido.
     CameraXAnalysisBridge(vm = viewModel)
 }
