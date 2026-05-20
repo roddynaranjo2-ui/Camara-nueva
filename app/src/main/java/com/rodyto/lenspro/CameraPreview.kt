@@ -48,9 +48,12 @@ import com.rodyto.lenspro.util.*
 import kotlin.math.abs
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraPreview · v4.1 Premium
+ *  Rodyto Lens Pro · CameraPreview · v4.2 Premium
  *
- *  v4.1 — Corregidos imports de overlays y componentes.
+ *  v4.2 — FIX CRÍTICO: LaunchedEffect(latestLens, isFront) ahora
+ *  salta la ejecución inicial para evitar la race condition con
+ *  surfaceCreated, que causaba un doble openCamera() → ERROR_CAMERA_IN_USE
+ *  → la cámara se cerraba al abrir la app.
  * ================================================================ */
 @Composable
 fun CameraPreview(
@@ -84,11 +87,24 @@ fun CameraPreview(
     var lastAppliedSw by remember { mutableStateOf(-1) }
     var lastAppliedSh by remember { mutableStateOf(-1) }
 
+    // FIX v4.2: Flag para detectar si es la primera composición.
+    // Usamos un ref no-state para que no provoque recomposición al cambiar.
+    val isFirstLensEffect = remember { mutableStateOf(true) }
+
     LaunchedEffect(cameraMode) { viewModel.applyRepeatingPreview() }
-    
-    // FIX M-05: Reiniciar sesión al cambiar de lente o cámara frontal
+
+    // FIX M-05 / FIX v4.2: Reiniciar sesión al cambiar de lente o cámara frontal,
+    // pero NO en la primera composición (la primera apertura la gestiona surfaceCreated).
     val isFront by viewModel.isFrontCamera.collectAsStateWithLifecycle()
     LaunchedEffect(latestLens, isFront) {
+        // Saltar la primera ejecución: surfaceCreated ya abre la cámara en la
+        // composición inicial. Si ejecutáramos aquí también, llamaríamos a
+        // closeCamera() mientras el HAL todavía está procesando el openCamera()
+        // de surfaceCreated → ERROR_CAMERA_IN_USE → pantalla negra / cierre.
+        if (isFirstLensEffect.value) {
+            isFirstLensEffect.value = false
+            return@LaunchedEffect
+        }
         val surface = activeSurface
         if (surface != null && surface.isValid) {
             viewModel.closeCamera()
