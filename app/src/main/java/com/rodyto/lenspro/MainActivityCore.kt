@@ -16,25 +16,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rodyto.lenspro.ui.theme.LensProTheme
-import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.theme.glassPalette
 import com.rodyto.lenspro.ui.theme.GlassPalette
-import kotlinx.coroutines.flow.combine
 
 /* ================================================================
- *  MainActivityCore.kt · v4.0 Premium
+ *  MainActivityCore.kt · v4.1 Premium
  *
- *  v4.0 — Cambios:
- *   • Bridge sincronizado SettingsRepository ↔ ViewModel para
- *     flashMode, timerSeconds, gridEnabled, hapticsEnabled,
- *     soundEnabled — TODO funcional.
+ *  v4.1 — Corregidos imports de temas y repositorios.
  * ================================================================ */
 class MainActivity : ComponentActivity() {
 

@@ -7,7 +7,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rodyto.lenspro.camera.CameraSessionController
 import com.rodyto.lenspro.settings.SettingsBridge
-import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,14 +14,14 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * CameraControlViewModel — Orquestador principal usando COMPOSICIÓN.
  * Refactor estructural de la Fase 3.
- * v4.2 — Corregidas referencias faltantes tras el refactor.
+ * v4.3 — Corregidas referencias de paquetes y SettingsRepository.
  */
 class CameraControlViewModel(application: Application) : AndroidViewModel(application) {
 
     private val stateHolder = CameraUiStateHolder()
     private val sessionController = CameraSessionController(application, stateHolder)
     
-    // Repositorio de ajustes
+    // Repositorio de ajustes (está en el mismo paquete com.rodyto.lenspro)
     private val settingsRepository = SettingsRepository(application)
     private val settingsBridge = SettingsBridge(settingsRepository, this, viewModelScope)
 
@@ -62,7 +61,6 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     /* ─── ACCIONES DE CÁMARA ─────────────────────────────────── */
 
     fun startCameraSession(context: Context, surface: Surface, lens: LensInfo?) {
-        // Implementación real delegada
         sessionController.openCamera(lens?.id ?: "0")
     }
 
@@ -80,7 +78,6 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
 
     fun switchCamera() {
         isFrontCamera.value = !isFrontCamera.value
-        // Re-abrir cámara
     }
 
     fun setLens(lens: LensInfo?) {

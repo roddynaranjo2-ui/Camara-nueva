@@ -35,23 +35,19 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.rodyto.lenspro.ui.components.AutoFitSurfaceView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rodyto.lenspro.ui.overlays.GridOverlay
+import com.rodyto.lenspro.ui.overlays.TimerCountdownOverlay
+import com.rodyto.lenspro.ui.overlays.ShutterBlinkOverlay
 import kotlin.math.abs
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraPreview · v4.0 Premium
+ *  Rodyto Lens Pro · CameraPreview · v4.1 Premium
  *
- *  v4.0 — Cambios:
- *   • Letterbox BLUREADO en vivo (BlurredBackdropLayer detrás)
- *     en lugar de bandas negras planas.
- *   • Overlays funcionales: grid 3×3, timer countdown.
- *   • Pinch-to-zoom logarítmico SUAVE con sensitivity calibrada.
- *   • Throttle de bounds optimizado (0.5px epsilon).
- *   • Lifecycle cleanup robusto.
+ *  v4.1 — Corregidos imports de overlays y componentes.
  * ================================================================ */
 @Composable
 fun CameraPreview(

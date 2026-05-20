@@ -1,8 +1,5 @@
 package com.rodyto.lenspro.ui.components
 
-import com.rodyto.lenspro.CameraControlViewModel
-import com.rodyto.lenspro.ui.theme.GlassPalette
-
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
@@ -36,6 +33,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rodyto.lenspro.CameraControlViewModel
+import com.rodyto.lenspro.ui.theme.GlassPalette
+import com.rodyto.lenspro.gaussianBlur
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -44,15 +44,9 @@ import kotlin.math.ln
 import kotlin.math.sin
 
 /**
- * ZoomDial v3.6 — OPTIMIZADO
+ * ZoomDial v4.1 — CORREGIDO
  *
- * Cambios v3.6 (sobre v2.1):
- *  ① Throttle haptic por TIEMPO real (MIN_HAPTIC_INTERVAL_MS=20ms) además
- *    del threshold angular TICK_DEG. Antes con flings rápidos podían
- *    dispararse hasta ~120 hápticos/seg → micro-stutters perceptibles.
- *  ② onSmoothZoom: si se pasa, se usa también en el animateDecay final
- *    del fling para asegurar consistencia con el VM.
- *  ③ shadowing seguro `springFloat` preservado.
+ * v4.1 — Corregidos errores de sintaxis en detectDragGestures y referencias de GlassPalette.
  */
 @Composable
 fun ZoomDial(
@@ -67,7 +61,6 @@ fun ZoomDial(
     val rotation = remember { Animatable(zoomToAngle(currentZoom)) }
     val scope = rememberCoroutineScope()
     var lastTickAngle by remember { mutableStateOf(zoomToAngle(currentZoom)) }
-    // FIX v3.6: throttle haptic por tiempo
     var lastHapticMs by remember { mutableLongStateOf(0L) }
 
     fun maybeHaptic(currentAngle: Float) {
