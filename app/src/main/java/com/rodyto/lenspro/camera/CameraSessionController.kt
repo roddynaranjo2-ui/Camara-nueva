@@ -1,11 +1,14 @@
 package com.rodyto.lenspro.camera
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.camera2.*
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import androidx.core.content.ContextCompat
 import com.rodyto.lenspro.CameraSessionState
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import com.rodyto.lenspro.camera.CameraCaptureEngine
@@ -16,6 +19,10 @@ import kotlinx.coroutines.launch
 /**
  * CameraSessionController — Gestiona el ciclo de vida del CameraDevice y la CaptureSession.
  * Parte del refactor de composición de la Fase 3.
+ *
+ * v1.1 — FIX CRÍTICO: openCamera() ahora verifica el permiso CAMERA antes de llamar al
+ * HAL. Esto evita SecurityException no manejadas en builds de release y permite que la
+ * UI reaccione correctamente (estado ERROR) cuando el usuario aún no ha concedido permisos.
  */
 class CameraSessionController(
     private val context: Context,
@@ -33,7 +40,7 @@ class CameraSessionController(
     var captureSession: CameraCaptureSession? = null
     var previewRequestBuilder: CaptureRequest.Builder? = null
     private var pendingSurface: Surface? = null
-    
+
     // FIX A-05: Motor de captura real
     private val captureEngine = CameraCaptureEngine(context)
 
@@ -58,9 +65,9 @@ class CameraSessionController(
     fun startBackgroundThread() {
         // FIX O-02: Reutilizar hilos si ya existen y asignar prioridad de cámara
         if (backgroundThread?.isAlive == true) return
-        backgroundThread = HandlerThread("CameraBG").apply { 
+        backgroundThread = HandlerThread("CameraBG").apply {
             priority = android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
-            start() 
+            start()
         }
         val handler = Handler(backgroundThread!!.looper)
         backgroundHandler = handler
@@ -78,8 +85,27 @@ class CameraSessionController(
         backgroundHandler = null
     }
 
+    /**
+     * Abre la cámara con el ID dado.
+     *
+     * FIX v1.1 — Se verifica el permiso CAMERA antes de llamar al HAL:
+     *  • Si el permiso no está concedido → se pone estado ERROR y se retorna sin crashear.
+     *  • @SuppressLint("MissingPermission") suprime el Lint para que el build de release
+     *    con abortOnError=true no falle (el permiso ya se verificó justo antes).
+     */
+    @SuppressLint("MissingPermission")
     fun openCamera(cameraId: String, surface: Surface) {
         this.pendingSurface = surface
+
+        // Verificar permiso CAMERA antes de intentar abrir el dispositivo
+        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Permiso CAMERA no concedido, no se puede abrir la cámara")
+            stateHolder.setSessionState(CameraSessionState.ERROR)
+            return
+        }
+
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         startBackgroundThread()
         stateHolder.setSessionState(CameraSessionState.OPENING)
@@ -133,13 +159,13 @@ class CameraSessionController(
         cameraDevice?.close()
         cameraDevice = null
         captureEngine.release()
-        
+
         // FIX O-02: No cerrar el hilo inmediatamente para evitar overhead en cambios rápidos (lentes)
         // Se cerrará cuando el ViewModel se destruya o tras un timeout si fuera necesario.
-        
+
         stateHolder.setSessionState(CameraSessionState.IDLE)
     }
-    
+
     fun release() {
         closeCamera()
         stopBackgroundThread()
