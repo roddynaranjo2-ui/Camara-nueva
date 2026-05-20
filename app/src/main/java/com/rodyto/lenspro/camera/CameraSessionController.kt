@@ -152,16 +152,29 @@ class CameraSessionController(
     }
 
     fun closeCamera() {
+        // FIX v1.2: Evitar cerrar si ya está idle o cerrando (doble cierre),
+        // y detener el repeating ANTES de cerrar la sesión para evitar
+        // IllegalStateException en el HAL que deja la cámara en negro.
+        val currentState = stateHolder.sessionState.value
+        if (currentState == CameraSessionState.IDLE ||
+            currentState == CameraSessionState.CLOSING) return
+
         stateHolder.setSessionState(CameraSessionState.CLOSING)
+
+        try { captureSession?.stopRepeating() } catch (_: Exception) {}
+        try { captureSession?.abortCaptures() } catch (_: Exception) {}
         captureSession?.close()
         captureSession = null
         previewRequestBuilder = null
+
         cameraDevice?.close()
         cameraDevice = null
+        pendingSurface = null
+
         captureEngine.release()
 
-        // FIX O-02: No cerrar el hilo inmediatamente para evitar overhead en cambios rápidos (lentes)
-        // Se cerrará cuando el ViewModel se destruya o tras un timeout si fuera necesario.
+        // FIX O-02: No cerrar el hilo de background aquí — se cierra en release()
+        // para evitar overhead en cambios rápidos de lente/cámara.
 
         stateHolder.setSessionState(CameraSessionState.IDLE)
     }
