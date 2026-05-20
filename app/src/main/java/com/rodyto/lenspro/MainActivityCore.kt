@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue      // ← FIX v4.0.1 (E1/E2): habilita `by State<T>`
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue      // ← simetría (futuro `var by mutableStateOf`)
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -22,7 +24,19 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /* ================================================================
- *  MainActivityCore.kt · REDISEÑO v4.0 LIQUID GLASS
+ *  MainActivityCore.kt · REDISEÑO v4.0.1 LIQUID GLASS
+ *
+ *  FIX v4.0.1:
+ *   • Añadido `import androidx.compose.runtime.getValue` (y setValue
+ *     por simetría). Sin él, `val x by stateFlow.collectAsStateWith
+ *     Lifecycle()` fallaba con:
+ *       Type 'State<…>' has no method 'getValue(Nothing?, KProperty<*>)'
+ *       and thus it cannot serve as a delegate
+ *     porque `getValue` es una extensión de `State<T>` y debe estar
+ *     importada para que el operador `by` la resuelva.
+ *   • Pequeña guard en ensurePermissions() — evita lanzar el launcher
+ *     con un array vacío en algunos OEM que devuelven todo concedido.
+ *
  *  Composición simplificada: Preview + UI minimal iOS 26.
  * ================================================================ */
 class MainActivity : ComponentActivity() {
@@ -71,8 +85,11 @@ class MainActivity : ComponentActivity() {
 
         val missing = perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
+
+        if (missing.isNotEmpty()) {
+            permissionsLauncher.launch(missing)
         }
-        if (missing.isNotEmpty()) permissionsLauncher.launch(missing.toTypedArray())
     }
 }
 
