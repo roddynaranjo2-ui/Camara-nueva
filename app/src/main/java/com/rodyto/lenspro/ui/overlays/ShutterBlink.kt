@@ -62,9 +62,9 @@ fun ShutterBlinkOverlay(triggerKey: Int) {
         )
     }
 
-    // FIX ②: Negro elegante en lugar del blanco agresivo original.
-    // El ojo humano percibe el oscurecimiento breve como más natural
-    // que el destello blanco cuando ya tiene la escena expuesta.
+    // FIX V-01: Blanco rápido estilo iOS (Premium).
+    // Aunque el negro es natural, el estándar de la industria para feedback
+    // de captura es un destello blanco muy breve y sutil que confirma la acción.
     if (alpha.value > 0f) {
         Box(
             modifier = Modifier
@@ -72,7 +72,7 @@ fun ShutterBlinkOverlay(triggerKey: Int) {
                 .graphicsLayer {
                     this.alpha = alpha.value
                 }
-                .background(Color.Black)
+                .background(Color.White)
         )
     }
 }

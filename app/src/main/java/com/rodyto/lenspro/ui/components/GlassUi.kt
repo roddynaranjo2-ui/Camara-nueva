@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -45,7 +45,7 @@ fun Modifier.liquidGlass(
     accentBorder: Boolean = false
 ): Modifier = this.liquidGlassModifier(
     shape = shape,
-    blurRadiusDp = 20.dp,
+    blurRadiusDp = 24.dp,
     borderEnabled = true
 )
 

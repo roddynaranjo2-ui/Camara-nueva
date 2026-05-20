@@ -75,7 +75,7 @@
             android:parentActivityName=".MainActivity"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.LensPro.Settings"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode|smallestScreenSize|screenLayout|density" />
 
     </application>
 </manifest>

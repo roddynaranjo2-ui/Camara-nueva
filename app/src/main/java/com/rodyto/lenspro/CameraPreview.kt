@@ -42,6 +42,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rodyto.lenspro.ui.overlays.GridOverlay
 import com.rodyto.lenspro.ui.overlays.TimerCountdownOverlay
 import com.rodyto.lenspro.ui.overlays.ShutterBlinkOverlay
+import com.rodyto.lenspro.ui.components.AutoFitSurfaceView
+import com.rodyto.lenspro.ui.components.BlurredBackdropLayer
+import com.rodyto.lenspro.util.*
 import kotlin.math.abs
 
 /* ================================================================
@@ -82,6 +85,16 @@ fun CameraPreview(
     var lastAppliedSh by remember { mutableStateOf(-1) }
 
     LaunchedEffect(cameraMode) { viewModel.applyRepeatingPreview() }
+    
+    // FIX M-05: Reiniciar sesión al cambiar de lente o cámara frontal
+    val isFront by viewModel.isFrontCamera.collectAsStateWithLifecycle()
+    LaunchedEffect(latestLens, isFront) {
+        val surface = activeSurface
+        if (surface != null && surface.isValid) {
+            viewModel.closeCamera()
+            viewModel.startCameraSession(context, surface, latestLens)
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->

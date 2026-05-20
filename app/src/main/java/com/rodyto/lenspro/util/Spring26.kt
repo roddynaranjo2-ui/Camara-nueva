@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.util
 
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.spring

@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
 
 import android.content.Context
 import android.util.AttributeSet

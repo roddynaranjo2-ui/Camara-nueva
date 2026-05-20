@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -92,11 +92,12 @@ internal class MirroredBlurView @JvmOverloads constructor(
     private var sourceRef: WeakReference<SurfaceView>? = null
     private var mirrorBitmap: Bitmap? = null
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isAntiAlias = true }
-    private var choreographer: Choreographer? = null
     private var attached = false
-    private var lastCopyAtMs = 0L
     private val COPY_INTERVAL_MS = 50L      // ~20 fps copy
     private val DOWNSCALE = 6                // 6x más pequeño → blur rápido
+    
+    private var consecutiveErrors = 0
+    private var lastErrorTime = 0L
 
     init {
         // RenderEffect blur 40px — heavy and beautiful
@@ -114,24 +115,31 @@ internal class MirroredBlurView @JvmOverloads constructor(
         sourceRef = WeakReference(source)
     }
 
-    private val frameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
+    // FIX O-01: Usar Runnable con postDelayed en lugar de Choreographer para reducir overhead
+    private val tickerRunnable = object : Runnable {
+        override fun run() {
             if (!attached) return
-            val now = System.currentTimeMillis()
-            if (now - lastCopyAtMs >= COPY_INTERVAL_MS) {
-                lastCopyAtMs = now
-                attemptPixelCopy()
-            }
-            choreographer?.postFrameCallback(this)
+            attemptPixelCopy()
+            handler?.postDelayed(this, COPY_INTERVAL_MS) ?: postDelayed(this, COPY_INTERVAL_MS)
         }
     }
 
     private fun attemptPixelCopy() {
         val source = sourceRef?.get() ?: return
+        
+        // FIX A-04: Validar que la vista esté adjunta y visible
+        if (!source.isAttachedToWindow || source.windowVisibility != View.VISIBLE) return
+        
         val srcW = source.width
         val srcH = source.height
         if (srcW <= 0 || srcH <= 0) return
         if (!source.holder.surface.isValid) return
+
+        // Backoff exponencial si hay errores persistentes
+        if (consecutiveErrors >= 3) {
+            val now = System.currentTimeMillis()
+            if (now - lastErrorTime < 2000) return
+        }
 
         val targetW = (srcW / DOWNSCALE).coerceAtLeast(64)
         val targetH = (srcH / DOWNSCALE).coerceAtLeast(64)
@@ -147,13 +155,19 @@ internal class MirroredBlurView @JvmOverloads constructor(
                 bmp,
                 { result ->
                     if (result == android.view.PixelCopy.SUCCESS) {
-                        post { invalidate() }
+                        consecutiveErrors = 0
+                        invalidate()
+                    } else {
+                        consecutiveErrors++
+                        lastErrorTime = System.currentTimeMillis()
                     }
                 },
                 handler ?: android.os.Handler(android.os.Looper.getMainLooper())
             )
-        } catch (_: Throwable) {
-            /* sesión cerrada o surface no listo */
+        } catch (e: Exception) {
+            consecutiveErrors++
+            lastErrorTime = System.currentTimeMillis()
+            android.util.Log.w("MirroredBlurView", "PixelCopy failed: ${e.message}")
         }
     }
 
@@ -172,14 +186,12 @@ internal class MirroredBlurView @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         attached = true
-        choreographer = Choreographer.getInstance()
-        choreographer?.postFrameCallback(frameCallback)
+        handler?.post(tickerRunnable) ?: post(tickerRunnable)
     }
 
     override fun onDetachedFromWindow() {
         attached = false
-        choreographer?.removeFrameCallback(frameCallback)
-        choreographer = null
+        handler?.removeCallbacks(tickerRunnable) ?: removeCallbacks(tickerRunnable)
         mirrorBitmap?.recycle()
         mirrorBitmap = null
         super.onDetachedFromWindow()

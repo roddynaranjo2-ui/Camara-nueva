@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.camera
 
 import android.content.Context
 import android.graphics.ImageFormat
@@ -10,6 +10,9 @@ import android.os.Handler
 import android.util.Log
 import android.util.Size
 import android.view.Surface
+import com.rodyto.lenspro.FlashMode
+import com.rodyto.lenspro.CameraConstants
+import com.rodyto.lenspro.capture.MediaStorageManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,9 +35,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * ================================================================ */
 class CameraCaptureEngine(
     private val context: Context,
-    private val backgroundHandler: Handler?,
+    private var backgroundHandler: Handler? = null,
     private val storage: MediaStorageManager = MediaStorageManager()
 ) {
+    // FIX A-05: Permitir actualizar el handler dinámicamente
+    fun setBackgroundHandler(handler: Handler?) {
+        this.backgroundHandler = handler
+    }
     companion object { private const val TAG = "CaptureEngine" }
 
     private var reader: ImageReader? = null

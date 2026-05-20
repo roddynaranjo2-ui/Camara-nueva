@@ -13,6 +13,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 import com.rodyto.lenspro.ui.theme.GlassPalette
+import com.rodyto.lenspro.ui.components.liquidGlass
 
 /**
  * HistogramView — render Compose del histograma de luminancia.

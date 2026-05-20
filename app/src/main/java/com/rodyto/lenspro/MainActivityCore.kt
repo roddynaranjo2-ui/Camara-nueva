@@ -25,6 +25,7 @@ import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.theme.LensProTheme
 import com.rodyto.lenspro.ui.theme.glassPalette
 import com.rodyto.lenspro.ui.theme.GlassPalette
+import com.rodyto.lenspro.ui.components.LiquidGlassUiLayer
 
 /* ================================================================
  *  MainActivityCore.kt · v4.1 Premium
@@ -85,6 +86,9 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.READ_MEDIA_IMAGES)
                 add(Manifest.permission.READ_MEDIA_VIDEO)
+            } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                // FIX A-03: En Android 9 (API 28) y anteriores se requiere WRITE_EXTERNAL_STORAGE
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
         }.toTypedArray()
 

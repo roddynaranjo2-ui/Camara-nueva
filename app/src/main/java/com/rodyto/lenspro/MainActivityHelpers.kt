@@ -64,6 +64,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.theme.GlassPalette
+import com.rodyto.lenspro.ui.components.*
+import com.rodyto.lenspro.util.*
 import kotlinx.coroutines.launch
 
 /* ================================================================
@@ -818,7 +820,7 @@ private fun ProPeekPanel(
                 ) + fadeIn(tween(160)),
                 exit = slideOutVertically(
                     targetOffsetY = { it },
-                    animationSpec = tween(200)
+                    animationSpec = Spring26.panel() // FIX V-03: Usar spring también al salir para consistencia
                 ) + fadeOut(tween(150)),
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {

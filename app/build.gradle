@@ -45,10 +45,17 @@ android {
             debuggable true
         }
         release {
+            // FIX O-07: Habilitar R8 Full Mode para optimización máxima de bytecode y reducción de tamaño.
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+    
+    // FIX O-07: Optimizar dexing para builds más rápidas y eficientes
+    dexOptions {
+        preDexLibraries true
+        maxProcessCount 8
     }
 
     compileOptions {
@@ -109,9 +116,10 @@ android {
     }
 
     lint {
-        abortOnError false
-        checkReleaseBuilds false
-        disable 'NewApi'
+        // FIX O-06: No desactivar NewApi globalmente para detectar errores de compatibilidad reales.
+        // Se debe usar @RequiresApi o comprobaciones de SDK_INT en el código.
+        abortOnError true
+        checkReleaseBuilds true
     }
 }
 

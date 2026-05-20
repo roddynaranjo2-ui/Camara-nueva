@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.Surface
 import com.rodyto.lenspro.CameraSessionState
 import com.rodyto.lenspro.ui.CameraUiStateHolder
+import com.rodyto.lenspro.camera.CameraCaptureEngine
 
 /**
  * CameraSessionController — Gestiona el ciclo de vida del CameraDevice y la CaptureSession.
@@ -28,12 +29,16 @@ class CameraSessionController(
     var cameraDevice: CameraDevice? = null
     var captureSession: CameraCaptureSession? = null
     var previewRequestBuilder: CaptureRequest.Builder? = null
+    private var pendingSurface: Surface? = null
+    
+    // FIX A-05: Motor de captura real
+    private val captureEngine = CameraCaptureEngine(context)
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
             cameraDevice = camera
-            stateHolder.setSessionState(CameraSessionState.PREVIEWING)
             Log.d(TAG, "CameraDevice abierto: ${camera.id}")
+            pendingSurface?.let { createPreviewSession(it) }
         }
 
         override fun onDisconnected(camera: CameraDevice) {
@@ -48,9 +53,15 @@ class CameraSessionController(
     }
 
     fun startBackgroundThread() {
+        // FIX O-02: Reutilizar hilos si ya existen y asignar prioridad de cámara
         if (backgroundThread?.isAlive == true) return
-        backgroundThread = HandlerThread("CameraBG").apply { start() }
-        backgroundHandler = Handler(backgroundThread!!.looper)
+        backgroundThread = HandlerThread("CameraBG").apply { 
+            priority = android.os.Process.THREAD_PRIORITY_CAMERA
+            start() 
+        }
+        val handler = Handler(backgroundThread!!.looper)
+        backgroundHandler = handler
+        captureEngine.setBackgroundHandler(handler)
     }
 
     fun stopBackgroundThread() {
@@ -64,7 +75,8 @@ class CameraSessionController(
         backgroundHandler = null
     }
 
-    fun openCamera(cameraId: String) {
+    fun openCamera(cameraId: String, surface: Surface) {
+        this.pendingSurface = surface
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         startBackgroundThread()
         stateHolder.setSessionState(CameraSessionState.OPENING)
@@ -76,6 +88,40 @@ class CameraSessionController(
         }
     }
 
+    private fun createPreviewSession(surface: Surface) {
+        val device = cameraDevice ?: return
+        try {
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(surface)
+            previewRequestBuilder = builder
+
+            device.createCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                            stateHolder.setSessionState(CameraSessionState.PREVIEWING)
+                        } catch (e: CameraAccessException) {
+                            Log.e(TAG, "Error al iniciar repeating request", e)
+                            stateHolder.setSessionState(CameraSessionState.ERROR)
+                        }
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e(TAG, "Configuración de CaptureSession fallida")
+                        stateHolder.setSessionState(CameraSessionState.ERROR)
+                    }
+                },
+                backgroundHandler
+            )
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Error al crear CaptureSession", e)
+            stateHolder.setSessionState(CameraSessionState.ERROR)
+        }
+    }
+
     fun closeCamera() {
         stateHolder.setSessionState(CameraSessionState.CLOSING)
         captureSession?.close()
@@ -83,6 +129,30 @@ class CameraSessionController(
         previewRequestBuilder = null
         cameraDevice?.close()
         cameraDevice = null
+        captureEngine.release()
+        
+        // FIX O-02: No cerrar el hilo inmediatamente para evitar overhead en cambios rápidos (lentes)
+        // Se cerrará cuando el ViewModel se destruya o tras un timeout si fuera necesario.
+        
         stateHolder.setSessionState(CameraSessionState.IDLE)
+    }
+    
+    fun release() {
+        closeCamera()
+        stopBackgroundThread()
+    }
+
+    fun takePhoto(onShutterEffect: () -> Unit) {
+        val session = captureSession ?: return
+        val builder = previewRequestBuilder ?: return
+        // En una implementación senior, pasaríamos las características de la cámara aquí
+        // Por ahora usamos el motor de captura existente
+        captureEngine.captureStill(
+            session = session,
+            previewBuilder = builder,
+            characteristics = null, // Debería obtenerse del CameraManager
+            timerSeconds = 0, // El ViewModel ya maneja el timer si es necesario
+            onShutterEffect = onShutterEffect
+        )
     }
 }

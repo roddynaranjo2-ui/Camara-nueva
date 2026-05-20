@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
 
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons

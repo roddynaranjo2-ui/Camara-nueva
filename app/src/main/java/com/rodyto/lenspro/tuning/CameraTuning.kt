@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.tuning
 
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics

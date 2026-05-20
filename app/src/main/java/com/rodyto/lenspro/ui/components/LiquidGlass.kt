@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -156,7 +156,8 @@ fun LiquidGlassPill(
     lowLight: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val shape = RoundedCornerShape(26.dp)
+    // FIX O-03: Optimizar recomposiciones usando remember
+    val shape = remember { RoundedCornerShape(26.dp) }
     Box(
         modifier = modifier
             .liquidGlassModifier(shape = shape, lowLight = lowLight)
@@ -177,12 +178,27 @@ fun LiquidGlassSurface(
     lowLight: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val shape = RoundedCornerShape(
-        topStart = cornerRadiusTop,
-        topEnd = cornerRadiusTop,
-        bottomStart = cornerRadiusBottom,
-        bottomEnd = cornerRadiusBottom
-    )
+    // FIX O-03: Optimizar recomposiciones usando remember
+    val shape = remember(cornerRadiusTop, cornerRadiusBottom) {
+        RoundedCornerShape(
+            topStart = cornerRadiusTop,
+            topEnd = cornerRadiusTop,
+            bottomStart = cornerRadiusBottom,
+            bottomEnd = cornerRadiusBottom
+        )
+    }
+    
+    val borderBrush = remember {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.35f),
+                Color.White.copy(alpha = 0.06f)
+            ),
+            start = Offset(0f, 0f),
+            end   = Offset(1000f, 1000f)
+        )
+    }
+
     Box(
         modifier = modifier
             // Tinte ligeramente más opaco para paneles (mejor jerarquía)
@@ -209,14 +225,7 @@ fun LiquidGlassSurface(
             }
             .border(
                 width = 0.75.dp,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.35f),
-                        Color.White.copy(alpha = 0.06f)
-                    ),
-                    start = Offset(0f, 0f),
-                    end   = Offset(1000f, 1000f)
-                ),
+                brush = borderBrush,
                 shape = shape
             )
     ) {

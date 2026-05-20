@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.capture
 
 import android.content.ContentValues
 import android.content.Context

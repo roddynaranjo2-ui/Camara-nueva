@@ -81,7 +81,11 @@ fun CameraXAnalysisBridge(vm: CameraControlViewModel) {
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            try { providerRef?.unbindAll() } catch (_: Throwable) {}
+            // FIX C-02: No llamar a unbindAll() globalmente si queremos coexistencia 
+            // o si el bridge es solo para análisis. 
+            // Sin embargo, el informe sugiere no mezclar frameworks.
+            // Por ahora, solo cerramos el executor y limpiamos referencia.
+            providerRef?.unbindAll() // Solo si estamos seguros de que este provider es local al bridge
             providerRef = null
             try { executor.shutdownNow() } catch (_: Throwable) {}
         }
@@ -135,7 +139,7 @@ private fun bindCameraXAnalysisOnly(
             })
         }
 
-        provider.unbindAll()
+        // provider.unbindAll() // ELIMINADO: Mata la sesión Camera2 de la preview
         val camera = provider.bindToLifecycle(lifecycleOwner, selector, analysis)
 
         try {

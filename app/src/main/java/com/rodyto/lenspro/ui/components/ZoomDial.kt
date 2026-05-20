@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rodyto.lenspro.CameraControlViewModel
 import com.rodyto.lenspro.ui.theme.GlassPalette
-import com.rodyto.lenspro.gaussianBlur
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -90,7 +89,7 @@ fun ZoomDial(
             modifier = Modifier
                 .size(220.dp)
                 .clip(CircleShape)
-                .gaussianBlur(20f, strong = true)
+                .liquidGlassModifier(shape = CircleShape)
                 .background(palette.ultraBase, CircleShape)
                 .border(0.8.dp, palette.ultraStroke, CircleShape)
                 .pointerInput(maxZoom) {
@@ -197,8 +196,9 @@ fun ZoomDial(
                             )
                         )
                     }
-                    if (onSmoothZoom != null) onSmoothZoom(snap) else onZoomChange(snap)
+                    // FIX V-02: Añadir háptico al cambiar de chip de zoom
                     onHapticTick()
+                    if (onSmoothZoom != null) onSmoothZoom(snap) else onZoomChange(snap)
                 }
             }
         }

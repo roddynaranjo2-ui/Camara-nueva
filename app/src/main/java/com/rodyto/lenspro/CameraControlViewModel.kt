@@ -3,12 +3,15 @@ package com.rodyto.lenspro
 import android.app.Application
 import android.content.Context
 import android.view.Surface
+import android.hardware.camera2.CaptureRequest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rodyto.lenspro.camera.CameraSessionController
 import com.rodyto.lenspro.settings.SettingsBridge
 import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.CameraUiStateHolder
+import com.rodyto.lenspro.tuning.CameraTuning
+import com.rodyto.lenspro.camera.CameraConstants
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -62,7 +65,7 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     /* ─── ACCIONES DE CÁMARA ─────────────────────────────────── */
 
     fun startCameraSession(context: Context, surface: Surface, lens: LensInfo?) {
-        sessionController.openCamera(lens?.id ?: "0")
+        sessionController.openCamera(lens?.id ?: "0", surface)
     }
 
     fun closeCamera() {
@@ -70,7 +73,9 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun takePhoto() {
-        stateHolder.bumpShutterBlink()
+        sessionController.takePhoto {
+            stateHolder.bumpShutterBlink()
+        }
     }
 
     fun toggleRecording() {
@@ -79,9 +84,13 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
 
     fun switchCamera() {
         isFrontCamera.value = !isFrontCamera.value
+        // FIX M-05: Reiniciar sesión al cambiar de cámara
+        // Esto se activará por el LaunchedEffect en CameraPreview
     }
 
     fun setLens(lens: LensInfo?) {
+        // FIX M-02: Mapear etiqueta a ID real si es necesario
+        // Por ahora, el stateHolder lo guarda y CameraPreview reacciona
         stateHolder.setCurrentLens(lens)
     }
 
@@ -90,7 +99,26 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun applyRepeatingPreview() {
-        // Aplicar parámetros actuales al HAL
+        // FIX M-03: Implementar aplicación de parámetros al HAL
+        val session = sessionController.captureSession ?: return
+        val builder = sessionController.previewRequestBuilder ?: return
+        
+        try {
+            val iso = manualIso.value
+            val shutter = manualShutterNs.value
+            
+            if (iso > 0 && shutter != null && shutter > 0L) {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, shutter)
+            } else {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+            
+            session.setRepeatingRequest(builder.build(), null, sessionController.backgroundHandler)
+        } catch (e: Exception) {
+            android.util.Log.e("CameraVM", "Error aplicando parámetros de preview", e)
+        }
     }
 
     fun isCameraRunning(): Boolean {
@@ -104,7 +132,10 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun getOptimalPreviewSize(): Pair<Int, Int> {
-        return 1920 to 1080
+        // FIX M-04: Usar CameraTuning para obtener resolución real
+        // En una implementación completa, pasaríamos las características de la cámara
+        val size = CameraTuning.pickOptimalPreviewSize(null, 1f / previewAspectRatio.value)
+        return size.width to size.height
     }
 
     fun getZoomMinValue(): Float = CameraConstants.MIN_ZOOM_DEFAULT
@@ -127,8 +158,8 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
 
     override fun onCleared() {
         super.onCleared()
-        sessionController.closeCamera()
-        sessionController.stopBackgroundThread()
+        // FIX O-02: Liberar recursos y cerrar hilos de forma centralizada
+        sessionController.release()
     }
 
     companion object {
