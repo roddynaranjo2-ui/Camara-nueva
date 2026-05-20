@@ -7,13 +7,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 
 /* ================================================================
- *  MainActivityOverlays.kt · v4.0 (rediseño minimal)
- *
- *  En el rediseño Liquid Glass iOS 26 no hay overlays superpuestos
- *  sobre el preview (histograma, horizon, etc.). Mantenemos el
- *  composable público SettingsOverlayLayer como un no-op para
- *  preservar compatibilidad si alguien lo invoca, aunque la nueva
- *  composición principal usa LiquidGlassUiLayer (en MainActivityHelpers).
+ *  MainActivityOverlays.kt · v4.0 Premium
+ *  (Compatibilidad — los overlays activos están en CameraPreview.kt)
  * ================================================================ */
 @Composable
 fun SettingsOverlayLayer(
@@ -22,6 +17,5 @@ fun SettingsOverlayLayer(
     repo: SettingsRepository,
     previewBounds: Rect? = null
 ) {
-    // Intencionalmente vacío en v4.0 — la UI ahora vive en LiquidGlassUiLayer.
     Box(modifier = Modifier.fillMaxSize())
 }
