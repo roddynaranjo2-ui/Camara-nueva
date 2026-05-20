@@ -48,7 +48,12 @@ import com.rodyto.lenspro.util.*
 import kotlin.math.abs
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraPreview · v4.2 Premium
+ *  Rodyto Lens Pro · CameraPreview · v4.5 Premium
+ *
+ *  v4.5 — FIX CRÍTICO ADICIONAL:
+ *  • surfaceChanged ya no llama holder.setFixedSize() — causaba un loop
+ *    surfaceChanged→setFixedSize→surfaceChanged en Pixel/Samsung Exynos
+ *    que impedía crear la CaptureSession → pantalla negra.
  *
  *  v4.2 — FIX CRÍTICO: LaunchedEffect(latestLens, isFront) ahora
  *  salta la ejecución inicial para evitar la race condition con
@@ -218,7 +223,10 @@ fun CameraPreview(
                                 ) {
                                     if (width <= 0 || height <= 0) return
                                     activeSurface = holder.surface
-                                    try { holder.setFixedSize(width, height) } catch (_: Throwable) {}
+                                    // FIX v4.5: ELIMINADO holder.setFixedSize() — provocaba
+                                    // un loop surfaceChanged→setFixedSize→surfaceChanged en
+                                    // algunos dispositivos (Pixel, Samsung Exynos), dejando
+                                    // la cámara incapaz de crear la CaptureSession → pantalla negra.
                                     viewModel.notifyPreviewSize(width, height)
                                     val (sw, sh) = viewModel.getOptimalPreviewSize()
                                     if (sw > 0 && sh > 0 &&
