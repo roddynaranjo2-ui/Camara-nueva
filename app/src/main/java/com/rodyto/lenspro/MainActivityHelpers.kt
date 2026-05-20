@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border          // ← FIX v4.0.1 (E3): faltaba este import
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -48,7 +49,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  LiquidGlassUiLayer · iOS 26 minimal premium · v4.0
+ *  LiquidGlassUiLayer · iOS 26 minimal premium · v4.0.1
+ *
+ *  FIX v4.0.1 (sobre v4.0):
+ *   • Import añadido: androidx.compose.foundation.border.
+ *   • `androidx_border_white_ring` reescrito como extensión correcta
+ *     de Modifier (this.border(...)), eliminando el "Unresolved
+ *     reference: border" en compileDebugKotlin.
+ *   • LiquidShutter ya no envuelve la extensión con .then(...) — la
+ *     extensión por sí misma devuelve Modifier.
  *
  *  Componentes (de arriba a abajo):
  *   ┌─ Quick Settings Island (top)
@@ -587,14 +596,13 @@ private fun LiquidShutter(
         contentAlignment = Alignment.Center
     ) {
         // Capa A — Anillo exterior 76pt × 4.5pt blanco
+        // FIX v4.0.1: la extensión ya devuelve Modifier, encadenamos directamente.
         Box(
             modifier = Modifier
                 .size(76.dp)
                 .clip(CircleShape)
                 .background(Color.Transparent)
-                .then(
-                    Modifier.androidx_border_white_ring(4.5f)
-                )
+                .androidx_border_white_ring(4.5f)
         )
         // Capa B (3.5pt transparente) implícita: el inner está separado del anillo
         // Capa C — Núcleo
@@ -911,12 +919,14 @@ private fun MutableInteractionSource.collectPressedCompat(): androidx.compose.ru
     return isPressed
 }
 
-/* Extensión privada para el anillo blanco del shutter (4.5pt stroke) */
-private fun Modifier.androidx_border_white_ring(strokeDp: Float) =
-    this.then(
-        androidx.compose.foundation.border(
-            width = strokeDp.dp,
-            color = Color.White,
-            shape = CircleShape
-        )
+/* Extensión privada para el anillo blanco del shutter (4.5pt stroke)
+ * FIX v4.0.1: `border` es una extensión de Modifier — debe llamarse
+ * sobre el receiver (this.border(...)). Antes se invocaba como función
+ * top-level (androidx.compose.foundation.border(...)) y el compilador
+ * la marcaba como Unresolved reference. */
+private fun Modifier.androidx_border_white_ring(strokeDp: Float): Modifier =
+    this.border(
+        width = strokeDp.dp,
+        color = Color.White,
+        shape = CircleShape
     )
