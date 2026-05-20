@@ -14,30 +14,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue      // ← FIX v4.0.1 (E1/E2): habilita `by State<T>`
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue      // ← simetría (futuro `var by mutableStateOf`)
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.combine
 
 /* ================================================================
- *  MainActivityCore.kt · REDISEÑO v4.0.1 LIQUID GLASS
+ *  MainActivityCore.kt · v4.0 Premium
  *
- *  FIX v4.0.1:
- *   • Añadido `import androidx.compose.runtime.getValue` (y setValue
- *     por simetría). Sin él, `val x by stateFlow.collectAsStateWith
- *     Lifecycle()` fallaba con:
- *       Type 'State<…>' has no method 'getValue(Nothing?, KProperty<*>)'
- *       and thus it cannot serve as a delegate
- *     porque `getValue` es una extensión de `State<T>` y debe estar
- *     importada para que el operador `by` la resuelva.
- *   • Pequeña guard en ensurePermissions() — evita lanzar el launcher
- *     con un array vacío en algunos OEM que devuelven todo concedido.
- *
- *  Composición simplificada: Preview + UI minimal iOS 26.
+ *  v4.0 — Cambios:
+ *   • Bridge sincronizado SettingsRepository ↔ ViewModel para
+ *     flashMode, timerSeconds, gridEnabled, hapticsEnabled,
+ *     soundEnabled — TODO funcional.
  * ================================================================ */
 class MainActivity : ComponentActivity() {
 
@@ -59,6 +52,19 @@ class MainActivity : ComponentActivity() {
             val themeStr  by repo.themeMode.collectAsStateWithLifecycle(initialValue = "system")
             val accent = repo.accentFromIndex(accentIdx)
             val dark   = repo.themeFromString(themeStr)
+
+            // ─── Bridges Repo → ViewModel
+            val flashStr by repo.flashMode.collectAsStateWithLifecycle(initialValue = "OFF")
+            val timer by repo.timerSeconds.collectAsStateWithLifecycle(initialValue = 0)
+            val gridOn by repo.gridEnabled.collectAsStateWithLifecycle(initialValue = false)
+            val hapOn by repo.hapticsEnabled.collectAsStateWithLifecycle(initialValue = true)
+            val soundOn by repo.shutterSound.collectAsStateWithLifecycle(initialValue = true)
+
+            LaunchedEffect(flashStr) { viewModel.setFlashMode(repo.flashFromString(flashStr)) }
+            LaunchedEffect(timer)    { viewModel.setTimerSeconds(timer) }
+            LaunchedEffect(gridOn)   { viewModel.setGridEnabled(gridOn) }
+            LaunchedEffect(hapOn)    { viewModel.setHapticsEnabled(hapOn) }
+            LaunchedEffect(soundOn)  { viewModel.setSoundEnabled(soundOn) }
 
             LensProTheme(forceDark = dark, accentStyle = accent) {
                 val palette = glassPalette(forceDark = dark, accentStyle = accent)
@@ -87,18 +93,10 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
 
-        if (missing.isNotEmpty()) {
-            permissionsLauncher.launch(missing)
-        }
+        if (missing.isNotEmpty()) permissionsLauncher.launch(missing)
     }
 }
 
-/* ================================================================
- *  Composición principal — 3 capas limpias:
- *   0. Camera Preview (hardware)
- *   1. Top Quick Settings Island (modo, resolución, fps, ajustes)
- *   2. Bottom Controls (lentes, shutter, gallery, flip, Pro Peek)
- * ================================================================ */
 @Composable
 fun RodytoLensApp(
     viewModel: CameraControlViewModel,
@@ -108,15 +106,8 @@ fun RodytoLensApp(
     LaunchedEffect(Unit) { viewModel.applyRepeatingPreview() }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Capa 0 — Camera Preview
         CameraPreviewLayer(viewModel = viewModel)
-
-        // Capa 1 + 2 — UI Liquid Glass minimal
-        LiquidGlassUiLayer(
-            viewModel = viewModel,
-            palette = palette,
-            repo = repo
-        )
+        LiquidGlassUiLayer(viewModel = viewModel, palette = palette, repo = repo)
     }
 }
 
@@ -125,7 +116,7 @@ fun CameraPreviewLayer(viewModel: CameraControlViewModel) {
     CameraPreview(
         viewModel = viewModel,
         modifier = Modifier.fillMaxSize(),
-        onPreviewBoundsChanged = { /* no usado en rediseño minimal */ }
+        onPreviewBoundsChanged = { /* no usado */ }
     )
     CameraXAnalysisBridge(vm = viewModel)
 }
