@@ -62,6 +62,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rodyto.lenspro.settings.SettingsRepository
+import com.rodyto.lenspro.ui.theme.GlassPalette
 import kotlinx.coroutines.launch
 
 /* ================================================================

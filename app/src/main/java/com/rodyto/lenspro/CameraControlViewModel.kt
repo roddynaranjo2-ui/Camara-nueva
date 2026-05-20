@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rodyto.lenspro.camera.CameraSessionController
 import com.rodyto.lenspro.settings.SettingsBridge
+import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

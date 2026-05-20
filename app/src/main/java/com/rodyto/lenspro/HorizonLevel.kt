@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.rodyto.lenspro.ui.theme.GlassPalette
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos

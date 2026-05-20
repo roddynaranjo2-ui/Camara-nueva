@@ -42,6 +42,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rodyto.lenspro.settings.SettingsRepository
+import com.rodyto.lenspro.ui.theme.AccentStyle
+import com.rodyto.lenspro.ui.theme.GlassPalette
+import com.rodyto.lenspro.ui.theme.LensProTheme
+import com.rodyto.lenspro.ui.theme.glassPalette
 import kotlinx.coroutines.launch
 
 /**
