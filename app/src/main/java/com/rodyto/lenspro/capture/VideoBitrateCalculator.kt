@@ -1,5 +1,7 @@
 package com.rodyto.lenspro.capture
 
+import com.rodyto.lenspro.VideoResolution
+
 /**
  * VideoBitrateCalculator — Réplica afinada de la fórmula Samsung One UI.
  *
