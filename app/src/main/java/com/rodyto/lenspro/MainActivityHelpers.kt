@@ -1,5 +1,6 @@
 package com.rodyto.lenspro
 
+import android.content.Intent
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
@@ -19,8 +20,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Cameraswitch
 import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.FlashAuto
+import androidx.compose.material.icons.rounded.FlashOff
+import androidx.compose.material.icons.rounded.FlashOn
+import androidx.compose.material.icons.rounded.GridOn
+import androidx.compose.material.icons.rounded.GridOff
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.Timer10
+import androidx.compose.material.icons.rounded.Timer3
+import androidx.compose.material.icons.rounded.TimerOff
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -35,12 +46,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
@@ -54,40 +65,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 /* ================================================================
- *  LiquidGlassUiLayer · iOS 26 minimal premium · v5.0
+ *  LiquidGlassUiLayer · v6.0 Premium iOS 26
  *
- *  REVISIÓN v5.0 (sobre v4.0.1):
- *   • Texto/iconos YA NO se renderizan dentro de una superficie con
- *     blur — quedan 100% nítidos. (El fix vive en LiquidGlass.kt v5.)
- *   • Springs reemplazadas por presets canónicos en Spring26.kt para
- *     alinear el "feel" con iOS 26.
- *   • Mode-shifter carousel con MÁSCARA ALFA REAL (BlendMode.DstIn)
- *     en los laterales — los modos inactivos se desvanecen a 0
- *     gradualmente sobre 60pt (sección C del prompt).
- *   • Etiquetas numéricas (FPS, resolución) ahora con FontFamily
- *     Monospace + drop-shadow programático (sección 4 del prompt).
- *   • Shutter 76pt morphing con física Spring26.shutterMorph (rebote
- *     elástico, escala temporal ~250 ms — sección 3.1 del prompt).
- *   • Hit targets de iconos 44pt × 44pt (sección 2.A del prompt).
- *   • Drag indicator del Pro Peek 38 × 4dp, color blanco α 25%.
- *   • Lens dial: hit-area constante 32pt, círculo activo blanco α 20%.
- *
- *  COMPONENTES (de arriba a abajo):
- *   ┌─ Quick Settings Island (top)
- *   │   • [FOTO/VIDEO] chip indicator
- *   │   • [4K · FHD · HD] (solo VIDEO)
- *   │   • [30 · 60] FPS (solo VIDEO)
- *   │   • ⚙ Ajustes → Pro Peek Panel
- *   │
- *   ├─ Lens Dial (sobre el shutter)
- *   │   • .5 · 1× · 3×
- *   │
- *   ├─ Mode shifter Carousel (FOTO · VIDEO con máscara alfa lateral)
- *   │
- *   └─ Bottom Action Block
- *       • [Gallery 50pt] · [Shutter 76pt morphing] · [Flip 50pt]
- *
- *  Pro Peek Panel (modal-sheet) emerge desde abajo (280pt alto).
+ *  v6.0 — Cambios sobre v5.0:
+ *   • Flash chip funcional en QuickSettingsIsland (OFF/AUTO/ON).
+ *   • Timer chip funcional (Off/3s/10s).
+ *   • Grid chip funcional.
+ *   • Gallery button realmente abre la galería (GalleryLauncher).
+ *   • Flip camera funcional (sin bug).
+ *   • ProPeek panel completamente rediseñado:
+ *      - Solo ajustes conectados (no celdas deshabilitadas).
+ *      - Acceso directo a Ajustes avanzados (icono Tune).
+ *      - Cierre por gesto + backdrop.
  * ================================================================ */
 
 @Composable
@@ -97,15 +86,20 @@ fun LiquidGlassUiLayer(
     repo: SettingsRepository
 ) {
     val view = LocalView.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val cameraMode by viewModel.cameraMode.collectAsStateWithLifecycle()
-    val recording  by viewModel.isRecording.collectAsStateWithLifecycle()
+    val recording by viewModel.isRecording.collectAsStateWithLifecycle()
+    val flashMode by viewModel.flashMode.collectAsStateWithLifecycle()
+    val timerSec by viewModel.timerSeconds.collectAsStateWithLifecycle()
+    val gridOn by viewModel.gridEnabled.collectAsStateWithLifecycle()
+    val flashSupported by viewModel.isFlashSupported.collectAsStateWithLifecycle()
 
-    val lensLabel  by repo.lastLens.collectAsStateWithLifecycle(initialValue = "1x")
-    val hapticsOn  by repo.hapticsEnabled.collectAsStateWithLifecycle(initialValue = true)
-    val videoRes   by repo.videoResolution.collectAsStateWithLifecycle(initialValue = "FHD")
-    val videoFps   by repo.videoFps.collectAsStateWithLifecycle(initialValue = 30)
+    val lensLabel by repo.lastLens.collectAsStateWithLifecycle(initialValue = "1x")
+    val hapticsOn by repo.hapticsEnabled.collectAsStateWithLifecycle(initialValue = true)
+    val videoRes by repo.videoResolution.collectAsStateWithLifecycle(initialValue = "FHD")
+    val videoFps by repo.videoFps.collectAsStateWithLifecycle(initialValue = 30)
 
     var showProPeek by remember { mutableStateOf(false) }
 
@@ -122,6 +116,10 @@ fun LiquidGlassUiLayer(
             isVideoMode = isVideoMode,
             videoRes = videoRes,
             videoFps = videoFps,
+            flashMode = flashMode,
+            flashSupported = flashSupported,
+            timerSec = timerSec,
+            gridOn = gridOn,
             onCycleResolution = {
                 haptic()
                 val next = when (videoRes) {
@@ -133,6 +131,24 @@ fun LiquidGlassUiLayer(
                 haptic()
                 val next = if (videoFps == 30) 60 else 30
                 scope.launch { repo.setVideoFps(next) }
+            },
+            onCycleFlash = {
+                haptic()
+                val next = when (flashMode) {
+                    FlashMode.OFF -> FlashMode.AUTO
+                    FlashMode.AUTO -> FlashMode.ON
+                    FlashMode.ON -> FlashMode.OFF
+                }
+                scope.launch { repo.setFlashMode(next.name) }
+            },
+            onCycleTimer = {
+                haptic()
+                val next = when (timerSec) { 0 -> 3; 3 -> 10; else -> 0 }
+                scope.launch { repo.setTimer(next) }
+            },
+            onToggleGrid = {
+                haptic()
+                scope.launch { repo.setGrid(!gridOn) }
             },
             onOpenSettings = { haptic(); showProPeek = true },
             modifier = Modifier.align(Alignment.TopCenter)
@@ -173,7 +189,7 @@ fun LiquidGlassUiLayer(
                 if (isVideoMode) viewModel.toggleRecording() else viewModel.takePhoto()
             },
             onFlipCamera = { haptic(); viewModel.switchCamera() },
-            onOpenGallery = { /* hook galería para futura iteración */ },
+            onOpenGallery = { haptic(); GalleryLauncher.openGallery(context) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 38.dp)
@@ -182,9 +198,13 @@ fun LiquidGlassUiLayer(
         // ─── PRO PEEK PANEL (Modal Sheet) ────────────────────────
         ProPeekPanel(
             visible = showProPeek,
+            isVideoMode = isVideoMode,
             videoRes = videoRes,
             videoFps = videoFps,
-            isVideoMode = isVideoMode,
+            flashMode = flashMode,
+            flashSupported = flashSupported,
+            timerSec = timerSec,
+            gridOn = gridOn,
             onCycleResolution = {
                 haptic()
                 val next = when (videoRes) {
@@ -197,22 +217,51 @@ fun LiquidGlassUiLayer(
                 val next = if (videoFps == 30) 60 else 30
                 scope.launch { repo.setVideoFps(next) }
             },
+            onCycleFlash = {
+                haptic()
+                val next = when (flashMode) {
+                    FlashMode.OFF -> FlashMode.AUTO
+                    FlashMode.AUTO -> FlashMode.ON
+                    FlashMode.ON -> FlashMode.OFF
+                }
+                scope.launch { repo.setFlashMode(next.name) }
+            },
+            onCycleTimer = {
+                haptic()
+                val next = when (timerSec) { 0 -> 3; 3 -> 10; else -> 0 }
+                scope.launch { repo.setTimer(next) }
+            },
+            onToggleGrid = {
+                haptic()
+                scope.launch { repo.setGrid(!gridOn) }
+            },
+            onOpenAdvanced = {
+                haptic()
+                showProPeek = false
+                context.startActivity(Intent(context, SettingsActivity::class.java))
+            },
             onDismiss = { showProPeek = false }
         )
     }
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  A · QUICK SETTINGS ISLAND  (Top floating pill)
- *  Width = Screen - 32pt, Height = 52pt, Radius = 26pt
+ *  A · QUICK SETTINGS ISLAND
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun QuickSettingsIsland(
     isVideoMode: Boolean,
     videoRes: String,
     videoFps: Int,
+    flashMode: FlashMode,
+    flashSupported: Boolean,
+    timerSec: Int,
+    gridOn: Boolean,
     onCycleResolution: () -> Unit,
     onCycleFps: () -> Unit,
+    onCycleFlash: () -> Unit,
+    onCycleTimer: () -> Unit,
+    onToggleGrid: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -223,17 +272,49 @@ private fun QuickSettingsIsland(
             .fillMaxWidth()
             .height(52.dp)
     ) {
-        LiquidGlassPill(
-            modifier = Modifier.fillMaxSize()
-        ) {
+        LiquidGlassPill(modifier = Modifier.fillMaxSize()) {
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp),
+                    .padding(horizontal = 14.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 ModeChipIndicator(isVideoMode = isVideoMode)
+
+                // Flash chip (siempre visible si hay flash)
+                if (flashSupported) {
+                    IslandIconButton(
+                        icon = when (flashMode) {
+                            FlashMode.ON -> Icons.Rounded.FlashOn
+                            FlashMode.AUTO -> Icons.Rounded.FlashAuto
+                            FlashMode.OFF -> Icons.Rounded.FlashOff
+                        },
+                        active = flashMode != FlashMode.OFF,
+                        contentDescription = "Flash",
+                        onClick = onCycleFlash
+                    )
+                }
+
+                // Timer chip
+                IslandIconButton(
+                    icon = when (timerSec) {
+                        3 -> Icons.Rounded.Timer3
+                        10 -> Icons.Rounded.Timer10
+                        else -> Icons.Rounded.TimerOff
+                    },
+                    active = timerSec > 0,
+                    contentDescription = "Timer",
+                    onClick = onCycleTimer
+                )
+
+                // Grid chip
+                IslandIconButton(
+                    icon = if (gridOn) Icons.Rounded.GridOn else Icons.Rounded.GridOff,
+                    active = gridOn,
+                    contentDescription = "Cuadrícula",
+                    onClick = onToggleGrid
+                )
 
                 AnimatedVisibility(
                     visible = isVideoMode,
@@ -241,7 +322,7 @@ private fun QuickSettingsIsland(
                     exit  = fadeOut(tween(140))
                 ) {
                     PillTextButton(
-                        label  = when (videoRes) { "UHD" -> "4K"; "HD" -> "HD"; else -> "FHD" },
+                        label = when (videoRes) { "UHD" -> "4K"; "HD" -> "HD"; else -> "FHD" },
                         onClick = onCycleResolution,
                         active = videoRes == "UHD"
                     )
@@ -253,7 +334,7 @@ private fun QuickSettingsIsland(
                     exit  = fadeOut(tween(140))
                 ) {
                     PillTextButton(
-                        label  = "$videoFps",
+                        label = "$videoFps",
                         suffix = "FPS",
                         onClick = onCycleFps,
                         active = videoFps == 60
@@ -275,19 +356,15 @@ private fun ModeChipIndicator(isVideoMode: Boolean) {
     val icon = if (isVideoMode) Icons.Rounded.Videocam else Icons.Rounded.PhotoCamera
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        LensIcon(
-            icon = icon,
-            tint = Color.White.copy(alpha = 0.95f),
-            size = 18.dp
-        )
+        LensIcon(icon = icon, tint = Color.White.copy(alpha = 0.95f), size = 16.dp)
         Text(
             text = if (isVideoMode) "VIDEO" else "FOTO",
             color = Color.White.copy(alpha = 0.92f),
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.8.sp
+            letterSpacing = 0.6.sp
         )
     }
 }
@@ -306,7 +383,6 @@ private fun PillTextButton(
         animationSpec = Spring26.button(),
         label = "pill_scale"
     )
-
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -335,7 +411,7 @@ private fun PillTextButton(
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace      // SF Pro Mono equivalent
+            fontFamily = FontFamily.Monospace
         )
         if (suffix != null) {
             Text(
@@ -352,7 +428,8 @@ private fun PillTextButton(
 private fun IslandIconButton(
     icon: ImageVector,
     contentDescription: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    active: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
@@ -363,12 +440,16 @@ private fun IslandIconButton(
     )
     Box(
         modifier = Modifier
-            .size(44.dp)                  // Hit target spec
+            .size(40.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
+            .background(
+                if (active) Color(0xFFFFCC00).copy(alpha = 0.22f)
+                else Color.Transparent
+            )
             .clickable(
                 interactionSource = interaction,
-                indication = ripple(bounded = false, radius = 22.dp),
+                indication = ripple(bounded = false, radius = 20.dp),
                 onClick = onClick
             ),
         contentAlignment = Alignment.Center
@@ -376,15 +457,14 @@ private fun IslandIconButton(
         LensIcon(
             icon = icon,
             contentDescription = contentDescription,
-            tint = Color.White,
-            size = 20.dp                  // Glifo spec 20pt
+            tint = if (active) Color(0xFFFFCC00) else Color.White,
+            size = 20.dp
         )
     }
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  B · LENS DIAL  (.5 · 1× · 3×)
- *  Cápsula 42pt alto, círculos 32pt, gap 12pt
+ *  B · LENS DIAL
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun LensDial(
@@ -428,7 +508,6 @@ private fun LensBubble(
     }
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
-
     val bubbleSize by animateDpAsState(
         targetValue = if (selected) 32.dp else 26.dp,
         animationSpec = Spring26.button(),
@@ -442,7 +521,7 @@ private fun LensBubble(
 
     Box(
         modifier = Modifier
-            .size(32.dp)            // hit area constante
+            .size(32.dp)
             .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
             .clip(CircleShape)
             .clickable(
@@ -475,8 +554,7 @@ private fun LensBubble(
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  C · MODE SHIFTER CAROUSEL  (FOTO · VIDEO con máscara alfa real)
- *  Sección C del prompt: opacidad 0→100% en 60pt desde el lateral
+ *  C · MODE SHIFTER CAROUSEL
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun ModeShifterCarousel(
@@ -494,26 +572,13 @@ private fun ModeShifterCarousel(
             .height(32.dp)
             .drawWithContent {
                 drawContent()
-                // Máscara alfa lateral (sección C — DstIn blend)
                 drawRect(
                     brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black,
-                            Color.Black,
-                            Color.Transparent
-                        ),
-                        startX = 0f,
-                        endX = size.width,
-                        tileMode = androidx.compose.ui.graphics.TileMode.Clamp
-                    ).let {
-                        Brush.horizontalGradient(
-                            0.00f to Color.Transparent,
-                            (fadePx / size.width).coerceIn(0f, 0.5f) to Color.Black,
-                            (1f - fadePx / size.width).coerceIn(0.5f, 1f) to Color.Black,
-                            1.00f to Color.Transparent
-                        )
-                    },
+                        0.00f to Color.Transparent,
+                        (fadePx / size.width).coerceIn(0f, 0.5f) to Color.Black,
+                        (1f - fadePx / size.width).coerceIn(0.5f, 1f) to Color.Black,
+                        1.00f to Color.Transparent
+                    ),
                     blendMode = BlendMode.DstIn
                 )
             },
@@ -529,7 +594,6 @@ private fun ModeShifterCarousel(
                 animationSpec = Spring26.carousel(),
                 label = "mode_scale_$mode"
             )
-
             Box(
                 modifier = Modifier
                     .padding(horizontal = 18.dp)
@@ -543,7 +607,7 @@ private fun ModeShifterCarousel(
             ) {
                 Text(
                     text = mode,
-                    color = if (selected) Color(0xFFFFCC00)          // amarillo iOS
+                    color = if (selected) Color(0xFFFFCC00)
                             else Color.White.copy(alpha = 0.55f),
                     fontSize = 12.sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -556,7 +620,7 @@ private fun ModeShifterCarousel(
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  D · BOTTOM ACTION BLOCK  (Gallery · Shutter · Flip)
+ *  D · BOTTOM ACTION BLOCK
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun BottomActionBlock(
@@ -575,13 +639,11 @@ private fun BottomActionBlock(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         GalleryButton(onClick = onOpenGallery)
-
         LiquidShutter(
             isRecording = isRecording,
             isVideoMode = isVideoMode,
             onTap = onShutterTap
         )
-
         FlipCameraButton(onClick = onFlipCamera)
     }
 }
@@ -594,12 +656,11 @@ private fun LiquidShutter(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
-
     val innerSize by animateDpAsState(
         targetValue = when {
-            isRecording -> 30.dp                  // cuadradito stop
-            isVideoMode -> 34.dp                  // squircle vídeo
-            else        -> 60.dp                  // círculo foto
+            isRecording -> 30.dp
+            isVideoMode -> 34.dp
+            else        -> 60.dp
         },
         animationSpec = Spring26.shutterMorph(),
         label = "shutter_inner_size"
@@ -618,7 +679,6 @@ private fun LiquidShutter(
         animationSpec = Spring26.button(),
         label = "shutter_press_scale"
     )
-
     val innerColor = if (isVideoMode || isRecording) Color(0xFFFF3B30) else Color.White
 
     Box(
@@ -633,20 +693,13 @@ private fun LiquidShutter(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Capa A — anillo exterior 76pt × 4.5pt blanco
         Box(
             modifier = Modifier
                 .size(76.dp)
                 .clip(CircleShape)
                 .background(Color.Transparent)
-                .border(
-                    width = 4.5.dp,
-                    color = Color.White,
-                    shape = CircleShape
-                )
+                .border(width = 4.5.dp, color = Color.White, shape = CircleShape)
         )
-        // Capa B (3.5pt separador) implícito por la diferencia 76 vs inner
-        // Capa C — núcleo morphing
         Box(
             modifier = Modifier
                 .size(innerSize)
@@ -708,25 +761,30 @@ private fun FlipCameraButton(onClick: () -> Unit) {
             ),
         contentAlignment = Alignment.Center
     ) {
-        LensIcon(
-            icon = Icons.Rounded.Cameraswitch,
-            tint = Color.White,
-            size = 24.dp
-        )
+        LensIcon(icon = Icons.Rounded.Cameraswitch, tint = Color.White, size = 24.dp)
     }
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  E · PRO PEEK PANEL  (Modal sheet desde abajo, 280pt alto)
+ *  E · PRO PEEK PANEL (rediseñado v6.0)
+ *  Solo ajustes funcionales + acceso a Settings avanzados.
  * ════════════════════════════════════════════════════════════════ */
 @Composable
 private fun ProPeekPanel(
     visible: Boolean,
+    isVideoMode: Boolean,
     videoRes: String,
     videoFps: Int,
-    isVideoMode: Boolean,
+    flashMode: FlashMode,
+    flashSupported: Boolean,
+    timerSec: Int,
+    gridOn: Boolean,
     onCycleResolution: () -> Unit,
     onCycleFps: () -> Unit,
+    onCycleFlash: () -> Unit,
+    onCycleTimer: () -> Unit,
+    onToggleGrid: () -> Unit,
+    onOpenAdvanced: () -> Unit,
     onDismiss: () -> Unit
 ) {
     if (!visible) return
@@ -740,7 +798,6 @@ private fun ProPeekPanel(
         )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Backdrop
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -751,7 +808,6 @@ private fun ProPeekPanel(
                         onClick = onDismiss
                     )
             )
-
             AnimatedVisibility(
                 visible = true,
                 enter = slideInVertically(
@@ -765,19 +821,17 @@ private fun ProPeekPanel(
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 LiquidGlassSurface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(280.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     cornerRadiusTop = 32.dp,
                     cornerRadiusBottom = 0.dp
                 ) {
                     Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 24.dp, vertical = 18.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .fillMaxWidth()
+                            .padding(horizontal = 22.dp, vertical = 18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        // Drag indicator (spec: 38 × 4dp blanco α 25%)
+                        // Drag indicator
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterHorizontally)
@@ -786,79 +840,110 @@ private fun ProPeekPanel(
                                 .background(Color.White.copy(alpha = 0.25f))
                         )
 
-                        Text(
-                            text = "Ajustes Pro",
-                            color = Color(0xFFF5F5F7),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-
-                        // Grid 2 × 3
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Ajustes rápidos",
+                                color = Color(0xFFF5F5F7),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            // Acceso a Settings avanzados
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.10f))
+                                    .clickable(onClick = onOpenAdvanced),
+                                contentAlignment = Alignment.Center
                             ) {
-                                ProPeekCell(
-                                    title = "Resolución",
-                                    value = when (videoRes) {
-                                        "UHD" -> "4K"; "HD" -> "HD"; else -> "FHD"
-                                    },
-                                    enabled = isVideoMode,
-                                    onClick = onCycleResolution,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ProPeekCell(
-                                    title = "FPS",
-                                    value = videoFps.toString(),
-                                    enabled = isVideoMode,
-                                    onClick = onCycleFps,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ProPeekCell(
-                                    title = "Modo",
-                                    value = if (isVideoMode) "VIDEO" else "FOTO",
-                                    enabled = false,
-                                    onClick = {},
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                ProPeekCell(
-                                    title = "Códec",
-                                    value = "H.265",
-                                    enabled = false,
-                                    onClick = {},
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ProPeekCell(
-                                    title = "HDR",
-                                    value = "Auto",
-                                    enabled = false,
-                                    onClick = {},
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ProPeekCell(
-                                    title = "Cuadrícula",
-                                    value = "Off",
-                                    enabled = false,
-                                    onClick = {},
-                                    modifier = Modifier.weight(1f)
+                                LensIcon(
+                                    icon = Icons.Rounded.Tune,
+                                    tint = Color.White,
+                                    size = 18.dp
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.weight(1f))
+                        // ─── Filas funcionales (solo lo que existe) ──
+                        // Flash
+                        if (flashSupported) {
+                            ProPeekCell(
+                                title = "Flash",
+                                value = when (flashMode) {
+                                    FlashMode.ON -> "Encendido"
+                                    FlashMode.AUTO -> "Automático"
+                                    FlashMode.OFF -> "Apagado"
+                                },
+                                icon = when (flashMode) {
+                                    FlashMode.ON -> Icons.Rounded.FlashOn
+                                    FlashMode.AUTO -> Icons.Rounded.FlashAuto
+                                    FlashMode.OFF -> Icons.Rounded.FlashOff
+                                },
+                                active = flashMode != FlashMode.OFF,
+                                onClick = onCycleFlash
+                            )
+                        }
 
+                        // Timer
+                        ProPeekCell(
+                            title = "Temporizador",
+                            value = when (timerSec) {
+                                3 -> "3 segundos"
+                                10 -> "10 segundos"
+                                else -> "Apagado"
+                            },
+                            icon = when (timerSec) {
+                                3 -> Icons.Rounded.Timer3
+                                10 -> Icons.Rounded.Timer10
+                                else -> Icons.Rounded.TimerOff
+                            },
+                            active = timerSec > 0,
+                            onClick = onCycleTimer
+                        )
+
+                        // Grid
+                        ProPeekCell(
+                            title = "Cuadrícula 3×3",
+                            value = if (gridOn) "Activada" else "Desactivada",
+                            icon = if (gridOn) Icons.Rounded.GridOn else Icons.Rounded.GridOff,
+                            active = gridOn,
+                            onClick = onToggleGrid
+                        )
+
+                        // Solo en vídeo
+                        if (isVideoMode) {
+                            ProPeekCell(
+                                title = "Resolución de vídeo",
+                                value = when (videoRes) {
+                                    "UHD" -> "4K · Ultra HD"
+                                    "HD" -> "HD · 720p"
+                                    else -> "FHD · 1080p"
+                                },
+                                icon = Icons.Rounded.Videocam,
+                                active = videoRes == "UHD",
+                                onClick = onCycleResolution
+                            )
+                            ProPeekCell(
+                                title = "Frecuencia",
+                                value = "$videoFps fps",
+                                icon = Icons.Rounded.Tune,
+                                active = videoFps == 60,
+                                onClick = onCycleFps
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Toca fuera para cerrar",
-                            color = Color.White.copy(alpha = 0.45f),
+                            text = "Más opciones en Ajustes avanzados (⚙️ arriba a la derecha)",
+                            color = Color.White.copy(alpha = 0.50f),
                             fontSize = 11.sp,
                             modifier = Modifier.align(Alignment.CenterHorizontally)
                         )
+                        Spacer(modifier = Modifier.navigationBarsPadding())
                     }
                 }
             }
@@ -870,54 +955,70 @@ private fun ProPeekPanel(
 private fun ProPeekCell(
     title: String,
     value: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    icon: ImageVector,
+    active: Boolean,
+    onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectPressedCompat()
     val scale by animateFloatAsState(
-        targetValue = if (pressed && enabled) 0.94f else 1f,
+        targetValue = if (pressed) 0.97f else 1f,
         animationSpec = Spring26.button(),
         label = "cell_scale"
     )
-    Column(
-        modifier = modifier
-            .graphicsLayer {
-                scaleX = scale; scaleY = scale
-                alpha = if (enabled) 1f else 0.45f
-            }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(18.dp))
-            .background(Color.White.copy(alpha = 0.10f))
+            .background(
+                if (active) Color(0xFFFFCC00).copy(alpha = 0.14f)
+                else Color.White.copy(alpha = 0.08f)
+            )
             .border(
                 width = 0.5.dp,
-                color = Color.White.copy(alpha = 0.12f),
+                color = Color.White.copy(alpha = if (active) 0.22f else 0.10f),
                 shape = RoundedCornerShape(18.dp)
             )
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(bounded = true),
-                enabled = enabled,
                 onClick = onClick
             )
-            .padding(horizontal = 14.dp, vertical = 14.dp),
-        horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            text = title,
-            color = Color.White.copy(alpha = 0.70f),
-            fontSize = 10.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.6.sp
-        )
-        Text(
-            text = value,
-            color = Color.White,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
-        )
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(
+                    if (active) Color(0xFFFFCC00).copy(alpha = 0.25f)
+                    else Color.White.copy(alpha = 0.12f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            LensIcon(
+                icon = icon,
+                tint = if (active) Color(0xFFFFCC00) else Color.White,
+                size = 18.dp
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = value,
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
@@ -949,9 +1050,9 @@ private fun MutableInteractionSource.collectPressedCompat(): androidx.compose.ru
         val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
         interactions.collect { interaction ->
             when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press   -> active.add(interaction)
+                is androidx.compose.foundation.interaction.PressInteraction.Press -> active.add(interaction)
                 is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel  -> active.remove(interaction.press)
+                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> active.remove(interaction.press)
             }
             isPressed.value = active.isNotEmpty()
         }
