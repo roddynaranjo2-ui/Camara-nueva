@@ -21,7 +21,6 @@ object GalleryLauncher {
     private const val TAG = "GalleryLauncher"
 
     fun openGallery(context: Context) {
-        // 1) Mejor opción — MediaStore via ACTION_VIEW
         val tryIntents = listOf(
             Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
