@@ -14,22 +14,10 @@ import android.view.SurfaceHolder
 import kotlin.math.abs
 
 /**
- * CameraTuning v3.6 — OPTIMIZADO
+ * CameraTuning v4.1 — OPTIMIZADO
  *
- * Cambios v3.6 (sobre v2.2):
- *  ① pickOptimalPreviewSize ahora prefiere tamaños CERCANOS a la resolución
- *    del display (passed-in displayLongEdgePx) en lugar de "el más grande
- *    posible ≤ 1080p". Razón: en dispositivos con display 1080p o 1440p,
- *    pedir un buffer 1920x1080 cuando la superficie sólo tiene ~2200x1080
- *    útiles desperdicia VRAM y agrava el tearing en pantalla.
- *  ② bestFpsRange RECHAZA rangos muy amplios (>15fps de spread) salvo que
- *    NO haya otra opción. Razón: rangos como [15,30] producen AE inestable
- *    y motion blur visible en escenas con poca luz porque el HAL alterna
- *    la sensor exposure entre frames.
- *  ③ MAX_PREVIEW_AREA dinámico: si el caller no provee display size, se
- *    mantiene el cap a 1080p; si lo provee, se usa min(1080p, displayArea*1.05).
- *  ④ pickOptimalRecordingSize prefiere matches EXACTOS y, si no existen,
- *    descarta sizes con aspect ratio incompatible.
+ * Cambios v4.1:
+ *  • BUG-C6: JPEG_QUALITY debe ser Byte, no Int.
  */
 object CameraTuning {
 
@@ -65,8 +53,16 @@ object CameraTuning {
         }
     }
 
-    fun applyJpegQuality(b: CaptureRequest.Builder) {
-        try { b.set(CaptureRequest.JPEG_QUALITY, 97) } catch (_: Throwable) {}
+    /**
+     * BUG-C6: JPEG_QUALITY es de tipo Byte en el SDK de Android.
+     * Pasar un Int puede causar fallos silenciosos o excepciones en algunos HALs.
+     */
+    fun applyJpegQuality(b: CaptureRequest.Builder, quality: Int = 97) {
+        try {
+            b.set(CaptureRequest.JPEG_QUALITY, quality.toByte())
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error aplicando JPEG_QUALITY", e)
+        }
     }
 
     fun applyJpegOrientation(b: CaptureRequest.Builder, sensorOrientation: Int, isFront: Boolean) {
@@ -147,17 +143,6 @@ object CameraTuning {
         }
     }
 
-    /**
-     * bestFpsRange v3.6:
-     * Estrategia:
-     *  1) Match exacto fixed [fps,fps].
-     *  2) Rangos cuyo upper==fps con menor spread (preferimos [30,30] > [15,30]).
-     *  3) Rangos que CONTIENEN fps con spread ≤ WIDE_FPS_RANGE_THRESHOLD.
-     *  4) Rangos que contienen fps con cualquier spread (fallback).
-     *  5) Cualquier rango más cercano por upper.
-     *
-     * Esto evita seleccionar [7,30] cuando existe [24,30] o [30,30].
-     */
     fun bestFpsRange(ranges: Array<Range<Int>>, fps: Int): Range<Int> {
         if (ranges.isEmpty()) return Range(fps, fps)
 
@@ -199,12 +184,6 @@ object CameraTuning {
         return maxFps + 2 >= fps
     }
 
-    /**
-     * pickOptimalRecordingSize v3.6:
-     *  • Match exacto si existe.
-     *  • Si no, sólo candidatos con aspect ratio compatible con el target.
-     *  • Mayor área dentro del límite del target.
-     */
     fun pickOptimalRecordingSize(
         characteristics: CameraCharacteristics?,
         target: VideoResolution
@@ -228,13 +207,6 @@ object CameraTuning {
             ?: sizes.first()
     }
 
-    /**
-     * pickOptimalPreviewSize v3.6 — ahora con preferencia por sizes próximos
-     * a la resolución del display (si se pasa). Si no se pasa, mantiene cap 1080p.
-     *
-     * @param targetRatio Aspect ratio LANDSCAPE (≥1f recomendado).
-     * @param displayLongEdgePx Lado largo del display en píxeles (opcional).
-     */
     fun pickOptimalPreviewSize(
         characteristics: CameraCharacteristics?,
         targetRatio: Float,
@@ -248,11 +220,9 @@ object CameraTuning {
         val targetLandscape = if (targetRatio < 1f) 1f / targetRatio else targetRatio
         if (targetLandscape <= 0f || !targetLandscape.isFinite()) return fallback
 
-        // Cap dinámico: si tenemos display info, no superar mucho la resolución del display
         val maxArea: Long = if (displayLongEdgePx > 200) {
             val displayShort = (displayLongEdgePx / targetLandscape).toInt().coerceAtLeast(720)
             val displayArea = displayLongEdgePx.toLong() * displayShort.toLong()
-            // 5% de margen para superar ligeramente el display si los tamaños discretos lo exigen.
             minOf(DEFAULT_MAX_PREVIEW_AREA, (displayArea * 1.05).toLong())
         } else {
             DEFAULT_MAX_PREVIEW_AREA
@@ -281,8 +251,6 @@ object CameraTuning {
         }
         val pool = if (matched.isNotEmpty()) matched else all
 
-        // FIX v3.6: si hay display info, preferimos el size cuyo lado largo sea
-        // EL MÁS CERCANO al display (no necesariamente el más grande).
         val chosen = if (displayLongEdgePx > 200) {
             pool.minByOrNull { abs(it.width - displayLongEdgePx) }
                 ?: pool.maxByOrNull { it.width.toLong() * it.height }

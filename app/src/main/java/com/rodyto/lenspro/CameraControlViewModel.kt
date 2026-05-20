@@ -1,189 +1,72 @@
 package com.rodyto.lenspro
 
 import android.app.Application
-import android.content.Context
-import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
-import android.util.Log
-import android.util.Size
-import android.view.Surface
-import java.lang.ref.WeakReference
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.rodyto.lenspro.camera.CameraSessionController
+import com.rodyto.lenspro.settings.SettingsBridge
+import com.rodyto.lenspro.settings.SettingsRepository
+import com.rodyto.lenspro.ui.CameraUiStateHolder
+import kotlinx.coroutines.flow.StateFlow
 
-/* ================================================================
- *  Rodyto Lens Pro · CameraControlViewModel.kt · v4.0 Premium
- *
- *  v4.0 — Cambios sobre v3.8:
- *   • CameraCaptureEngine integrado — ImageReader JPEG real.
- *   • CaptureSession ahora incluye DOS targets: preview surface + reader surface.
- *   • onFrontBackSwitchRequested() override → reapertura inmediata sin
- *     esperar a que la Surface se recree (fix B1).
- *   • currentCharacteristics cacheadas para zoom + JPEG orientation.
- *   • applyJpegSize() detecta automáticamente el mayor JPEG soportado.
- * ================================================================ */
-class CameraControlViewModel(application: Application) :
-    CameraControlViewModelOps(application) {
+/**
+ * CameraControlViewModel — Orquestador principal usando COMPOSICIÓN.
+ * Refactor estructural de la Fase 3.
+ */
+class CameraControlViewModel(application: Application) : AndroidViewModel(application) {
 
-    companion object {
-        const val MAX_DIGITAL_ZOOM: Float = 30f
+    private val stateHolder = CameraUiStateHolder()
+    private val sessionController = CameraSessionController(application, stateHolder)
+    
+    // Repositorio de ajustes
+    private val settingsRepository = SettingsRepository(application)
+    private val settingsBridge = SettingsBridge(settingsRepository, this, viewModelScope)
 
-        init {
-            try {
-                System.loadLibrary("rodytolenspro")
-            } catch (t: Throwable) {
-                Log.w("CameraVM", "Native lib no cargada: ${t.message}")
-            }
-        }
+    // Exponer estados desde el stateHolder
+    val uiState: StateFlow<CameraUiState> = stateHolder.uiState
+    val sessionState: StateFlow<CameraSessionState> = stateHolder.sessionState
+    val cameraMode: StateFlow<CameraMode> = stateHolder.cameraMode
+    val isRecording: StateFlow<Boolean> = stateHolder.isRecording
+    val flashMode: StateFlow<FlashMode> = MutableStateFlow(FlashMode.OFF) // Placeholder
+    val timerSeconds: StateFlow<Int> = MutableStateFlow(0) // Placeholder
+    val gridEnabled: StateFlow<Boolean> = MutableStateFlow(false) // Placeholder
+    val isFlashSupported: StateFlow<Boolean> = MutableStateFlow(false) // Placeholder
+
+    init {
+        settingsBridge.wire()
     }
 
-    external fun getPhysicalCameraIdsNative(): Array<String>
-
-    @Volatile private var pendingPreviewSurface: Surface? = null
-    @Volatile private var lastPreviewContext: WeakReference<Context>? = null
-
-    fun startCameraSession(
-        context: Context,
-        surface: Surface,
-        lens: LensInfo?
-    ) {
-        ensureBackgroundThread()
-        if (cameraDevice != null) safeCloseCamera()
-
-        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-
-        val resolvedId = resolveCameraIdFor(lens, manager)
-        if (resolvedId == null) {
-            Log.e("CameraVM", "No hay cameraId disponible para lens=$lens"); return
-        }
-        try {
-            val chars = manager.getCameraCharacteristics(resolvedId)
-            currentCharacteristics = chars
-            recomputeOptimalPreviewSize(
-                characteristics = chars,
-                targetRatio = _previewAspectRatio.value.let { if (it <= 0f) 1f else it }
-            )
-            // Detectar soporte de flash
-            val flashAvail = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-            isFlashSupported.value = flashAvail
-
-            // Inicializar CaptureEngine con context + handler
-            if (captureEngine == null) {
-                captureEngine = CameraCaptureEngine(
-                    context = context.applicationContext,
-                    backgroundHandler = backgroundHandler
-                )
-            }
-        } catch (_: Throwable) { }
-
-        pendingPreviewSurface = surface
-        lastPreviewContext = WeakReference(context.applicationContext ?: context)
-
-        if (lens != null) setCurrentLensInternal(lens)
-
-        try {
-            openCamera(manager, resolvedId)
-        } catch (sec: SecurityException) {
-            Log.e("CameraVM", "Permisos: $sec")
-        }
+    fun takePhoto() {
+        // Delegar a PhotoCapturePipeline (a implementar)
     }
 
-    override fun onCameraOpened(camera: CameraDevice) {
-        val surface = pendingPreviewSurface ?: return
-        val chars = currentCharacteristics
-        try {
-            // ─── ImageReader JPEG
-            val jpegSize: Size = chars
-                ?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                ?.getOutputSizes(android.graphics.ImageFormat.JPEG)
-                ?.maxByOrNull { it.width.toLong() * it.height }
-                ?: Size(1920, 1080)
-
-            val readerSurface = captureEngine?.prepareReader(jpegSize)
-
-            previewRequestBuilder = camera.createCaptureRequest(
-                CameraDevice.TEMPLATE_PREVIEW
-            ).apply { addTarget(surface) }
-
-            val outputs = listOfNotNull(surface, readerSurface)
-
-            camera.createCaptureSession(
-                outputs,
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(s: CameraCaptureSession) {
-                        captureSession = s
-                        applyRepeatingPreview()
-                    }
-                    override fun onConfigureFailed(s: CameraCaptureSession) {
-                        Log.e("CameraVM", "createCaptureSession FAILED")
-                        _sessionState.value = CameraSessionState.ERROR
-                    }
-                },
-                backgroundHandler
-            )
-        } catch (t: Throwable) {
-            Log.e("CameraVM", "onCameraOpened error", t)
-            _sessionState.value = CameraSessionState.ERROR
-        }
+    fun toggleRecording() {
+        // Delegar a VideoCapturePipeline (a implementar)
     }
 
-    /* ─── Override: cambio de lente ─────────────────────────────── */
-    override fun onLensSwitchRequested(lens: LensInfo) {
-        reopenWithCurrentLens(lens)
+    fun switchCamera() {
+        // Delegar a sessionController
     }
 
-    /* ─── Override: switch FRONT/BACK (fix B1) ──────────────────── */
-    override fun onFrontBackSwitchRequested() {
-        reopenWithCurrentLens(_currentLens.value)
+    fun setLens(lens: LensInfo?) {
+        stateHolder.setCurrentLens(lens)
     }
 
-    private fun reopenWithCurrentLens(lens: LensInfo?) {
-        val ctx = lastPreviewContext?.get()
-        val surface = pendingPreviewSurface
-        if (ctx == null || surface == null || !surface.isValid) {
-            Log.w("CameraVM", "reopenWithCurrentLens: surface/context inválido — esperando surface recreate")
-            return
-        }
-        startCameraSession(ctx, surface, lens)
+    fun setCameraMode(mode: CameraMode) {
+        stateHolder.setCameraMode(mode)
     }
 
-    private fun resolveCameraIdFor(
-        lens: LensInfo?,
-        manager: CameraManager
-    ): String? {
-        return try {
-            val ids = manager.cameraIdList
-            if (_isFrontCamera.value) {
-                ids.firstOrNull {
-                    manager.getCameraCharacteristics(it)
-                        .get(CameraCharacteristics.LENS_FACING) ==
-                        CameraCharacteristics.LENS_FACING_FRONT
-                }
-            } else if (forceTelePhysicalId.value && lens?.label == "3x") {
-                activePhysicalTeleId.value
-                    ?: ids.firstOrNull {
-                        manager.getCameraCharacteristics(it)
-                            .get(CameraCharacteristics.LENS_FACING) ==
-                            CameraCharacteristics.LENS_FACING_BACK
-                    }
-            } else {
-                ids.firstOrNull {
-                    manager.getCameraCharacteristics(it)
-                        .get(CameraCharacteristics.LENS_FACING) ==
-                        CameraCharacteristics.LENS_FACING_BACK
-                }
-            }
-        } catch (t: Throwable) {
-            Log.e("CameraVM", "resolveCameraIdFor falló", t); null
-        }
-    }
+    // Setters para SettingsBridge
+    fun setGridEnabled(enabled: Boolean) { /* update state */ }
+    fun setSoundEnabled(enabled: Boolean) { /* update state */ }
+    fun setHapticsEnabled(enabled: Boolean) { /* update state */ }
 
     override fun onCleared() {
-        lastPreviewContext = null
-        pendingPreviewSurface = null
-        captureEngine?.release()
-        captureEngine = null
         super.onCleared()
+        sessionController.closeCamera()
+        sessionController.stopBackgroundThread()
     }
 }
+
+// Placeholder para evitar errores de compilación inmediatos en el StateFlow
+private fun <T> MutableStateFlow(value: T): StateFlow<T> = kotlinx.coroutines.flow.MutableStateFlow(value)

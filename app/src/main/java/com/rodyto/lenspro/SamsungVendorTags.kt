@@ -89,19 +89,25 @@ object SamsungVendorTags {
      */
     @Suppress("UNCHECKED_CAST")
     private fun <T> keyOf(name: String, type: Class<T>): CaptureRequest.Key<T>? {
-        keyCache[name]?.let { return it as CaptureRequest.Key<T> }
-        return try {
-            val ctor = CaptureRequest.Key::class.java.getDeclaredConstructor(
-                String::class.java, Class::class.java
-            )
-            ctor.isAccessible = true
-            val k = ctor.newInstance(name, type) as CaptureRequest.Key<T>
-            keyCache[name] = k
-            k
-        } catch (e: Throwable) {
-            keyCache[name] = null
-            Log.v(TAG, "Vendor tag no disponible: $name (${e.javaClass.simpleName})")
-            null
+        // SEC-2: Sincronización para evitar race conditions en el cache
+        synchronized(keyCache) {
+            keyCache[name]?.let { return it as CaptureRequest.Key<T> }
+            return try {
+                val ctor = CaptureRequest.Key::class.java.getDeclaredConstructor(
+                    String::class.java, Class::class.java
+                )
+                ctor.isAccessible = true
+                val k = ctor.newInstance(name, type) as CaptureRequest.Key<T>
+                keyCache[name] = k
+                k
+            } catch (e: Throwable) {
+                keyCache[name] = null
+                // Reducir ruido en logs de producción
+                if (BuildConfig.DEBUG) {
+                    Log.v(TAG, "Vendor tag no disponible: $name (${e.javaClass.simpleName})")
+                }
+                null
+            }
         }
     }
 

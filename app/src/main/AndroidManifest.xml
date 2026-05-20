@@ -40,7 +40,7 @@
           se crea sin enableEdgeToEdge (p. ej. diálogos del sistema).
     -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:hardwareAccelerated="true"
         android:largeHeap="true"
         android:supportsRtl="true"

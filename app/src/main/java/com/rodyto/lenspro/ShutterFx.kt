@@ -1,24 +1,32 @@
 package com.rodyto.lenspro
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.pow
 
 /**
- * ShutterFx v2 — Motor de sonido sintetizado para feedback de captura.
+ * ShutterFx v2.1 — Motor de sonido sintetizado para feedback de captura.
  *
  * FIX A10: usábamos `File.createTempFile + deleteOnExit` + `pool.load(path)`.
  * SoundPool.load es ASÍNCRONO: si el GC corre `deleteOnExit` antes de que
  * SoundPool termine de leer el archivo → sonido vacío. Ahora:
- *   1. Creamos el WAV temporal.
+ *   1. Creamos el WAV temporal en context.cacheDir (BUG-C1).
  *   2. Cargamos vía path en SoundPool.
  *   3. Registramos OnLoadCompleteListener.
  *   4. SOLO cuando SoundPool confirma "loaded", borramos el archivo.
  *   5. Si carga falla, lo borramos también para no dejar basura.
  */
-class ShutterFx {
+class ShutterFx(private val context: Context) {
+
+    companion object {
+        private const val TAG = "ShutterFx"
+    }
 
     private val pool: SoundPool = SoundPool.Builder()
         .setMaxStreams(4)
@@ -40,7 +48,7 @@ class ShutterFx {
             val f = pendingTempFiles.remove(sampleId)
             try { f?.delete() } catch (_: Throwable) {}
             if (status != 0) {
-                // Carga fallida: el sample id no servirá, pero no lanzamos
+                Log.w(TAG, "SoundPool load failed for sample $sampleId with status $status")
             }
         }
     }
@@ -80,7 +88,10 @@ class ShutterFx {
                 amp *= decay.pow(1.0 / 64.0)
             }
             loadPcmAsWav(pcm, sampleRate)
-        } catch (_: Throwable) { 0 }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating click PCM", e)
+            0
+        }
     }
 
     private fun generateChirpPcm(durationMs: Int, startHz: Double, endHz: Double): Int {
@@ -96,14 +107,15 @@ class ShutterFx {
                 pcm[i] = v.toInt().coerceIn(-32_767, 32_767).toShort()
             }
             loadPcmAsWav(pcm, sampleRate)
-        } catch (_: Throwable) { 0 }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating chirp PCM", e)
+            0
+        }
     }
 
     /**
      * Empaqueta el PCM en formato WAV (RIFF) y lo carga en SoundPool.
-     * FIX A10: ya NO usamos `deleteOnExit`. El archivo se borra en el
-     * listener `onLoadComplete` para garantizar que SoundPool terminó de
-     * leerlo. Si nunca se completa la carga, `release()` limpia residuos.
+     * BUG-C1: Usamos context.cacheDir para garantizar escritura en todos los dispositivos.
      */
     private fun loadPcmAsWav(pcm: ShortArray, sampleRate: Int): Int {
         val byteCount = pcm.size * 2
@@ -130,11 +142,25 @@ class ShutterFx {
             data[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
         }
 
-        // FIX A10: archivo temporal SIN deleteOnExit
-        val tmp = File.createTempFile("lp_fx_", ".wav")
-        FileOutputStream(tmp).use { os ->
-            os.write(header); os.write(data); os.flush()
+        val tmp = try {
+            File.createTempFile("lp_fx_", ".wav", context.cacheDir).also {
+                it.deleteOnExit()
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "No se pudo crear WAV temporal en cacheDir", e)
+            return 0
         }
+
+        try {
+            FileOutputStream(tmp).use { os ->
+                os.write(header); os.write(data); os.flush()
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "Error escribiendo WAV temporal", e)
+            runCatching { tmp.delete() }
+            return 0
+        }
+
         val soundId = pool.load(tmp.absolutePath, 1)
         if (soundId > 0) {
             pendingTempFiles[soundId] = tmp
@@ -155,6 +181,4 @@ class ShutterFx {
         buf[off]     = (v        and 0xFF).toByte()
         buf[off + 1] = ((v shr  8) and 0xFF).toByte()
     }
-
-    private fun Double.pow(p: Double): Double = Math.pow(this, p)
 }

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LensPro</string>
+    <string name="settings_title">Ajustes avanzados</string>
+    <string name="section_architecture">Arquitectura Pro</string>
+    <string name="section_visual">Estilo Visual</string>
+    <string name="footer_description">Rodyto Lens Pro v%1$s Pro · Liquid Glass · Camera2 + CameraX + NDK\nRAW DNG real · Manual focus · EXIF dinámico · Hybrid Image Analysis</string>
+    <string name="mode_photo">FOTO</string>
+    <string name="mode_video">VIDEO</string>
+    <string name="flash_off">Flash desactivado</string>
+    <string name="flash_auto">Flash automático</string>
+    <string name="flash_on">Flash activado</string>
+</resources>

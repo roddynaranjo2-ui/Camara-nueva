@@ -190,7 +190,7 @@ private fun SettingsScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "Rodyto Lens Pro v3.6 · Liquid Glass UI",
+                            "Rodyto Lens Pro v${BuildConfig.VERSION_NAME} · Liquid Glass UI",
                             color = palette.onGlassSecondary,
                             fontSize = 12.sp
                         )
@@ -405,7 +405,7 @@ private fun SettingsScreen(
             }
 
             // ─── v3.5 Pro: Arquitectura híbrida ─────────────────────
-            item { SectionTitle("Arquitectura Pro · v3.6", palette) }
+            item { SectionTitle("Arquitectura Pro · v${BuildConfig.VERSION_NAME}", palette) }
             item {
                 GlassCard(palette) {
                     SettingsRowSwitch(
@@ -550,7 +550,7 @@ private fun SettingsScreen(
             // ─── Footer ──────────────────────────────────────────────
             item {
                 Text(
-                    "Rodyto Lens Pro v3.6 Pro · Liquid Glass · Camera2 + CameraX + NDK\n" +
+                    "Rodyto Lens Pro v${BuildConfig.VERSION_NAME} Pro · Liquid Glass · Camera2 + CameraX + NDK\n" +
                     "RAW DNG real · Manual focus · EXIF dinámico · Hybrid Image Analysis\n" +
                     "${AccentStyle.entries.size} paletas · Samsung Zoom Quality · Physical Tele ID configurable",
                     color = palette.onGlassSecondary,

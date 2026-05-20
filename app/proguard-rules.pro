@@ -78,3 +78,15 @@
 -keepclassmembers class com.rodyto.lenspro.** {
     public <init>(...);
 }
+
+# ── SamsungVendorTags — reflexión específica al constructor (CI-2)
+-keepclassmembers class android.hardware.camera2.CaptureRequest$Key {
+    <init>(java.lang.String, java.lang.Class);
+}
+
+# Mantener cualquier @Keep que añadamos
+-keep @androidx.annotation.Keep class * { *; }
+-keepclassmembers class * { @androidx.annotation.Keep <fields>; @androidx.annotation.Keep <methods>; }
+
+# Compose: configurar el atomicfu solo si se usa
+-dontwarn kotlinx.atomicfu.**
