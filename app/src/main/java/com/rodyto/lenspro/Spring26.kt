@@ -1,10 +1,10 @@
 package com.rodyto.lenspro
 
-import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.spring
 
 /* ================================================================
- *  Spring26.kt · v1.0
+ *  Spring26.kt · v1.1
  *
  *  Presets de física estilo iOS 26 traducidos a las unidades de
  *  androidx.compose.animation.core.spring().
@@ -25,30 +25,37 @@ import androidx.compose.animation.core.spring
  *
  *  Estos coeficientes están AFINADOS a mano para Compose 1.7.x
  *  tras pruebas en Pixel 7 y Samsung S21 FE (60 y 120 Hz).
+ *
+ *  FIX v1.1: Cambio de AnimationSpec<T> → FiniteAnimationSpec<T>
+ *  para compatibilidad con slideInVertically / slideOutVertically
+ *  que exigen FiniteAnimationSpec<IntOffset>.
+ *  spring() devuelve SpringSpec<T> que implementa FiniteAnimationSpec<T>,
+ *  por lo que el cambio es seguro y compatible con todos los usos
+ *  existentes (animateFloatAsState, animateDpAsState, etc.).
  * ================================================================ */
 object Spring26 {
 
     /** Pulsación rápida de botones (escala 1 → 0.92 → 1). */
-    fun <T> button(): AnimationSpec<T> = spring(
-        stiffness   = 380f,
+    fun <T> button(): FiniteAnimationSpec<T> = spring(
+        stiffness    = 380f,
         dampingRatio = 0.72f
     )
 
     /** Desplazamiento horizontal del carrusel de modos. */
-    fun <T> carousel(): AnimationSpec<T> = spring(
-        stiffness   = 200f,
+    fun <T> carousel(): FiniteAnimationSpec<T> = spring(
+        stiffness    = 200f,
         dampingRatio = 0.80f
     )
 
     /** Despliegue/colapso de paneles (Pro Peek). */
-    fun <T> panel(): AnimationSpec<T> = spring(
-        stiffness   = 260f,
+    fun <T> panel(): FiniteAnimationSpec<T> = spring(
+        stiffness    = 260f,
         dampingRatio = 0.78f
     )
 
     /** Morphing del shutter (más rebote, "clímax elástico"). */
-    fun <T> shutterMorph(): AnimationSpec<T> = spring(
-        stiffness   = 340f,
+    fun <T> shutterMorph(): FiniteAnimationSpec<T> = spring(
+        stiffness    = 340f,
         dampingRatio = 0.58f   // rebote visible
     )
 
