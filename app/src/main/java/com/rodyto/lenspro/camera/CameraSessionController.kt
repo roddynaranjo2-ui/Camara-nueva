@@ -9,6 +9,9 @@ import android.view.Surface
 import com.rodyto.lenspro.CameraSessionState
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import com.rodyto.lenspro.camera.CameraCaptureEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * CameraSessionController — Gestiona el ciclo de vida del CameraDevice y la CaptureSession.
@@ -56,7 +59,7 @@ class CameraSessionController(
         // FIX O-02: Reutilizar hilos si ya existen y asignar prioridad de cámara
         if (backgroundThread?.isAlive == true) return
         backgroundThread = HandlerThread("CameraBG").apply { 
-            priority = android.os.Process.THREAD_PRIORITY_CAMERA
+            priority = android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
             start() 
         }
         val handler = Handler(backgroundThread!!.looper)
@@ -147,12 +150,14 @@ class CameraSessionController(
         val builder = previewRequestBuilder ?: return
         // En una implementación senior, pasaríamos las características de la cámara aquí
         // Por ahora usamos el motor de captura existente
-        captureEngine.captureStill(
-            session = session,
-            previewBuilder = builder,
-            characteristics = null, // Debería obtenerse del CameraManager
-            timerSeconds = 0, // El ViewModel ya maneja el timer si es necesario
-            onShutterEffect = onShutterEffect
-        )
+        CoroutineScope(Dispatchers.IO).launch {
+            captureEngine.captureStill(
+                session = session,
+                previewBuilder = builder,
+                characteristics = null, // Debería obtenerse del CameraManager
+                timerSeconds = 0, // El ViewModel ya maneja el timer si es necesario
+                onShutterEffect = onShutterEffect
+            )
+        }
     }
 }
