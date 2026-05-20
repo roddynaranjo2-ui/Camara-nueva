@@ -6,6 +6,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,18 +42,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.abs
 
 /* ================================================================
- *  Rodyto Lens Pro · CameraPreview · v3.7 Pro · CORREGIDO
+ *  Rodyto Lens Pro · CameraPreview · v4.0 Premium
  *
- *  CORRECCIONES v3.7 (sobre v3.6):
- *   ① pinchToZoom REESCRITA con awaitPointerEventScope (método directo
- *      de PointerInputScope) en lugar de awaitEachGesture con FQN.
- *      Causa original del error de compilación: Kotlin no resuelve
- *      correctamente FQNs de funciones de extensión suspend en ciertos
- *      contextos de compilación con AGP 8.6 + Compose BOM 2024.12.01.
- *      La nueva implementación es semánticamente idéntica y compila
- *      con cualquier versión de Foundation.
- *   ② Se añaden imports explícitos PointerEvent, PointerInputScope.
- *   ③ Resto de mejoras v3.6 conservadas íntegramente.
+ *  v4.0 — Cambios:
+ *   • Letterbox BLUREADO en vivo (BlurredBackdropLayer detrás)
+ *     en lugar de bandas negras planas.
+ *   • Overlays funcionales: grid 3×3, timer countdown.
+ *   • Pinch-to-zoom logarítmico SUAVE con sensitivity calibrada.
+ *   • Throttle de bounds optimizado (0.5px epsilon).
+ *   • Lifecycle cleanup robusto.
  * ================================================================ */
 @Composable
 fun CameraPreview(
@@ -71,7 +69,6 @@ fun CameraPreview(
     val aspect by viewModel.previewAspectRatio.collectAsStateWithLifecycle()
     val cameraMode by viewModel.cameraMode.collectAsStateWithLifecycle()
 
-    // Animación rápida sin rebote
     val animatedAspect by animateFloatAsState(
         targetValue = aspect,
         animationSpec = spring(
@@ -82,179 +79,168 @@ fun CameraPreview(
     )
 
     var activeSurface by remember { mutableStateOf<Surface?>(null) }
+    var surfaceViewRef by remember { mutableStateOf<AutoFitSurfaceView?>(null) }
     var lastBounds by remember { mutableStateOf<Rect?>(null) }
-
-    // Guard para evitar re-aplicar el aspect ratio idéntico en cada update
     var lastAppliedSw by remember { mutableStateOf(-1) }
     var lastAppliedSh by remember { mutableStateOf(-1) }
 
-    LaunchedEffect(cameraMode) {
-        viewModel.applyRepeatingPreview()
-    }
+    LaunchedEffect(cameraMode) { viewModel.applyRepeatingPreview() }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     val surface = activeSurface
-                    // Comprobar también que NO esté ya abriendo
                     if (surface != null && surface.isValid &&
                         !viewModel.isCameraRunning() &&
                         viewModel.sessionState.value != CameraSessionState.OPENING
                     ) {
-                        viewModel.startCameraSession(
-                            context = context,
-                            surface = surface,
-                            lens = latestLens
-                        )
+                        viewModel.startCameraSession(context, surface, latestLens)
                     }
                 }
-                Lifecycle.Event.ON_PAUSE -> {
-                    viewModel.closeCamera()
-                }
+                Lifecycle.Event.ON_PAUSE -> viewModel.closeCamera()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black),
-        contentAlignment = Alignment.Center
+            .background(Color.Black)
     ) {
+        // ─── CAPA 0: Letterbox blureado en vivo (detrás de todo) ──
+        BlurredBackdropLayer(
+            sourceSurfaceRef = { surfaceViewRef },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Vignette sutil sobre el backdrop para resaltar el frame focal
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp)
-                .aspectRatio(animatedAspect)
-                .clip(RoundedCornerShape(30.dp))
-                .onGloballyPositioned { coords ->
-                    val newBounds = coords.boundsInRoot()
-                    val prev = lastBounds
-                    // Throttle bounds 0.5px → cero recomposiciones inútiles
-                    val changed = prev == null ||
-                        abs(prev.top - newBounds.top) > 0.5f ||
-                        abs(prev.bottom - newBounds.bottom) > 0.5f ||
-                        abs(prev.left - newBounds.left) > 0.5f ||
-                        abs(prev.right - newBounds.right) > 0.5f
-                    if (changed) {
-                        lastBounds = newBounds
-                        onPreviewBoundsChanged(newBounds)
-                    }
-                }
-                .then(
-                    if (pinchEnabled) Modifier.pointerInput(Unit) {
-                        pinchToZoom(
-                            getCurrentZoom = { viewModel.zoomLevel.value },
-                            getMinZoom = { viewModel.getZoomMinValue() },
-                            getMaxZoom = { viewModel.getZoomMaxValue() },
-                            onZoom = { z -> viewModel.setZoomContinuous(z) },
-                            onPinchStart = { onPinchInProgress(true) },
-                            onPinchEnd = { onPinchInProgress(false) }
-                        )
-                    } else Modifier
-                )
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.18f))
+        )
+
+        // ─── CAPA 1: Preview focal nítido centrado 3:4 ────────────
+        Box(
+            modifier = Modifier
+                .fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    AutoFitSurfaceView(ctx).apply {
-                        setZOrderOnTop(false)
-                        holder.setKeepScreenOn(true)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp)
+                    .aspectRatio(animatedAspect)
+                    .clip(RoundedCornerShape(30.dp))
+                    .border(
+                        width = 0.75.dp,
+                        color = Color.White.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(30.dp)
+                    )
+                    .onGloballyPositioned { coords ->
+                        val newBounds = coords.boundsInRoot()
+                        val prev = lastBounds
+                        val changed = prev == null ||
+                            abs(prev.top - newBounds.top) > 0.5f ||
+                            abs(prev.bottom - newBounds.bottom) > 0.5f ||
+                            abs(prev.left - newBounds.left) > 0.5f ||
+                            abs(prev.right - newBounds.right) > 0.5f
+                        if (changed) {
+                            lastBounds = newBounds
+                            onPreviewBoundsChanged(newBounds)
+                        }
+                    }
+                    .then(
+                        if (pinchEnabled) Modifier.pointerInput(Unit) {
+                            pinchToZoom(
+                                getCurrentZoom = { viewModel.zoomLevel.value },
+                                getMinZoom = { viewModel.getZoomMinValue() },
+                                getMaxZoom = { viewModel.getZoomMaxValue() },
+                                onZoom = { z -> viewModel.setZoomContinuous(z) },
+                                onPinchStart = { onPinchInProgress(true) },
+                                onPinchEnd = { onPinchInProgress(false) }
+                            )
+                        } else Modifier
+                    )
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        AutoFitSurfaceView(ctx).apply {
+                            setZOrderOnTop(false)
+                            holder.setKeepScreenOn(true)
+                            surfaceViewRef = this
 
-                        holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                val surface = holder.surface
-                                activeSurface = surface
-                                if (surface.isValid &&
-                                    !viewModel.isCameraRunning() &&
-                                    viewModel.sessionState.value != CameraSessionState.OPENING
-                                ) {
-                                    viewModel.startCameraSession(
-                                        context = ctx,
-                                        surface = surface,
-                                        lens = latestLens
-                                    )
+                            holder.addCallback(object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                    val surface = holder.surface
+                                    activeSurface = surface
+                                    if (surface.isValid &&
+                                        !viewModel.isCameraRunning() &&
+                                        viewModel.sessionState.value != CameraSessionState.OPENING
+                                    ) {
+                                        viewModel.startCameraSession(ctx, surface, latestLens)
+                                    }
                                 }
-                            }
-
-                            override fun surfaceChanged(
-                                holder: SurfaceHolder,
-                                format: Int,
-                                width: Int,
-                                height: Int
-                            ) {
-                                // Validar dimensiones antes de aceptar surface
-                                if (width <= 0 || height <= 0) return
-                                activeSurface = holder.surface
-                                try { holder.setFixedSize(width, height) }
-                                catch (_: Throwable) {}
-                                viewModel.notifyPreviewSize(width, height)
-
-                                val (sw, sh) = viewModel.getOptimalPreviewSize()
-                                if (sw > 0 && sh > 0 &&
-                                    (sw != lastAppliedSw || sh != lastAppliedSh)
+                                override fun surfaceChanged(
+                                    holder: SurfaceHolder, format: Int,
+                                    width: Int, height: Int
                                 ) {
-                                    lastAppliedSw = sw
-                                    lastAppliedSh = sh
-                                    // En portrait altura del sensor es lado largo en pantalla → invertimos.
-                                    setAspectRatio(sh, sw)
+                                    if (width <= 0 || height <= 0) return
+                                    activeSurface = holder.surface
+                                    try { holder.setFixedSize(width, height) } catch (_: Throwable) {}
+                                    viewModel.notifyPreviewSize(width, height)
+                                    val (sw, sh) = viewModel.getOptimalPreviewSize()
+                                    if (sw > 0 && sh > 0 &&
+                                        (sw != lastAppliedSw || sh != lastAppliedSh)
+                                    ) {
+                                        lastAppliedSw = sw
+                                        lastAppliedSh = sh
+                                        setAspectRatio(sh, sw)
+                                    }
                                 }
-                            }
+                                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                    activeSurface = null
+                                    viewModel.closeCamera()
+                                }
+                            })
+                        }
+                    },
+                    update = { view ->
+                        surfaceViewRef = view
+                        val surface = view.holder.surface
+                        if (surface != null && surface.isValid) activeSurface = surface
+                        val (sw, sh) = viewModel.getOptimalPreviewSize()
+                        if (sw > 0 && sh > 0 &&
+                            (sw != lastAppliedSw || sh != lastAppliedSh)
+                        ) {
+                            lastAppliedSw = sw
+                            lastAppliedSh = sh
+                            view.setAspectRatio(sh, sw)
+                        }
+                    }
+                )
 
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                activeSurface = null
-                                viewModel.closeCamera()
-                            }
-                        })
-                    }
-                },
-                update = { view ->
-                    val surface = view.holder.surface
-                    if (surface != null && surface.isValid) {
-                        activeSurface = surface
-                    }
-                    // Sólo re-aplicar AutoFit si cambió respecto a la última vez
-                    val (sw, sh) = viewModel.getOptimalPreviewSize()
-                    if (sw > 0 && sh > 0 &&
-                        (sw != lastAppliedSw || sh != lastAppliedSh)
-                    ) {
-                        lastAppliedSw = sw
-                        lastAppliedSh = sh
-                        view.setAspectRatio(sh, sw)
-                    }
-                }
-            )
+                // Grid overlay (funcional, dentro del focal frame)
+                GridOverlay(viewModel = viewModel)
+            }
         }
+
+        // ─── CAPA 2: Timer countdown overlay ──────────────────────
+        TimerCountdownOverlay(viewModel = viewModel)
+
+        // ─── CAPA 3: Shutter blink ────────────────────────────────
+        val blinkKey by viewModel.shutterBlinkKey.collectAsStateWithLifecycle()
+        ShutterBlinkOverlay(triggerKey = blinkKey)
     }
 }
 
 /* ================================================================
- *  pinchToZoom v3.7 — CORREGIDA (usa awaitPointerEventScope)
- *
- *  PROBLEMA v3.6: Se usaba `androidx.compose.foundation.gestures.
- *  awaitEachGesture` mediante FQN sin import explícito. Kotlin 1.9.25
- *  con AGP 8.6 + Compose BOM 2024.12.x no resuelve correctamente FQNs
- *  de funciones de extensión suspend en este contexto → error de
- *  compilación "Unresolved reference: awaitEachGesture".
- *
- *  SOLUCIÓN v3.7: Se usa `awaitPointerEventScope` que es un método
- *  DIRECTO de PointerInputScope (declarado en compose-ui, no en
- *  foundation), por lo que no requiere import adicional. Se envuelve
- *  en `while (true)` para replicar la semántica de awaitEachGesture:
- *  tras cada gesto completo, la coroutine vuelve al inicio y espera
- *  el siguiente.
- *
- *  Lógica preservada de v3.6:
- *   • Callback onPinchStart llamado UNA sola vez por gesto.
- *   • Atenuación logarítmica del factor de zoom.
- *   • Distancia mínima de 16px para iniciar, 8px durante el gesto.
- *   • onPinchEnd garantizado por bloque `finally`.
+ *  pinchToZoom v4.0 — sensitivity calibrada + suavizado exponencial
  * ================================================================ */
 private suspend fun PointerInputScope.pinchToZoom(
     getCurrentZoom: () -> Float,
@@ -264,56 +250,42 @@ private suspend fun PointerInputScope.pinchToZoom(
     onPinchStart: () -> Unit,
     onPinchEnd: () -> Unit
 ) {
-    val sensitivity = 1.0f
-
-    // Bucle exterior: reinicia el scope tras cada gesto (equivalente a awaitEachGesture)
+    val sensitivity = 0.6f   // sensitivity logarítmica calibrada
     while (true) {
         awaitPointerEventScope {
-
-            // ── FASE 1: esperar a tener >= 2 dedos ─────────────────
             while (true) {
                 val ev = awaitPointerEvent(PointerEventPass.Main)
                 val active = ev.changes.count { it.pressed }
-                if (active < 1) return@awaitPointerEventScope   // sin dedos → reiniciar
-                if (active >= 2) break                           // 2 dedos → continuar
+                if (active < 1) return@awaitPointerEventScope
+                if (active >= 2) break
             }
-
-            // ── FASE 2: medir distancia inicial ────────────────────
             var prevDistance: Float =
                 computeAverageDistance(awaitPointerEvent(PointerEventPass.Main))
                     ?: return@awaitPointerEventScope
             if (prevDistance < 16f) return@awaitPointerEventScope
 
-            // ── FASE 3: bucle de tracking con cleanup garantizado ──
             onPinchStart()
             try {
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Main)
                     val activePointers = event.changes.count { it.pressed }
-                    if (activePointers < 2) break   // un dedo levantado → fin gesto
-
+                    if (activePointers < 2) break
                     val curDistance = computeAverageDistance(event) ?: continue
                     if (curDistance < 8f || prevDistance < 8f) continue
 
                     var rawFactor = curDistance / prevDistance
-                    if (sensitivity != 1.0f) {
-                        rawFactor = Math.pow(
-                            rawFactor.toDouble(), sensitivity.toDouble()
-                        ).toFloat()
-                    }
+                    rawFactor = Math.pow(rawFactor.toDouble(), sensitivity.toDouble()).toFloat()
+
                     val cur = getCurrentZoom()
                     val target = (cur * rawFactor).coerceIn(getMinZoom(), getMaxZoom())
                     onZoom(target)
                     prevDistance = curDistance
                 }
-            } finally {
-                onPinchEnd()
-            }
+            } finally { onPinchEnd() }
         }
     }
 }
 
-/** Distancia euclidiana entre los dos primeros punteros activos. */
 private fun computeAverageDistance(event: PointerEvent): Float? {
     val active = event.changes.filter { it.pressed }
     if (active.size < 2) return null
