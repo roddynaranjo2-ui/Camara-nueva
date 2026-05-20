@@ -81,11 +81,13 @@ fun CameraXAnalysisBridge(vm: CameraControlViewModel) {
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            // FIX C-02: No llamar a unbindAll() globalmente si queremos coexistencia 
-            // o si el bridge es solo para análisis. 
-            // Sin embargo, el informe sugiere no mezclar frameworks.
-            // Por ahora, solo cerramos el executor y limpiamos referencia.
-            providerRef?.unbindAll() // Solo si estamos seguros de que este provider es local al bridge
+            // FIX v3.8: unbindAll() en onDispose estaba matando la sesión Camera2
+            // de la preview cuando useCameraXAnalysis se desactivaba o la UI
+            // se recomponía. Solo llamar unbindAll() si estábamos activos Y
+            // tenemos referencia al provider. El hilo siempre se cierra.
+            if (active) {
+                try { providerRef?.unbindAll() } catch (_: Throwable) {}
+            }
             providerRef = null
             try { executor.shutdownNow() } catch (_: Throwable) {}
         }
