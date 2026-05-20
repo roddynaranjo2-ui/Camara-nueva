@@ -115,7 +115,7 @@ fun ZoomDial(
                         },
                         onDrag = { change, drag ->
                             val pos = change.position
-                            val c = Offset(size.width / 2f, size.height / 2f)
+                            val c = Offset(this.size.width / 2f, this.size.height / 2f)
                             val a1 = atan2(
                                 (pos.y - c.y).toDouble(),
                                 (pos.x - c.x).toDouble()

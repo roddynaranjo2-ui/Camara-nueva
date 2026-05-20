@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.settings
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences

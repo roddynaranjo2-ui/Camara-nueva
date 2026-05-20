@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.util
 
 import android.media.Image
 import java.nio.ByteBuffer

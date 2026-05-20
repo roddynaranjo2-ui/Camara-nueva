@@ -6,7 +6,7 @@ import kotlinx.coroutines.launch
 
 /**
  * SettingsBridge — Centraliza la sincronización entre el repositorio de ajustes y el ViewModel.
- * Resuelve BUG-F8, F9, F10 e INCO-4/6.
+ * v4.2 — Corregidos imports y referencias.
  */
 class SettingsBridge(
     private val repository: SettingsRepository,
@@ -15,13 +15,19 @@ class SettingsBridge(
 ) {
     fun wire() {
         scope.launch {
-            repository.gridEnabled.collect { viewModel.setGridEnabled(it) }
+            repository.gridEnabled.collect { enabled -> viewModel.setGridEnabled(enabled) }
         }
         scope.launch {
-            repository.shutterSound.collect { viewModel.setSoundEnabled(it) }
+            repository.shutterSound.collect { sound -> viewModel.setSoundEnabled(sound) }
         }
         scope.launch {
-            repository.hapticsEnabled.collect { viewModel.setHapticsEnabled(it) }
+            repository.hapticsEnabled.collect { haptics -> viewModel.setHapticsEnabled(haptics) }
+        }
+        scope.launch {
+            repository.flashMode.collect { flash -> viewModel.setFlashMode(repository.flashFromString(flash)) }
+        }
+        scope.launch {
+            repository.timerSeconds.collect { seconds -> viewModel.setTimerSeconds(seconds) }
         }
     }
 }
