@@ -25,7 +25,6 @@ import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.theme.LensProTheme
 import com.rodyto.lenspro.ui.theme.glassPalette
 import com.rodyto.lenspro.ui.theme.GlassPalette
-import com.rodyto.lenspro.ui.components.LiquidGlassUiLayer
 
 /* ================================================================
  *  MainActivityCore.kt · v4.1 Premium
