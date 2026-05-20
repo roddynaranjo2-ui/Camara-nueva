@@ -1,4 +1,7 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.components
+
+import com.rodyto.lenspro.CameraControlViewModel
+import com.rodyto.lenspro.ui.theme.GlassPalette
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.exponentialDecay

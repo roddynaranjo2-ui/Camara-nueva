@@ -18,11 +18,10 @@ class SettingsBridge(
             repository.gridEnabled.collect { viewModel.setGridEnabled(it) }
         }
         scope.launch {
-            repository.soundEnabled.collect { viewModel.setSoundEnabled(it) }
+            repository.shutterSound.collect { viewModel.setSoundEnabled(it) }
         }
         scope.launch {
             repository.hapticsEnabled.collect { viewModel.setHapticsEnabled(it) }
         }
-        // Añadir aquí más sincronizaciones según sea necesario
     }
 }

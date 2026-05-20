@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.util.Log
+import com.rodyto.lenspro.util.HistogramComputer
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop

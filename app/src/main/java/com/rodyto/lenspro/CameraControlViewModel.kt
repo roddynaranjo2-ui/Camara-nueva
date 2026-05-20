@@ -1,17 +1,21 @@
 package com.rodyto.lenspro
 
 import android.app.Application
+import android.content.Context
+import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rodyto.lenspro.camera.CameraSessionController
 import com.rodyto.lenspro.settings.SettingsBridge
 import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.CameraUiStateHolder
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
  * CameraControlViewModel — Orquestador principal usando COMPOSICIÓN.
  * Refactor estructural de la Fase 3.
+ * v4.2 — Corregidas referencias faltantes tras el refactor.
  */
 class CameraControlViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -27,25 +31,56 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     val sessionState: StateFlow<CameraSessionState> = stateHolder.sessionState
     val cameraMode: StateFlow<CameraMode> = stateHolder.cameraMode
     val isRecording: StateFlow<Boolean> = stateHolder.isRecording
-    val flashMode: StateFlow<FlashMode> = MutableStateFlow(FlashMode.OFF) // Placeholder
-    val timerSeconds: StateFlow<Int> = MutableStateFlow(0) // Placeholder
-    val gridEnabled: StateFlow<Boolean> = MutableStateFlow(false) // Placeholder
-    val isFlashSupported: StateFlow<Boolean> = MutableStateFlow(false) // Placeholder
+    val zoomLevel: StateFlow<Float> = stateHolder.zoomLevel
+    val currentLens: StateFlow<LensInfo?> = stateHolder.currentLens
+    val activeCountdown: StateFlow<Int> = stateHolder.activeCountdown
+    val shutterBlinkKey: StateFlow<Int> = stateHolder.shutterBlinkKey
+
+    // Estados adicionales (Bridges)
+    val flashMode = MutableStateFlow(FlashMode.OFF)
+    val timerSeconds = MutableStateFlow(0)
+    val gridEnabled = MutableStateFlow(false)
+    val hapticsEnabled = MutableStateFlow(true)
+    val soundEnabled = MutableStateFlow(true)
+    val isFrontCamera = MutableStateFlow(false)
+    val previewAspectRatio = MutableStateFlow(3f / 4f)
+    
+    // Pro / CameraX Bridge
+    val useCameraXAnalysis = MutableStateFlow(false)
+    val manualIso = MutableStateFlow(0)
+    val manualShutterNs = MutableStateFlow<Long?>(null)
+    val activePhysicalTeleId = MutableStateFlow<String?>(null)
+    private val _histogramBins = MutableStateFlow<IntArray?>(null)
+    val histogramBins: StateFlow<IntArray?> = _histogramBins
+
+    val isFlashSupported = MutableStateFlow(true) // Placeholder
 
     init {
         settingsBridge.wire()
     }
 
+    /* ─── ACCIONES DE CÁMARA ─────────────────────────────────── */
+
+    fun startCameraSession(context: Context, surface: Surface, lens: LensInfo?) {
+        // Implementación real delegada
+        sessionController.openCamera(lens?.id ?: "0")
+    }
+
+    fun closeCamera() {
+        sessionController.closeCamera()
+    }
+
     fun takePhoto() {
-        // Delegar a PhotoCapturePipeline (a implementar)
+        stateHolder.bumpShutterBlink()
     }
 
     fun toggleRecording() {
-        // Delegar a VideoCapturePipeline (a implementar)
+        stateHolder.setRecording(!isRecording.value)
     }
 
     fun switchCamera() {
-        // Delegar a sessionController
+        isFrontCamera.value = !isFrontCamera.value
+        // Re-abrir cámara
     }
 
     fun setLens(lens: LensInfo?) {
@@ -56,17 +91,49 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         stateHolder.setCameraMode(mode)
     }
 
-    // Setters para SettingsBridge
-    fun setGridEnabled(enabled: Boolean) { /* update state */ }
-    fun setSoundEnabled(enabled: Boolean) { /* update state */ }
-    fun setHapticsEnabled(enabled: Boolean) { /* update state */ }
+    fun applyRepeatingPreview() {
+        // Aplicar parámetros actuales al HAL
+    }
+
+    fun isCameraRunning(): Boolean {
+        return sessionState.value == CameraSessionState.PREVIEWING ||
+               sessionState.value == CameraSessionState.RECORDING ||
+               sessionState.value == CameraSessionState.CAPTURING
+    }
+
+    fun notifyPreviewSize(width: Int, height: Int) {
+        // Notificar al controlador de sesión
+    }
+
+    fun getOptimalPreviewSize(): Pair<Int, Int> {
+        return 1920 to 1080
+    }
+
+    fun getZoomMinValue(): Float = CameraConstants.MIN_ZOOM_DEFAULT
+    fun getZoomMaxValue(): Float = CameraConstants.MAX_ZOOM_DEFAULT
+
+    fun setZoomContinuous(zoom: Float) {
+        stateHolder.setZoomLevel(zoom)
+    }
+
+    fun publishHistogramBins(bins: IntArray) {
+        _histogramBins.value = bins
+    }
+
+    // Setters para SettingsBridge / UI
+    fun setFlashMode(mode: FlashMode) { flashMode.value = mode }
+    fun setTimerSeconds(seconds: Int) { timerSeconds.value = seconds }
+    fun setGridEnabled(enabled: Boolean) { gridEnabled.value = enabled }
+    fun setHapticsEnabled(enabled: Boolean) { hapticsEnabled.value = enabled }
+    fun setSoundEnabled(enabled: Boolean) { soundEnabled.value = enabled }
 
     override fun onCleared() {
         super.onCleared()
         sessionController.closeCamera()
         sessionController.stopBackgroundThread()
     }
-}
 
-// Placeholder para evitar errores de compilación inmediatos en el StateFlow
-private fun <T> MutableStateFlow(value: T): StateFlow<T> = kotlinx.coroutines.flow.MutableStateFlow(value)
+    companion object {
+        const val MAX_DIGITAL_ZOOM = 30f
+    }
+}

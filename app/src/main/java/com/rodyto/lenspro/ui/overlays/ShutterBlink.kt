@@ -1,4 +1,4 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.overlays
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing

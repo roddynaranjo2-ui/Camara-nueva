@@ -22,6 +22,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rodyto.lenspro.ui.theme.LensProTheme
+import com.rodyto.lenspro.settings.SettingsRepository
+import com.rodyto.lenspro.ui.theme.glassPalette
+import com.rodyto.lenspro.ui.theme.GlassPalette
 import kotlinx.coroutines.flow.combine
 
 /* ================================================================

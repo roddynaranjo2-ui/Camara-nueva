@@ -1,4 +1,6 @@
-package com.rodyto.lenspro
+package com.rodyto.lenspro.ui.overlays
+
+import com.rodyto.lenspro.CameraControlViewModel
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
