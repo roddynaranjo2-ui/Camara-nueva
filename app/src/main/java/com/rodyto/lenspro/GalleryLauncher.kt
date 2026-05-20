@@ -7,15 +7,6 @@ import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 
-/* ================================================================
- *  GalleryLauncher.kt · v1.0 Premium
- *
- *  Abre la galería del sistema mostrando las imágenes/vídeos.
- *  Estrategia en cascada:
- *   1. ACTION_VIEW sobre MediaStore.Images
- *   2. Categoría APP_GALLERY
- *   3. Fallback: simple Intent ACTION_VIEW image/*
- * ================================================================ */
 object GalleryLauncher {
 
     private const val TAG = "GalleryLauncher"
@@ -41,9 +32,9 @@ object GalleryLauncher {
             try {
                 context.startActivity(intent)
                 return
-            } catch (_: ActivityNotFoundException) { /* try next */ }
+            } catch (_: ActivityNotFoundException) { }
             catch (t: Throwable) { Log.w(TAG, "intent failed", t) }
         }
-        Toast.makeText(context, "No se encontró una galería instalada", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "No se encontro una galeria instalada", Toast.LENGTH_SHORT).show()
     }
 }
