@@ -11,7 +11,7 @@ import com.rodyto.lenspro.settings.SettingsBridge
 import com.rodyto.lenspro.settings.SettingsRepository
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import com.rodyto.lenspro.tuning.CameraTuning
-import com.rodyto.lenspro.camera.CameraConstants
+import com.rodyto.lenspro.CameraConstants
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
