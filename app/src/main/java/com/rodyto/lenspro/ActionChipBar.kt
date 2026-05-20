@@ -1,56 +1,37 @@
 package com.rodyto.lenspro
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/**
- * ActionChipBar v3.5 Pro — barra superior translúcida glass premium.
+/* ================================================================
+ *  ActionChipBar.kt · v4.0
  *
- * NOVEDADES v3.5:
- *  • Container cornerRadius unificado a 32.dp (spec premium).
- *  • Chips activos: contorno acento 1.2dp + glow blanco interior — el efecto
- *    "iluminado" es ahora notablemente más nítido que en v3.0.
- *  • Spacer rítmico ajustado a 8.dp para respiración visual.
- *  • Chip RAW dedicado (sin tocar API).
- *  • Botón "Settings gear" → SettingsActivity (sin tocar API).
- *  • 100% backwards compatible.
- */
+ *  El rediseño Liquid Glass iOS 26 ya no usa la barra de chips de
+ *  acciones (flash, HDR, RAW, timer, sonido, aspect, more, settings).
+ *
+ *  Conservamos `ActionChipBar` y `ModeSelectorIos` como composables
+ *  stub para mantener compatibilidad binaria con cualquier código
+ *  legacy que aún los referencie (ej. SettingsActivity), pero
+ *  visualmente quedan minimalistas.
+ *
+ *  Toda la UI principal está ahora en MainActivityHelpers.kt
+ *  (LiquidGlassUiLayer).
+ * ================================================================ */
+
 @Composable
 fun ActionChipBar(
     palette: GlassPalette,
@@ -70,239 +51,46 @@ fun ActionChipBar(
     onToggleRaw: () -> Unit = {},
     onOpenSettings: () -> Unit = onOpenMore
 ) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(32.dp))
-            .liquidGlass(palette, RoundedCornerShape(32.dp), strong = true)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Flash tri-estado
-        ActionChipText(
-            label = when (flashMode) {
-                FlashMode.OFF -> "Off"; FlashMode.AUTO -> "Auto"; FlashMode.ON -> "On"
-            },
-            icon = when (flashMode) {
-                FlashMode.OFF -> LensIcons.FlashOff
-                FlashMode.AUTO -> LensIcons.FlashAuto
-                FlashMode.ON -> LensIcons.FlashOn
-            },
-            active = flashMode != FlashMode.OFF,
-            palette = palette,
-            onClick = onToggleFlash,
-            contentDescription = "Flash ${flashMode.label}"
-        )
-        // HDR
-        ActionChip(
-            icon = LensIcons.Hdr, active = hdrOn, palette = palette,
-            onClick = onToggleHdr, contentDescription = "HDR"
-        )
-        // RAW (DNG)
-        ActionChipText(
-            label = "RAW",
-            icon = LensIcons.Raw,
-            active = rawOn,
-            palette = palette,
-            onClick = onToggleRaw,
-            contentDescription = "Captura RAW DNG"
-        )
-        // Temporizador
-        ActionChipText(
-            label = when (timerSec) { 3 -> "3 s"; 10 -> "10 s"; else -> "Auto" },
-            icon = if (timerSec > 0) LensIcons.Timer else LensIcons.TimerOff,
-            active = timerSec > 0, palette = palette,
-            onClick = onCycleTimer, contentDescription = "Temporizador"
-        )
-        // Sonido
-        ActionChip(
-            icon = if (soundOn) LensIcons.SoundOn else LensIcons.SoundOff,
-            active = soundOn, palette = palette,
-            onClick = onToggleSound, contentDescription = "Sonido"
-        )
-        // Relación de aspecto
-        ActionChipText(
-            label = aspectLabel, icon = LensIcons.Aspect, active = false,
-            palette = palette, onClick = onCycleAspect, contentDescription = "Relación de aspecto"
-        )
-        // Más (panel rápido)
-        ActionChip(
-            icon = LensIcons.More, active = false, palette = palette,
-            onClick = onOpenMore, contentDescription = "Más ajustes rápidos"
-        )
-        // Acceso a SettingsActivity
-        ActionChip(
-            icon = LensIcons.Settings, active = false, palette = palette,
-            onClick = onOpenSettings, contentDescription = "Ajustes avanzados"
-        )
-    }
+    // No-op en v4.0: la barra superior ahora es QuickSettingsIsland.
+    Box(modifier = modifier)
 }
 
-@Composable
-private fun ActionChip(
-    icon: ImageVector, active: Boolean, palette: GlassPalette,
-    onClick: () -> Unit, contentDescription: String
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressed()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.92f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "chip_scale"
-    )
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(CircleShape)
-            .background(if (active) palette.accent.copy(alpha = 0.96f) else Color.Transparent)
-            .border(
-                width = if (active) 0.dp else 0.6.dp,
-                color = if (active) Color.Transparent else palette.borderSoft,
-                shape = CircleShape
-            )
-            .whiteGlow(active = active, shape = CircleShape, intensity = 0.95f)
-            .clickable(
-                interactionSource = interaction,
-                indication = ripple(bounded = false, radius = 24.dp),
-                onClick = onClick
-            )
-            .padding(9.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        AnimatedContent(
-            targetState = icon,
-            transitionSpec = {
-                (scaleIn(spring(stiffness = Spring.StiffnessMedium)) + fadeIn(tween(160)))
-                    .togetherWith(scaleOut(tween(120)) + fadeOut(tween(120)))
-            },
-            label = "chip_icon"
-        ) { ic ->
-            LensIcon(
-                icon = ic, contentDescription = contentDescription,
-                tint = if (active) palette.onAccent else palette.onGlass, size = 18.dp
-            )
-        }
-    }
-}
-
-@Composable
-private fun ActionChipText(
-    label: String, icon: ImageVector, active: Boolean, palette: GlassPalette,
-    onClick: () -> Unit, contentDescription: String
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressed()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.95f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "chip_text_scale"
-    )
-    Row(
-        modifier = Modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(22.dp))
-            .background(if (active) palette.accent.copy(alpha = 0.95f) else Color.Transparent)
-            .border(
-                width = if (active) 0.dp else 0.6.dp,
-                color = if (active) Color.Transparent else palette.borderSoft,
-                shape = RoundedCornerShape(22.dp)
-            )
-            .whiteGlow(active = active, shape = RoundedCornerShape(22.dp), intensity = 0.92f)
-            .clickable(
-                interactionSource = interaction,
-                indication = ripple(bounded = true), onClick = onClick
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
-    ) {
-        LensIcon(
-            icon = icon, contentDescription = contentDescription,
-            tint = if (active) palette.onAccent else palette.onGlassSecondary, size = 16.dp
-        )
-        Spacer(Modifier.size(5.dp))
-        Text(
-            text = label,
-            color = if (active) palette.onAccent else palette.onGlass,
-            fontSize = 12.sp, fontWeight = FontWeight.SemiBold
-        )
-    }
-}
-
-@Composable
-private fun MutableInteractionSource.collectIsPressed(): androidx.compose.runtime.State<Boolean> {
-    val isPressed = remember { mutableStateOf(false) }
-    LaunchedEffect(this) {
-        val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
-        interactions.collect { interaction ->
-            when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press -> active.add(interaction)
-                is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> active.remove(interaction.press)
-            }
-            isPressed.value = active.isNotEmpty()
-        }
-    }
-    return isPressed
-}
-
-/**
- * ModeSelectorIos — selector FOTO/VIDEO glass premium.
- * v3.5: padding interior incrementado, cornerRadius 32dp, glow más vívido.
- */
 @Composable
 fun ModeSelectorIos(
-    mode: String, palette: GlassPalette,
-    onModeChange: (String) -> Unit, modifier: Modifier = Modifier,
+    mode: String,
+    palette: GlassPalette,
+    onModeChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
     modes: List<String> = listOf("FOTO", "VIDEO")
 ) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(32.dp))
-            .liquidGlass(palette, RoundedCornerShape(32.dp), strong = false)
-            .padding(horizontal = 6.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+            .clip(RoundedCornerShape(22.dp))
+            .background(Color.White.copy(alpha = 0.10f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         modes.forEach { item ->
-            ModeLabel(
-                text = item, selected = mode == item, palette = palette,
-                onClick = { onModeChange(item) }
-            )
+            val selected = mode == item
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (selected) Color.White.copy(alpha = 0.25f) else Color.Transparent
+                    )
+                    .clickable { onModeChange(item) }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = item,
+                    color = if (selected) Color.White else Color.White.copy(alpha = 0.55f),
+                    fontSize = 12.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    letterSpacing = 1.sp
+                )
+            }
         }
-    }
-}
-
-@Composable
-private fun ModeLabel(text: String, selected: Boolean, palette: GlassPalette, onClick: () -> Unit) {
-    val scale by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.96f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "mode_scale"
-    )
-    Box(
-        modifier = Modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(26.dp))
-            .background(
-                if (selected) palette.accent.copy(alpha = 0.98f)
-                else Color.Transparent
-            )
-            .whiteGlow(active = selected, shape = RoundedCornerShape(26.dp), intensity = 0.95f)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 11.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            color = if (selected) palette.onAccent else palette.onGlassSecondary,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            letterSpacing = 0.5.sp
-        )
     }
 }
