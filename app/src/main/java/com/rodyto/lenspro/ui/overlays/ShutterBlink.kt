@@ -15,22 +15,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 
 /**
- * ShutterBlinkOverlay — FIX ②
+ * ShutterBlinkOverlay — v2.0
  *
- * El overlay original usaba alpha = 0.18 de Color.White lo que causaba
- * un parpadeo blanco muy visible y agresivo, especialmente en ambientes
- * oscuros o cuando el AE todavía estaba convergiendo.
+ * FIX BUG-B2: la documentación reflejaba un comportamiento ("oscurecimiento
+ * estilo obturador físico") que NO coincidía con el código real (destello
+ * blanco). La industria (iOS, Google Camera) usa un destello blanco breve
+ * porque sobre escenas oscuras un oscurecimiento se confunde con el rec.
  *
- * Correcciones aplicadas:
- *  1. Se reemplaza Color.White por Color.Black con alpha máximo de 0.28.
- *     Esto imita el comportamiento del obturador físico (oscurecimiento
- *     breve) en lugar del flash blanco artificial.
- *  2. La curva de animación se parte en dos fases diferenciadas:
- *     - Entrada rápida (50 ms, LinearEasing) → simula el cierre del obturador
- *     - Salida lenta (200 ms, FastOutSlowInEasing) → apertura suave
- *     Esto elimina el "bounce" visual desagradable del original.
- *  3. El Box solo se compone cuando alpha > 0 para no añadir capas
- *     innecesarias al árbol de Compose en reposo.
+ * Comportamiento actual (intencional):
+ *   1) snapTo(0f) instantáneo para no quedar en frame intermedio.
+ *   2) Subida rápida a alpha = 0.28f en 50 ms (LinearEasing).
+ *   3) Bajada suave a 0f en 200 ms (FastOutSlowInEasing).
+ *   4) Renderiza solo cuando alpha > 0 para no añadir capas al árbol.
  */
 @Composable
 fun ShutterBlinkOverlay(triggerKey: Int) {
@@ -39,40 +35,23 @@ fun ShutterBlinkOverlay(triggerKey: Int) {
 
     LaunchedEffect(triggerKey) {
         if (triggerKey <= 0) return@LaunchedEffect
-
-        // Reset limpio sin frame intermedio
         alpha.snapTo(0f)
-
-        // Fase 1: cierre rápido del "obturador" (oscurecimiento)
         alpha.animateTo(
             targetValue = 0.28f,
-            animationSpec = tween(
-                durationMillis = 50,
-                easing = LinearEasing
-            )
+            animationSpec = tween(durationMillis = 50, easing = LinearEasing)
         )
-
-        // Fase 2: apertura suave (el mundo vuelve gradualmente)
         alpha.animateTo(
             targetValue = 0f,
-            animationSpec = tween(
-                durationMillis = 200,
-                easing = FastOutSlowInEasing
-            )
+            animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)
         )
     }
 
-    // FIX V-01: Blanco rápido estilo iOS (Premium).
-    // Aunque el negro es natural, el estándar de la industria para feedback
-    // de captura es un destello blanco muy breve y sutil que confirma la acción.
     if (alpha.value > 0f) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    this.alpha = alpha.value
-                }
-                .background(Color.White)
+                .graphicsLayer { this.alpha = alpha.value }
+                .background(Color.White)   // destello blanco estilo iOS
         )
     }
 }
