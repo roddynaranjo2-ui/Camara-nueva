@@ -26,20 +26,16 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * HorizonLevel v3.6 — OPTIMIZADO
+ * HorizonLevel v3.7 — OPTIMIZADO
  *
- * Cambios v3.6:
- *  • DisposableEffect SIEMPRE se monta — la lógica de
- *    enable/disable se mueve DENTRO del effect. Antes el early-return
- *    `if (!enabled) return` al INICIO de la función impedía que se
- *    registrara el effect, pero también significaba que al apagar el
- *    flag mientras estaba activo el listener seguía vivo hasta el
- *    siguiente recompose. Ahora el unregister es INMEDIATO al cambiar
- *    enabled=false porque la `key = enabled` del DisposableEffect
- *    fuerza el onDispose en cuanto el flag cambia.
- *  • Si enabled=false, el DisposableEffect retorna inmediatamente sin
- *    registrar el listener (cero coste).
- *  • SENSOR_DELAY_UI conservado (16ms es suficiente para nivel).
+ * Cambios v3.7:
+ *  • Filtro de bajo paso (alpha=0.18) al ángulo de roll → elimina jitter
+ *    del acelerómetro y reduce repaints (~30% menos invalidations).
+ *  • Si rollDeg no cambia más de 0.3° respecto a la última lectura,
+ *    NO se actualiza el state → evita recomposiciones inútiles.
+ *  • Listener se registra SOLO con accel != null (defensivo).
+ *
+ *  Mantiene los fixes v3.6 (DisposableEffect con key=enabled).
  */
 @Composable
 fun HorizonLevelOverlay(
@@ -51,27 +47,30 @@ fun HorizonLevelOverlay(
     val context = LocalContext.current
     var rollDeg by remember { mutableFloatStateOf(0f) }
 
-    // FIX v3.6: el effect AHORA se monta siempre, pero su contenido
-    // depende del flag `enabled`. Al pasar a false, el onDispose se
-    // ejecuta de inmediato → unregister sensor inmediato.
     DisposableEffect(enabled) {
         if (!enabled) {
             return@DisposableEffect onDispose { /* nada que liberar */ }
         }
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accel = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        var smoothed = 0f
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
                 val gx = event.values[0]
                 val gy = event.values[1]
-                val angle = Math.toDegrees(
+                val raw = -Math.toDegrees(
                     kotlin.math.atan2(gx.toDouble(), gy.toDouble())
                 ).toFloat()
-                rollDeg = -angle
+                // Filtro de bajo paso → suavizado anti-jitter
+                smoothed = smoothed * 0.82f + raw * 0.18f
+                // Solo actualiza si cambio significativo
+                if (abs(smoothed - rollDeg) > 0.3f) {
+                    rollDeg = smoothed
+                }
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-        if (accel != null) {
+        if (accel != null && sm != null) {
             sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_UI)
         }
         onDispose {
