@@ -1029,37 +1029,22 @@ private fun ProPeekCell(
 /* ════════════════════════════════════════════════════════════════
  *  Helpers
  * ════════════════════════════════════════════════════════════════ */
-private fun buildLensInfoFromLabel(label: String): LensInfo {
-    val isOpticalGuess = label == "3x" || label == "2x" || label == "5x" || label == "10x"
-    return LensInfo(
-        id = "",
-        label = label,
-        focalLength = 0f,
-        aperture = 0f,
-        isPhysical = false,
-        isOptical = isOpticalGuess
-    )
-}
-
-fun formatTimestamp(seconds: Long): String {
-    val minutes = seconds / 60
-    val secs    = seconds % 60
-    return "%02d:%02d".format(minutes, secs)
-}
-
-@Composable
-private fun MutableInteractionSource.collectPressedCompat(): androidx.compose.runtime.State<Boolean> {
-    val isPressed = remember { mutableStateOf(false) }
-    LaunchedEffect(this) {
-        val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
-        interactions.collect { interaction ->
-            when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press -> active.add(interaction)
-                is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> active.remove(interaction.press)
-            }
-            isPressed.value = active.isNotEmpty()
-        }
-    }
-    return isPressed
+/* ════════════════════════════════════════════════════════════════
+ *  Helpers — v6.1
+ *
+ *  FIX BUG-A3: ahora resolveLensForLabel busca en availableBackLenses /
+ *  availableFrontLenses del ViewModel y devuelve la LensInfo REAL con
+ *  su cameraId del HAL. Si no encuentra coincidencia, retorna la primera
+ *  lente disponible del set actual (no un id="" como antes).
+ * ════════════════════════════════════════════════════════════════ */
+private fun resolveLensForLabel(
+    viewModel: CameraControlViewModel,
+    label: String
+): LensInfo? {
+    val set = if (viewModel.isFrontCamera.value)
+        viewModel.availableFrontLenses.value
+    else
+        viewModel.availableBackLenses.value
+    return set.firstOrNull { it.label == label }
+        ?: set.firstOrNull()
 }
