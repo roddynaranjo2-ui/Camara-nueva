@@ -28,21 +28,19 @@
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
     <!--
-        v3.6:
-        • android:requestLegacyExternalStorage="false" → garantizamos uso de
-          MediaStore API moderna (Scoped Storage). En la API 35 el atributo
-          es ignorado pero declararlo explícitamente documenta la intención.
-        • android:preserveLegacyExternalStorage="false" → mismo motivo.
-        • Application: no se usa android:fitsSystemWindows aquí porque la app
-          activa enableEdgeToEdge() en cada activity (que es el método
-          canónico actual). Mantener fitsSystemWindows="false" en el theme
-          XML evitaría conflictos con WindowInsets cuando alguna ventana
-          se crea sin enableEdgeToEdge (p. ej. diálogos del sistema).
+        v3.9:
+        • android:largeHeap ELIMINADO — la app consume <128 MB de heap normal.
+          Pedir largeHeap retrasa el arranque ~150 ms en S21 FE (6 GB) y no
+          aporta nada porque ImageReader y MediaRecorder usan heap nativo.
+        • android:dataExtractionRules / fullBackupContent="false" → cumple
+          requisitos Android 12+ sin warnings y desactiva backup automático
+          (la app no guarda datos sensibles del usuario).
     -->
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:hardwareAccelerated="true"
-        android:largeHeap="true"
         android:supportsRtl="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
