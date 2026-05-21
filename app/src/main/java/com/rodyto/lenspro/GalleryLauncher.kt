@@ -7,6 +7,9 @@ import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 
+/**
+ * GalleryLauncher v2.1 — FIX BUG-B3 (errata tipográfica corregida).
+ */
 object GalleryLauncher {
 
     private const val TAG = "GalleryLauncher"
@@ -27,14 +30,11 @@ object GalleryLauncher {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
         )
-
         for (intent in tryIntents) {
-            try {
-                context.startActivity(intent)
-                return
-            } catch (_: ActivityNotFoundException) { }
+            try { context.startActivity(intent); return }
+            catch (_: ActivityNotFoundException) {}
             catch (t: Throwable) { Log.w(TAG, "intent failed", t) }
         }
-        Toast.makeText(context, "No se encontro una galeria instalada", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "No se encontró una galería instalada", Toast.LENGTH_SHORT).show()
     }
 }
