@@ -63,7 +63,12 @@ class SettingsRepository(private val context: Context) {
         // ── Vídeo ─────────────────────────────────────────────────────────
         val KEY_VIDEO_RES      = stringPreferencesKey("video_resolution") // HD/FHD/UHD
         val KEY_VIDEO_FPS      = intPreferencesKey("video_fps")           // 30/60
-        val KEY_VIDEO_60FPS    = booleanPreferencesKey("video_60fps_default") // legacy
+        @Deprecated(
+    message = "Migrado a KEY_VIDEO_FPS. Mantener solo para lectura de instalaciones previas.",
+    replaceWith = ReplaceWith("KEY_VIDEO_FPS")
+)
+val KEY_VIDEO_60FPS    = booleanPreferencesKey("video_60fps_default") // legacy (BUG-B5)
+
 
         // ── Zoom / lente ──────────────────────────────────────────────────
         val KEY_SMOOTH_ZOOM    = booleanPreferencesKey("smooth_zoom")
