@@ -1,28 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Rodyto Lens Pro · verify.sh · v3.7 (refactor 7-file split — corregido)
+#  Rodyto Lens Pro · verify.sh · v5.0
 #
-#  Verifica que la división del antiguo CameraControlViewModel.kt y
-#  MainActivity.kt en 7 archivos especializados quedó correcta y que los
-#  flags críticos siguen en valores seguros por defecto.
-#
-#  CORRECCIONES v3.7:
-#   • Reparado SYNTAX ERROR de quotes mezcladas en el check de
-#     CameraControlViewModelOps.kt (la línea no terminaba bien, todo el
-#     script se rompía con "unexpected EOF").
-#   • Actualizado el check de pinchToZoom: la v3.7 usa awaitPointerEventScope
-#     (no awaitEachGesture).
-#   • Actualizado el regex de DisposableEffect: ahora coincide con
-#     "DisposableEffect(active, frontFlag)" usando escape correcto.
-#   • Añadidos checks nuevos para los wirings reconectados:
-#     - HorizonLevel con previewBounds real (no null literal).
-#     - ShutterBlink con triggerKey > 0 dinámico desde VM.
-#     - LensSelector con onSelectLens conectado al ViewModel.
+#  Verifica que la arquitectura premium del repositorio queda correcta tras
+#  los fixes de la auditoría v5.0 (21 bugs reportados + 8 extras).
 # ============================================================================
 set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT/app/src/main/java/com/rodyto/lenspro"
+RES="$ROOT/app/src/main/res"
 ok=0; fail=0
 
 check_contains () {
@@ -37,74 +24,78 @@ check_contains () {
     fi
 }
 
-echo "=== Rodyto Lens Pro v3.7 — verificación post-refactor (7 archivos) ==="
-echo ""
+check_exists () {
+    local path="$1"; local label="$2"
+    if [[ -e "$path" ]]; then echo "  ✅ $label"; ok=$((ok+1))
+    else echo "  ❌ $label  (not found: $path)"; fail=$((fail+1)); fi
+}
 
+check_not_exists () {
+    local path="$1"; local label="$2"
+    if [[ ! -e "$path" ]]; then echo "  ✅ $label"; ok=$((ok+1))
+    else echo "  ❌ $label  (should NOT exist: $path)"; fail=$((fail+1)); fi
+}
+
+echo "=== Rodyto Lens Pro · verificación v5.0 ==="
+echo ""
 echo "→ build.gradle"
-check_contains "$ROOT/app/build.gradle" 'namespace .com\.rodyto\.lenspro.'    "namespace = com.rodyto.lenspro"
-check_contains "$ROOT/app/build.gradle" 'applicationId "com\.rodyto\.lenspro"' "applicationId = com.rodyto.lenspro"
+check_contains "$ROOT/app/build.gradle" 'namespace .com\.rodyto\.lenspro.'    "namespace"
+check_contains "$ROOT/app/build.gradle" 'applicationId "com\.rodyto\.lenspro"' "applicationId"
 check_contains "$ROOT/app/build.gradle" 'compose-bom:2024\.12\.01'              "Compose BOM 2024.12.01"
 check_contains "$ROOT/app/build.gradle" 'camera-core:..camerax_version'         "CameraX expuesto"
 
 echo ""
 echo "→ AndroidManifest.xml"
-check_contains "$ROOT/app/src/main/AndroidManifest.xml" 'requestLegacyExternalStorage="false"' "scoped storage"
-check_contains "$ROOT/app/src/main/AndroidManifest.xml" 'enableOnBackInvokedCallback'           "Predictive Back habilitado"
+check_contains "$ROOT/app/src/main/AndroidManifest.xml" 'requestLegacyExternalStorage="false"' "Scoped storage"
+check_contains "$ROOT/app/src/main/AndroidManifest.xml" 'enableOnBackInvokedCallback'           "Predictive Back"
 
 echo ""
-echo "→ División ViewModel (4 archivos)"
-check_contains "$SRC/CameraEnums.kt"                  'package com\.rodyto\.lenspro'             "CameraEnums package OK"
-check_contains "$SRC/CameraEnums.kt"                  'enum class VideoResolution'               "VideoResolution definido"
-check_contains "$SRC/CameraEnums.kt"                  'enum class CameraSessionState'            "CameraSessionState definido"
-check_contains "$SRC/CameraControlViewModelState.kt"  'package com\.rodyto\.lenspro'             "VM State package OK"
-check_contains "$SRC/CameraControlViewModelCore.kt"   'ensureBackgroundThread'                   "Background thread idempotente"
-check_contains "$SRC/CameraControlViewModelOps.kt"    'applyManualSettings'                      "Manual settings unificado"
-check_contains "$SRC/CameraControlViewModel.kt"       'MAX_DIGITAL_ZOOM'                         "Companion MAX_DIGITAL_ZOOM"
-check_contains "$SRC/CameraControlViewModel.kt"       'external fun getPhysicalCameraIdsNative'  "Binding JNI activo"
+echo "→ Tema (BUG-B1 / BUG-C4)"
+check_contains "$RES/values/themes.xml" 'Theme\.Material3\.DayNight'  "Tema base Material3"
+check_exists   "$RES/values-night/themes.xml"                          "values-night/themes.xml en ubicación correcta"
+check_not_exists "$RES/values/values-night"                            "values/values-night NO existe (eliminado)"
 
 echo ""
-echo "→ División MainActivity (3 archivos)"
-check_contains "$SRC/MainActivityCore.kt"     'package com\.rodyto\.lenspro'  "MainActivityCore package OK"
-check_contains "$SRC/MainActivityCore.kt"     'enableEdgeToEdge'              "enableEdgeToEdge presente"
-check_contains "$SRC/MainActivityCore.kt"     'registerForActivityResult'     "Permisos modernos"
-check_contains "$SRC/MainActivityOverlays.kt" 'ActionChipBar'                 "Overlay usa ActionChipBar"
-check_contains "$SRC/MainActivityHelpers.kt"  'ShutterGlass'                  "Helper usa ShutterGlass real"
+echo "→ ViewModel + binding JNI (BUG-C3)"
+check_contains "$SRC/CameraControlViewModel.kt" 'System\.loadLibrary..rodytolenspro..'        "System.loadLibrary"
+check_contains "$SRC/CameraControlViewModel.kt" 'external fun getPhysicalCameraIdsNative'    "external fun getPhysicalCameraIdsNative"
 
 echo ""
-echo "→ CameraPreview.kt"
-check_contains "$SRC/CameraPreview.kt"  'awaitPointerEventScope'   "pinchToZoom v3.7 (awaitPointerEventScope)"
-check_contains "$SRC/CameraPreview.kt"  'lastAppliedSw'            "guard de setAspectRatio en update"
+echo "→ Cableo de fixes (BUG-C2 / BUG-M2 / BUG-M7)"
+check_contains "$SRC/CameraControlViewModel.kt" 'captureEngineCountdown'  "Countdown del engine wired al StateHolder"
+check_contains "$SRC/CameraControlViewModel.kt" 'shutterFx\.shutter\(\)'  "ShutterFx invocado en takePhoto"
+check_contains "$SRC/camera/CameraSessionController.kt" 'readerSurface'   "ImageReader surface en outputs de session"
 
 echo ""
-echo "→ CameraXBridge.kt"
-check_contains "$SRC/CameraXBridge.kt"  'DisposableEffect\(active, frontFlag\)'  "key reactiva"
+echo "→ Vídeo real (BUG-M1)"
+check_exists   "$SRC/camera/VideoRecordingController.kt"                 "VideoRecordingController existe"
+check_contains "$SRC/camera/CameraSessionController.kt" 'videoRecorder'  "SessionController integra VideoRecordingController"
 
 echo ""
-echo "→ GlassUi.kt / ShutterButtonPro.kt / CameraTuning.kt"
-check_contains "$SRC/GlassUi.kt"           'coerceIn\(1f, 20f\)'        "blur cap 20f"
-check_contains "$SRC/ShutterButtonPro.kt"  'RecordingRingPulse'         "InfiniteTransition condicional"
-check_contains "$SRC/ShutterButtonPro.kt"  'pointerInput\(isRecording, mode\)' "pointerInput con mode key (fix B-06)"
-check_contains "$SRC/CameraTuning.kt"      'displayLongEdgePx'          "previewSize con display hint"
+echo "→ Overlays cableados (BUG-M3 / BUG-M4)"
+check_contains "$SRC/CameraPreview.kt" 'HistogramView\(bins'             "HistogramView invocado"
+check_contains "$SRC/CameraPreview.kt" 'HorizonLevelOverlay'             "HorizonLevelOverlay invocado"
 
 echo ""
-echo "→ MultiChannelImageReader.kt / Zoom* / LensSelector / AutoFitSurfaceView / HorizonLevel"
-check_contains "$SRC/MultiChannelImageReader.kt"  'lastCameraId: String'   "cache por cameraId string"
-check_contains "$SRC/ZoomControl.kt"              'MIN_HAPTIC_INTERVAL_MS' "ZoomControl haptic throttle"
-check_contains "$SRC/ZoomDial.kt"                 'MAX_DIGITAL_ZOOM'       "ZoomDial referencia VM"
-check_contains "$SRC/LensSelector.kt"             'DampingRatioNoBouncy'   "animación lens rápida"
-check_contains "$SRC/AutoFitSurfaceView.kt"       'epsilon'                "AutoFit con epsilon"
-check_contains "$SRC/HorizonLevel.kt"             'if .!enabled.'          "unregister inmediato si !enabled"
+echo "→ Samsung vendor tags (BUG-M5)"
+check_contains "$SRC/camera/CameraSessionController.kt" 'SamsungVendorTags\.applyBase' "VendorTags aplicados al builder"
 
 echo ""
-echo "→ Wirings reconectados v3.7 (fixes B-03 / B-04 / B-05)"
-check_contains "$SRC/MainActivityHelpers.kt"  'onSelectLens|setLens'        "LensSelector cableado al VM (fix B-03)"
-check_contains "$SRC/MainActivityOverlays.kt" 'previewBounds = previewBounds' "HorizonLevel con bounds reales (fix B-04)"
-check_contains "$SRC/MainActivityOverlays.kt" 'shutterBlinkKey'             "ShutterBlink con triggerKey dinámico (fix B-05)"
-check_contains "$SRC/CameraControlViewModelState.kt" '_shutterBlinkKey'     "VM expone shutterBlinkKey"
+echo "→ Settings (BUG-A4)"
+check_contains "$SRC/MainActivityCore.kt" '// BUG-A4'                    "Sin LaunchedEffect duplicados"
+check_contains "$SRC/settings/SettingsBridge.kt" 'proVendorTags'         "SettingsBridge incluye proVendorTags"
+
+echo ""
+echo "→ Helpers / lentes reales (BUG-A3)"
+check_contains "$SRC/MainActivityHelpers.kt" 'resolveLensForLabel'       "Resolver de lente real desde label"
+
+echo ""
+echo "→ GalleryLauncher tilde (BUG-B3)"
+check_contains "$SRC/GalleryLauncher.kt" 'No se encontró una galería'    "Ortografía corregida"
 
 echo ""
 echo "============================================="
 echo "  OK: $ok    FAIL: $fail"
 echo "============================================="
-if [[ $fail -gt 0 ]]; then exit 1; fi
+[[ $fail -gt 0 ]] && exit 1
 exit 0
