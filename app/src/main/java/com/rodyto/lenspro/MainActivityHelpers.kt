@@ -160,16 +160,20 @@ fun LiquidGlassUiLayer(
 
         // ─── CAPA 2 · LENS DIAL ──────────────────────────────────
         LensDial(
-            currentLens = lensLabel,
-            onSelect = { lens ->
-                haptic()
-                scope.launch { repo.setLastLens(lens) }
-                viewModel.setLens(buildLensInfoFromLabel(lens))
-            },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 224.dp)
-        )
+    currentLens = lensLabel,
+    onSelect = { lens ->
+        haptic()
+        scope.launch { repo.setLastLens(lens) }
+        // BUG-A3: resolver la lente real (con id de HAL) en lugar de id=""
+        resolveLensForLabel(viewModel, lens)?.let { real ->
+            viewModel.setLens(real)
+        }
+    },
+    modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .padding(bottom = 224.dp)
+)
+
 
         // ─── CAPA 3 · MODE SHIFTER CAROUSEL ──────────────────────
         ModeShifterCarousel(
