@@ -4,20 +4,21 @@ plugins {
 }
 
 /* ================================================================
- *  Rodyto Lens Pro  ·  v3.8 Pro  ·  Build configuration
+ *  Rodyto Lens Pro  ·  v3.9 Pro  ·  Build configuration · CRASH-FIX
  *
- *  NOVEDADES v3.8 (sobre v3.5):
- *   • versionName subido a "3.8" / versionCode 10. Refleja los fixes
- *     B-01..B-09 aplicados (lens switch, horizon, shutter blink,
- *     pointerInput stale, equals/hashCode, CMake moderno, weakref).
- *   • bundle { language { enableSplit=false } } — evita que Play
- *     Store divida el APK por idioma. DataStore + algunas APIs de
- *     Compose pueden mostrar strings vacíos con split de language
- *     activo en OEMs con MIUI/HyperOS.
- *   • packaging.jniLibs.useLegacyPackaging = false ya estaba; añado
- *     pickFirsts para *.so duplicados (camera2ndk en algunos OEM).
- *   • CameraX se mantiene (pipeline híbrido — opcional vía toggle).
- *   • Opt-in de ExperimentalCamera2Interop preservado.
+ *  NOVEDADES v3.9 (sobre v3.8):
+ *   • FIX C3: ELIMINADO bloque dexOptions{} — removido oficialmente
+ *     en AGP 8.0 (https://issuetracker.google.com/issues/213552995).
+ *     En AGP 8.6.1 produce warnings que pueden escalar a errores con
+ *     algunos builds debug en CI.
+ *   • versionCode 11 / versionName "3.9" — refleja el fix de crash
+ *     en Android 16 / Snapdragon 888 (MirroredBlurView).
+ *   • Añadida dependencia androidx.core:core-splashscreen:1.0.1 —
+ *     permite splashscreen oficial en API 31+ y mejor experiencia de
+ *     arranque en Samsung One UI 8.
+ *   • coreLibraryDesugaringEnabled = true — habilita java.time y otras
+ *     APIs Java 8+ en API 26 sin requerir minSdk más alto.
+ *   • Sin tocar Compose BoM, CameraX, NDK, packaging ni bundle.
  * ================================================================ */
 android {
     namespace 'com.rodyto.lenspro'
@@ -29,8 +30,8 @@ android {
         applicationId "com.rodyto.lenspro"
         minSdk 26
         targetSdk 35
-        versionCode 10
-        versionName "3.8"
+        versionCode 11
+        versionName "3.9"
 
         vectorDrawables.useSupportLibrary = true
 
@@ -51,14 +52,12 @@ android {
         }
     }
 
-    dexOptions {
-        preDexLibraries true
-        maxProcessCount 8
-    }
+    // FIX C3: bloque dexOptions{} ELIMINADO (deprecated en AGP 8.0).
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
     }
 
     kotlinOptions {
@@ -118,8 +117,9 @@ android {
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.core:core-splashscreen:1.0.1'        // NUEVO v3.9
     implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0' // ← FIX: provee Theme.Material3.* para XML
+    implementation 'com.google.android.material:material:1.12.0'
 
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
@@ -155,4 +155,6 @@ dependencies {
     implementation 'io.coil-kt:coil-compose:2.7.0'
 
     debugImplementation 'androidx.compose.ui:ui-tooling'
+
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'
 }
