@@ -2,54 +2,78 @@ package com.rodyto.lenspro
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.os.Build
 import android.util.Log
 import android.view.Surface
-import android.hardware.camera2.CaptureRequest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rodyto.lenspro.camera.CameraSessionController
 import com.rodyto.lenspro.settings.SettingsBridge
 import com.rodyto.lenspro.settings.SettingsRepository
-import com.rodyto.lenspro.ui.CameraUiStateHolder
 import com.rodyto.lenspro.tuning.CameraTuning
-import com.rodyto.lenspro.CameraConstants
+import com.rodyto.lenspro.ui.CameraUiStateHolder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * CameraControlViewModel — Orquestador principal usando COMPOSICIÓN.
- * Refactor estructural de la Fase 3.
+ * CameraControlViewModel · v5.0 Premium
  *
- * v4.4 — FIX CRÍTICO PANTALLA NEGRA:
- *  • discoverLenses() detecta las cámaras reales del dispositivo vía
- *    CameraManager y construye LensInfo con el cameraId correcto.
- *  • El ViewModel se inicializa con la lente trasera principal (id "0"
- *    como fallback seguro, id real si el HAL lo informa).
- *  • startCameraSession() ya no puede recibir id="" porque el id siempre
- *    proviene de discoverLenses().
- *  • isCameraIdValid() evita pasar IDs vacíos o inválidos al HAL.
- *
- * v4.3 — Corregidas referencias de paquetes y SettingsRepository.
+ * Cambios v5.0 (sobre v4.4):
+ *  • FIX BUG-C3: System.loadLibrary("rodytolenspro") + external fun
+ *    getPhysicalCameraIdsNative() — el binding JNI ahora ESTÁ activo.
+ *    Los ids físicos del NDK se mergean con el cameraIdList lógico para
+ *    descubrir teleobjetivos ocultos en multi-camera HALs.
+ *  • FIX BUG-C2: countdown del CaptureEngine se redirige al stateHolder
+ *    vía coroutine compartida (mientras la VM viva).
+ *  • FIX BUG-M1: grabación REAL vía VideoRecordingController (MediaRecorder).
+ *  • FIX BUG-M2: ShutterFx instanciado y disparado en cada takePhoto.
+ *  • FIX BUG-M8: pickOptimalPreviewSize ahora recibe CameraCharacteristics
+ *    reales del cameraId actual.
+ *  • FIX BUG-E1: setZoomContinuous aplica CONTROL_ZOOM_RATIO (API 30+) o
+ *    SCALER_CROP_REGION como fallback. El pinch zoomea de verdad.
+ *  • FIX BUG-E2: switchCamera ahora selecciona una lente frontal válida y
+ *    fuerza setLens(...) para que CameraPreview restablezca la sesión.
+ *  • FIX BUG-E4: isFlashSupported se RECALCULA al cambiar de cámara.
+ *  • FIX BUG-E5: applyRepeatingPreview aplica AF_MODE CONTINUOUS_*.
+ *  • FIX BUG-B4: las asignaciones de StateFlow vuelven a Main.
  */
 class CameraControlViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "CameraVM"
         const val MAX_DIGITAL_ZOOM = 30f
+
+        // ── BUG-C3: carga del .so producido por CMakeLists (libname=rodytolenspro) ──
+        init {
+            try {
+                System.loadLibrary("rodytolenspro")
+            } catch (t: Throwable) {
+                Log.w(TAG, "No se pudo cargar libdotr rodytolenspro.so (continuará sin NDK)", t)
+            }
+        }
     }
 
+    // ── BUG-C3: declaración del binding JNI. Si la librería no carga, la
+    //   llamada lanza UnsatisfiedLinkError que capturamos en discoverLenses().
+    private external fun getPhysicalCameraIdsNative(): Array<String>
+
+    // ── Composición ─────────────────────────────────────────────────
     private val stateHolder = CameraUiStateHolder()
     private val sessionController = CameraSessionController(application, stateHolder)
-
-    // Repositorio de ajustes
     private val settingsRepository = SettingsRepository(application)
     private val settingsBridge = SettingsBridge(settingsRepository, this, viewModelScope)
+    private val shutterFx by lazy { ShutterFx(application) }   // BUG-M2
 
-    // ─── Estados desde stateHolder ───────────────────────────────
+    // ── Estados desde stateHolder ───────────────────────────────────
     val uiState: StateFlow<CameraUiState> = stateHolder.uiState
     val sessionState: StateFlow<CameraSessionState> = stateHolder.sessionState
     val cameraMode: StateFlow<CameraMode> = stateHolder.cameraMode
@@ -59,7 +83,7 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     val activeCountdown: StateFlow<Int> = stateHolder.activeCountdown
     val shutterBlinkKey: StateFlow<Int> = stateHolder.shutterBlinkKey
 
-    // ─── Estados adicionales ─────────────────────────────────────
+    // ── Estados de ajustes (sincronizados por SettingsBridge) ───────
     val flashMode = MutableStateFlow(FlashMode.OFF)
     val timerSeconds = MutableStateFlow(0)
     val gridEnabled = MutableStateFlow(false)
@@ -73,254 +97,287 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     val manualIso = MutableStateFlow(0)
     val manualShutterNs = MutableStateFlow<Long?>(null)
     val activePhysicalTeleId = MutableStateFlow<String?>(null)
+    val proVendorTagsEnabled = MutableStateFlow(true)
+
     private val _histogramBins = MutableStateFlow<IntArray?>(null)
     val histogramBins: StateFlow<IntArray?> = _histogramBins
 
     val isFlashSupported = MutableStateFlow(true)
 
-    // FIX v4.4: Listas descubiertas de lentes reales
+    // ── Lentes descubiertas ─────────────────────────────────────────
     private val _availableBackLenses = MutableStateFlow<List<LensInfo>>(emptyList())
     val availableBackLenses: StateFlow<List<LensInfo>> = _availableBackLenses
 
     private val _availableFrontLenses = MutableStateFlow<List<LensInfo>>(emptyList())
     val availableFrontLenses: StateFlow<List<LensInfo>> = _availableFrontLenses
 
+    // Tamaño del SurfaceView (BUG-K3 / BUG-M8)
+    private val previewSurfaceLongEdge = MutableStateFlow(0)
+
+    // Lookup de characteristics (cacheado por cameraId)
+    private val charsCache = HashMap<String, CameraCharacteristics>()
+
+    // Job que retransmite el countdown del CaptureEngine al stateHolder (BUG-C2)
+    private var countdownRelayJob: Job? = null
+
     init {
-        settingsBridge.wire()
-        // FIX v4.4: Descubrir cámaras reales del dispositivo en background
-        viewModelScope.launch(Dispatchers.IO) {
-            discoverLenses(application)
+        // BUG-C2: redirigir countdown del motor al StateHolder
+        countdownRelayJob = viewModelScope.launch {
+            sessionController.captureEngineCountdown.collectLatest { value ->
+                stateHolder.setCountdown(value)
+            }
         }
+        settingsBridge.wire()
+        viewModelScope.launch(Dispatchers.IO) { discoverLenses(application) }
     }
 
-    /* ─── FIX v4.4: Descubrimiento de cámaras reales ────────────── */
-
-    /**
-     * Consulta el CameraManager para obtener los IDs reales de cada cámara.
-     * Construye LensInfo con id real, facing y focal length del HAL.
-     * Inicializa currentLens con la primera cámara trasera.
-     */
-    private fun discoverLenses(context: Context) {
+    /* ────────────────────────────────────────────────────────────────
+     *  Descubrimiento de lentes (HAL lógico + NDK físico mergeados)
+     * ──────────────────────────────────────────────────────────────── */
+    private suspend fun discoverLenses(context: Context) {
         try {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val ids = manager.cameraIdList
+            val logicalIds = manager.cameraIdList.toList()
 
-            val backLenses = mutableListOf<LensInfo>()
-            val frontLenses = mutableListOf<LensInfo>()
+            // BUG-C3: ids físicos NDK (Samsung S21 FE / Pixel 7 / etc.)
+            val physicalIds: List<String> = try {
+                getPhysicalCameraIdsNative().toList()
+            } catch (_: UnsatisfiedLinkError) { emptyList() }
+              catch (t: Throwable) { Log.w(TAG, "getPhysicalCameraIdsNative falló", t); emptyList() }
 
-            for (id in ids) {
+            val allIds = (logicalIds + physicalIds).distinct()
+
+            val back = mutableListOf<LensInfo>()
+            val front = mutableListOf<LensInfo>()
+
+            for (id in allIds) {
                 try {
-                    val chars = manager.getCameraCharacteristics(id)
+                    val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
+                    charsCache[id] = chars
                     val facing = chars.get(CameraCharacteristics.LENS_FACING) ?: continue
-                    val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                    val apertures = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
-                    val focalLength = focalLengths?.firstOrNull() ?: 0f
-                    val aperture = apertures?.firstOrNull() ?: 0f
-
-                    val label = buildLensLabel(id, focalLength, facing, ids)
+                    val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    val aps    = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                    val focal  = focals?.firstOrNull() ?: 0f
+                    val aper   = aps?.firstOrNull() ?: 0f
+                    val isPhysical = id in physicalIds && id !in logicalIds
                     val lens = LensInfo(
                         id = id,
-                        label = label,
-                        focalLength = focalLength,
-                        aperture = aperture,
-                        isPhysical = false,
-                        isOptical = focalLength > 0f
+                        label = buildLensLabel(id, focal, facing),
+                        focalLength = focal,
+                        aperture = aper,
+                        isPhysical = isPhysical,
+                        isOptical = focal > 0f
                     )
-
                     when (facing) {
-                        CameraCharacteristics.LENS_FACING_BACK -> backLenses.add(lens)
-                        CameraCharacteristics.LENS_FACING_FRONT -> frontLenses.add(lens)
+                        CameraCharacteristics.LENS_FACING_BACK  -> back.add(lens)
+                        CameraCharacteristics.LENS_FACING_FRONT -> front.add(lens)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error leyendo cámara id=$id", e)
+                } catch (e: Exception) { Log.w(TAG, "Cámara $id descartada", e) }
+            }
+
+            back.sortBy  { it.focalLength }
+            front.sortBy { it.focalLength }
+
+            // BUG-B4: asignaciones de StateFlow en Main
+            withContext(Dispatchers.Main.immediate) {
+                _availableBackLenses.value = back
+                _availableFrontLenses.value = front
+
+                val initial = back.firstOrNull { it.id == "0" }
+                    ?: back.firstOrNull()
+                    ?: LensInfo(id = "0", label = "1x")
+
+                if (stateHolder.currentLens.value == null) {
+                    stateHolder.setCurrentLens(initial)
+                }
+                updateFlashSupportFor(initial.id)
+                Log.d(TAG, "Lentes: back=${back.map { "${it.id}/${it.label}" }} front=${front.map { it.id }}")
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "discoverLenses falló — fallback id=0", t)
+            withContext(Dispatchers.Main.immediate) {
+                if (stateHolder.currentLens.value == null) {
+                    stateHolder.setCurrentLens(LensInfo(id = "0", label = "1x"))
                 }
             }
-
-            // Ordenar por focal length ascendente (gran angular primero)
-            backLenses.sortBy { it.focalLength }
-            frontLenses.sortBy { it.focalLength }
-
-            _availableBackLenses.value = backLenses
-            _availableFrontLenses.value = frontLenses
-
-            Log.d(TAG, "Cámaras descubiertas: back=${backLenses.map { "${it.id}(${it.label})" }}" +
-                       " front=${frontLenses.map { it.id }}")
-
-            // Inicializar con la principal trasera (gran angular o id="0" como fallback)
-            val initialLens = backLenses.find { it.id == "0" }
-                ?: backLenses.firstOrNull()
-                ?: LensInfo(id = "0", label = "1x")   // fallback absoluto
-
-            if (stateHolder.currentLens.value == null) {
-                stateHolder.setCurrentLens(initialLens)
-            }
-
-            // Verificar si el flash está disponible en la cámara principal
-            try {
-                val chars = manager.getCameraCharacteristics(initialLens.id)
-                val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-                isFlashSupported.value = hasFlash
-            } catch (_: Exception) {}
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error descubriendo cámaras, usando fallback id=0", e)
-            // Fallback seguro: siempre inicializar con algo válido
-            if (stateHolder.currentLens.value == null) {
-                stateHolder.setCurrentLens(LensInfo(id = "0", label = "1x"))
-            }
         }
     }
 
-    /**
-     * Genera un label legible (.5x / 1x / 3x) basado en la focal length
-     * relativa a la cámara principal (focal length más corta entre las traseras).
-     */
-    private fun buildLensLabel(
-        id: String,
-        focalLength: Float,
-        facing: Int,
-        allIds: Array<String>
-    ): String {
-        if (focalLength <= 0f) {
-            return when (id) {
-                "0" -> "1x"
-                "1" -> if (facing == CameraCharacteristics.LENS_FACING_FRONT) "1x" else "2x"
-                "2" -> "3x"
-                else -> "${id}x"
-            }
+    private fun buildLensLabel(id: String, focal: Float, facing: Int): String {
+        if (focal <= 0f) return when (id) {
+            "0"  -> "1x"
+            "1"  -> if (facing == CameraCharacteristics.LENS_FACING_FRONT) "1x" else "2x"
+            "2"  -> "3x"
+            else -> "${id}x"
         }
         return when {
-            focalLength < 2.5f  -> ".5x"
-            focalLength < 4.5f  -> "1x"
-            focalLength < 8f    -> "2x"
-            focalLength < 15f   -> "3x"
-            else                -> "5x"
+            focal < 2.5f -> ".5x"
+            focal < 4.5f -> "1x"
+            focal < 8f   -> "2x"
+            focal < 15f  -> "3x"
+            else         -> "5x"
         }
     }
 
-    /* ─── FIX v4.4: Validación de ID antes de abrir HAL ─────────── */
-
-    /**
-     * Retorna true solo si el cameraId es un string no vacío que
-     * está en la lista de IDs conocidos del CameraManager.
-     * Evita pasar "" o IDs inválidos al HAL → pantalla negra.
-     */
-    private fun isCameraIdValid(cameraId: String): Boolean {
-        if (cameraId.isBlank()) return false
-        return try {
-            val manager = getApplication<Application>()
-                .getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            manager.cameraIdList.contains(cameraId)
-        } catch (e: Exception) {
-            Log.w(TAG, "No se pudo verificar cameraId=$cameraId", e)
-            true
-        }
+    /** BUG-E4: actualiza flashSupported cuando cambia la lente activa. */
+    private fun updateFlashSupportFor(cameraId: String) {
+        val chars = charsCache[cameraId] ?: return
+        isFlashSupported.value = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
     }
 
-    /* ─── ACCIONES DE CÁMARA ─────────────────────────────────────── */
-
+    /* ────────────────────────────────────────────────────────────────
+     *  ACCIONES de cámara
+     * ──────────────────────────────────────────────────────────────── */
     fun startCameraSession(context: Context, surface: Surface, lens: LensInfo?) {
-        // FIX v4.4: Resolver el ID real. Si el lens tiene id vacío,
-        // buscar en las listas descubiertas o usar "0" como fallback seguro.
         val rawId = lens?.id ?: ""
         val resolvedId = when {
             rawId.isNotBlank() && isCameraIdValid(rawId) -> rawId
             else -> {
-                val discovered = if (isFrontCamera.value)
-                    _availableFrontLenses.value
-                else
-                    _availableBackLenses.value
-                val fallback = discovered.firstOrNull()?.id ?: "0"
-                Log.w(TAG, "LensInfo.id inválido ('$rawId'), usando fallback: $fallback")
-                fallback
+                val list = if (isFrontCamera.value) _availableFrontLenses.value else _availableBackLenses.value
+                list.firstOrNull()?.id ?: "0"
             }
         }
         Log.d(TAG, "startCameraSession → cameraId=$resolvedId")
-        sessionController.openCamera(resolvedId, surface)
+        val chars = charsCache[resolvedId]
+        updateFlashSupportFor(resolvedId)
+        sessionController.openCamera(
+            cameraId = resolvedId,
+            previewSurface = surface,
+            characteristics = chars,
+            previewAspect = previewAspectRatio.value,
+            longEdgeHint = previewSurfaceLongEdge.value,
+            proVendorTagsEnabled = proVendorTagsEnabled.value,
+            cameraMode = cameraMode.value
+        )
     }
 
-    fun closeCamera() {
-        sessionController.closeCamera()
+    private fun isCameraIdValid(cameraId: String): Boolean {
+        if (cameraId.isBlank()) return false
+        return try {
+            val m = getApplication<Application>().getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            m.cameraIdList.contains(cameraId)
+        } catch (_: Exception) { true }
     }
+
+    fun closeCamera() { sessionController.closeCamera() }
 
     fun takePhoto() {
-        sessionController.takePhoto {
-            stateHolder.bumpShutterBlink()
+        // BUG-M2: feedback de obturador real
+        if (soundEnabled.value) runCatching { shutterFx.shutter() }
+        sessionController.takePhoto(
+            timerSeconds = timerSeconds.value,
+            flashMode = flashMode.value,
+            isFrontCamera = isFrontCamera.value,
+            onShutterEffect = { stateHolder.bumpShutterBlink() },
+            scope = viewModelScope                      // BUG-C1
+        )
+    }
+
+    /** BUG-M1: alterna grabación REAL. */
+    fun toggleRecording() {
+        val currentlyRecording = isRecording.value
+        if (currentlyRecording) {
+            if (soundEnabled.value) runCatching { shutterFx.videoStop() }
+            sessionController.stopRecording()
+            stateHolder.setRecording(false)
+        } else {
+            val ok = sessionController.startRecording(
+                isFrontCamera = isFrontCamera.value
+            )
+            if (ok) {
+                if (soundEnabled.value) runCatching { shutterFx.videoStart() }
+                stateHolder.setRecording(true)
+            } else {
+                Log.w(TAG, "startRecording rechazado por el sessionController")
+            }
         }
     }
 
-    fun toggleRecording() {
-        stateHolder.setRecording(!isRecording.value)
-    }
-
+    /** BUG-E2: al voltear cámara, selecciona lente válida del set correspondiente. */
     fun switchCamera() {
-        isFrontCamera.value = !isFrontCamera.value
+        val nowFront = !isFrontCamera.value
+        isFrontCamera.value = nowFront
+        val target = if (nowFront) _availableFrontLenses.value.firstOrNull()
+                     else          _availableBackLenses.value.firstOrNull()
+        if (target != null) {
+            setLens(target)        // dispara LaunchedEffect en CameraPreview
+        }
     }
 
     fun setLens(lens: LensInfo?) {
         stateHolder.setCurrentLens(lens)
+        lens?.id?.let { updateFlashSupportFor(it) }
     }
 
     fun setCameraMode(mode: CameraMode) {
         stateHolder.setCameraMode(mode)
+        // Re-aplicar el preview con AE/AF acordes al nuevo modo
+        applyRepeatingPreview()
     }
 
+    /** BUG-E5: refuerza AF y aplica vendor tags Samsung si procede. */
     fun applyRepeatingPreview() {
-        val session = sessionController.captureSession ?: return
-        val builder = sessionController.previewRequestBuilder ?: return
+        sessionController.applyManualParams(
+            manualIso = manualIso.value,
+            manualShutterNs = manualShutterNs.value,
+            cameraMode = cameraMode.value,
+            isRecording = isRecording.value,
+            proVendorTagsEnabled = proVendorTagsEnabled.value
+        )
+    }
 
-        try {
-            val iso = manualIso.value
-            val shutter = manualShutterNs.value
+    fun isCameraRunning(): Boolean = sessionState.value in setOf(
+        CameraSessionState.PREVIEWING,
+        CameraSessionState.RECORDING,
+        CameraSessionState.CAPTURING
+    )
 
-            if (iso > 0 && shutter != null && shutter > 0L) {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, shutter)
-            } else {
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            }
-
-            session.setRepeatingRequest(builder.build(), null, sessionController.backgroundHandler)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error aplicando parámetros de preview", e)
+    /** BUG-K3: ahora SÍ tiene uso — almacena el long-edge para pickOptimalPreviewSize. */
+    fun notifyPreviewSize(width: Int, height: Int) {
+        val longEdge = maxOf(width, height)
+        if (longEdge != previewSurfaceLongEdge.value) {
+            previewSurfaceLongEdge.value = longEdge
         }
     }
 
-    fun isCameraRunning(): Boolean {
-        return sessionState.value == CameraSessionState.PREVIEWING ||
-               sessionState.value == CameraSessionState.RECORDING ||
-               sessionState.value == CameraSessionState.CAPTURING
-    }
-
-    fun notifyPreviewSize(width: Int, height: Int) {
-        // Placeholder: el AutoFitSurfaceView gestiona su propio layout
-    }
-
+    /** BUG-M8: ahora usa characteristics reales del cameraId actual. */
     fun getOptimalPreviewSize(): Pair<Int, Int> {
-        val size = CameraTuning.pickOptimalPreviewSize(null, 1f / previewAspectRatio.value)
+        val id = currentLens.value?.id
+        val chars = id?.let { charsCache[it] }
+        val targetRatioForTuning = 1f / previewAspectRatio.value
+        val size = CameraTuning.pickOptimalPreviewSize(
+            characteristics = chars,
+            targetRatio = targetRatioForTuning,
+            displayLongEdgePx = previewSurfaceLongEdge.value
+        )
         return size.width to size.height
     }
 
     fun getZoomMinValue(): Float = CameraConstants.MIN_ZOOM_DEFAULT
     fun getZoomMaxValue(): Float = CameraConstants.MAX_ZOOM_DEFAULT
 
+    /** BUG-E1: el zoom se APLICA al CaptureRequest, no solo se guarda. */
     fun setZoomContinuous(zoom: Float) {
-        stateHolder.setZoomLevel(zoom)
+        val clamped = zoom.coerceIn(getZoomMinValue(), getZoomMaxValue())
+        stateHolder.setZoomLevel(clamped)
+        val id = currentLens.value?.id ?: return
+        val chars = charsCache[id] ?: return
+        sessionController.applyZoom(clamped, chars)
     }
 
-    fun publishHistogramBins(bins: IntArray) {
-        _histogramBins.value = bins
-    }
+    fun publishHistogramBins(bins: IntArray) { _histogramBins.value = bins }
 
-    fun setFlashMode(mode: FlashMode) { flashMode.value = mode }
-    fun setTimerSeconds(seconds: Int) { timerSeconds.value = seconds }
-    fun setGridEnabled(enabled: Boolean) { gridEnabled.value = enabled }
-    fun setHapticsEnabled(enabled: Boolean) { hapticsEnabled.value = enabled }
-    fun setSoundEnabled(enabled: Boolean) { soundEnabled.value = enabled }
+    fun setFlashMode(mode: FlashMode)         { flashMode.value = mode }
+    fun setTimerSeconds(seconds: Int)         { timerSeconds.value = seconds }
+    fun setGridEnabled(enabled: Boolean)      { gridEnabled.value = enabled }
+    fun setHapticsEnabled(enabled: Boolean)   { hapticsEnabled.value = enabled }
+    fun setSoundEnabled(enabled: Boolean)     { soundEnabled.value = enabled }
+    fun setProVendorTags(enabled: Boolean)    { proVendorTagsEnabled.value = enabled }
 
     override fun onCleared() {
         super.onCleared()
+        countdownRelayJob?.cancel()
         sessionController.release()
+        runCatching { shutterFx.release() }
     }
 }
