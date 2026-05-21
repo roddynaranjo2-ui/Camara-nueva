@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    data_extraction_rules.xml · v1.0
+    Android 12+ (API 31+) requiere declarar reglas explícitas de backup.
+    LensPro NO hace backup automático: el usuario solo guarda fotos/vídeos
+    en MediaStore (que ya está fuera del sandbox de la app).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root"        path="." />
+        <exclude domain="file"        path="." />
+        <exclude domain="database"    path="." />
+        <exclude domain="sharedpref"  path="." />
+        <exclude domain="external"    path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root"        path="." />
+        <exclude domain="file"        path="." />
+        <exclude domain="database"    path="." />
+        <exclude domain="sharedpref"  path="." />
+        <exclude domain="external"    path="." />
+    </device-transfer>
+</data-extraction-rules>
