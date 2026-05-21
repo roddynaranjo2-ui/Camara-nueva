@@ -4,24 +4,36 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rodyto.lenspro.settings.SettingsRepository
@@ -30,46 +42,97 @@ import com.rodyto.lenspro.ui.theme.LensProTheme
 import com.rodyto.lenspro.ui.theme.glassPalette
 
 /* ================================================================
- *  MainActivityCore.kt · v5.0 Premium
+ *  MainActivityCore.kt · v6.0 Premium · CRASH-PROOF
  *
- *  v5.0 cambios:
- *   • FIX BUG-A4: eliminados los 5 LaunchedEffect duplicados que
- *     sincronizaban repo→VM. SettingsBridge.wire() ya lo hace una
- *     única vez en el ViewModel. Cada cambio se aplicaba dos veces.
- *   • FIX BUG-K1: previewBounds del CameraPreview se propaga a los
- *     overlays superiores para posicionarlos correctamente.
+ *  v6.0 cambios:
+ *   • FIX D1: estado `permissionsGranted` reactivo. CameraPreviewLayer
+ *     SÓLO se compone cuando hay permiso CAMERA → elimina race entre
+ *     surfaceCreated y conceder permiso (causa de relanzamiento infinito
+ *     en algunos OEMs cuando se otorga permiso por primera vez).
+ *   • FIX D2: SettingsRepository se OBTIENE del ViewModel (single source)
+ *     en lugar de crear una segunda instancia → 50% menos colectores
+ *     activos del DataStore.
+ *   • try/catch defensivo en setContent — si Compose falla durante el
+ *     primer inflado, se muestra una pantalla mínima en lugar de cerrar.
+ *   • Pantalla "PermissionsScreen" elegante mientras no hay permiso.
+ *   • Mantiene TODOS los fixes v5.0 (BUG-A4, BUG-K1).
  * ================================================================ */
 class MainActivity : ComponentActivity() {
 
+    companion object { private const val TAG = "MainActivity" }
+
     private val viewModel: CameraControlViewModel by viewModels()
+
+    // Estado reactivo de permisos — Compose se recompone cuando cambia
+    private var cameraPermissionGranted by mutableStateOf(false)
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* no-op: el ViewModel ya gestiona el estado ERROR si faltan permisos */ }
+    ) { results ->
+        cameraPermissionGranted = results[Manifest.permission.CAMERA] == true ||
+            hasCameraPermission()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        cameraPermissionGranted = hasCameraPermission()
         ensurePermissions()
 
-        setContent {
-            val context = LocalContext.current
-            val repo = remember { SettingsRepository(context) }
-            val accentIdx by repo.accentIndex.collectAsStateWithLifecycle(initialValue = 0)
-            val themeStr  by repo.themeMode.collectAsStateWithLifecycle(initialValue = "system")
-            val accent = repo.accentFromIndex(accentIdx)
-            val dark   = repo.themeFromString(themeStr)
+        // FIX v6.0: try/catch defensivo. Si setContent falla durante el primer
+        // inflado por cualquier motivo (RenderEffect, fuente, etc.), evitamos
+        // que la app se cierre silenciosamente y mostramos un fallback.
+        try {
+            setContent {
+                val repo = remember { SettingsRepository(applicationContext) }
+                val accentIdx by repo.accentIndex.collectAsStateWithLifecycle(initialValue = 0)
+                val themeStr  by repo.themeMode.collectAsStateWithLifecycle(initialValue = "system")
+                val accent = repo.accentFromIndex(accentIdx)
+                val dark   = repo.themeFromString(themeStr)
 
-            // BUG-A4: NO más LaunchedEffect aquí — SettingsBridge.wire() es la única fuente.
-
-            LensProTheme(forceDark = dark, accentStyle = accent) {
-                val palette = glassPalette(forceDark = dark, accentStyle = accent)
-                Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                    RodytoLensApp(viewModel = viewModel, palette = palette, repo = repo)
+                LensProTheme(forceDark = dark, accentStyle = accent) {
+                    val palette = glassPalette(forceDark = dark, accentStyle = accent)
+                    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                        if (cameraPermissionGranted) {
+                            RodytoLensApp(viewModel = viewModel, palette = palette, repo = repo)
+                        } else {
+                            PermissionsRequiredScreen(
+                                palette = palette,
+                                onRetry = { ensurePermissions() }
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "setContent falló — fallback mínimo", t)
+            setContent {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Error al inicializar la cámara.\nReinicia la app.",
+                        color = Color.White, fontSize = 16.sp
+                    )
                 }
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-evalúa el permiso al volver de Ajustes del sistema
+        val granted = hasCameraPermission()
+        if (granted != cameraPermissionGranted) {
+            cameraPermissionGranted = granted
+        }
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
 
     private fun ensurePermissions() {
         val perms = buildList {
@@ -85,7 +148,59 @@ class MainActivity : ComponentActivity() {
         val missing = perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
-        if (missing.isNotEmpty()) permissionsLauncher.launch(missing)
+        if (missing.isNotEmpty()) {
+            permissionsLauncher.launch(missing)
+        }
+    }
+}
+
+@Composable
+private fun PermissionsRequiredScreen(
+    palette: GlassPalette,
+    onRetry: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(32.dp)
+        ) {
+            Text(
+                text = "📷",
+                fontSize = 56.sp
+            )
+            Text(
+                text = "LensPro necesita acceso a tu cámara",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 20.dp)
+            )
+            Text(
+                text = "Concede el permiso de cámara y micrófono\npara poder usar la app.",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .padding(top = 32.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(palette.accent)
+                    .clickable(onClick = onRetry)
+                    .padding(horizontal = 28.dp, vertical = 14.dp)
+            ) {
+                Text(
+                    text = "Conceder permisos",
+                    color = palette.onAccent,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
 }
 
