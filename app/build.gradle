@@ -45,14 +45,12 @@ android {
             debuggable true
         }
         release {
-            // FIX O-07: Habilitar R8 Full Mode para optimización máxima de bytecode y reducción de tamaño.
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
-    // FIX O-07: Optimizar dexing para builds más rápidas y eficientes
+
     dexOptions {
         preDexLibraries true
         maxProcessCount 8
@@ -89,7 +87,6 @@ android {
                 '/META-INF/LICENSE*',
                 '/META-INF/NOTICE*'
             ]
-            // v3.8: si alguna lib trae *.so duplicado, conservamos solo el primero.
             pickFirsts += [
                 'lib/arm64-v8a/*.so',
                 'lib/armeabi-v7a/*.so'
@@ -100,8 +97,6 @@ android {
         }
     }
 
-    // v3.8: evitar split por idioma para que DataStore + Compose strings
-    // funcionen igual en todos los devices, sin importar la locale del usuario.
     bundle {
         language {
             enableSplit = false
@@ -116,8 +111,6 @@ android {
     }
 
     lint {
-        // FIX O-06: No desactivar NewApi globalmente para detectar errores de compatibilidad reales.
-        // Se debe usar @RequiresApi o comprobaciones de SDK_INT en el código.
         abortOnError true
         checkReleaseBuilds true
     }
@@ -126,6 +119,7 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0' // ← FIX: provee Theme.Material3.* para XML
 
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
