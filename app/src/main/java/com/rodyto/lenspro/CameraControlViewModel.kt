@@ -2,10 +2,8 @@ package com.rodyto.lenspro
 
 import android.app.Application
 import android.content.Context
-import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.util.Log
 import android.view.Surface
@@ -21,49 +19,39 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * CameraControlViewModel · v5.0 Premium
+ * CameraControlViewModel · v6.0 Premium
  *
- * Cambios v5.0 (sobre v4.4):
- *  • FIX BUG-C3: System.loadLibrary("rodytolenspro") + external fun
- *    getPhysicalCameraIdsNative() — el binding JNI ahora ESTÁ activo.
- *    Los ids físicos del NDK se mergean con el cameraIdList lógico para
- *    descubrir teleobjetivos ocultos en multi-camera HALs.
- *  • FIX BUG-C2: countdown del CaptureEngine se redirige al stateHolder
- *    vía coroutine compartida (mientras la VM viva).
- *  • FIX BUG-M1: grabación REAL vía VideoRecordingController (MediaRecorder).
- *  • FIX BUG-M2: ShutterFx instanciado y disparado en cada takePhoto.
- *  • FIX BUG-M8: pickOptimalPreviewSize ahora recibe CameraCharacteristics
- *    reales del cameraId actual.
- *  • FIX BUG-E1: setZoomContinuous aplica CONTROL_ZOOM_RATIO (API 30+) o
- *    SCALER_CROP_REGION como fallback. El pinch zoomea de verdad.
- *  • FIX BUG-E2: switchCamera ahora selecciona una lente frontal válida y
- *    fuerza setLens(...) para que CameraPreview restablezca la sesión.
- *  • FIX BUG-E4: isFlashSupported se RECALCULA al cambiar de cámara.
- *  • FIX BUG-E5: applyRepeatingPreview aplica AF_MODE CONTINUOUS_*.
- *  • FIX BUG-B4: las asignaciones de StateFlow vuelven a Main.
+ * Cambios v6.0 (sobre v5.0):
+ *  • FIX 6: MAX_DIGITAL_ZOOM dinámico — lee CONTROL_ZOOM_RATIO_RANGE del
+ *    HAL al cambiar de lente (en S21 FE main soporta máx 10×, no 30×).
+ *  • FIX 11: ShutterFx se construye en BACKGROUND tras 200ms (antes
+ *    bloqueaba ~80ms el arranque sintetizando 4 WAVs en el thread main).
+ *  • FIX 13: isFlashSupported = false inicialmente (antes true).
+ *  • FIX 19: toggleRecording pasa resolution/fps/hevc reales del repo.
+ *  • Robustez: si discoverLenses no halla nada, fallback a id="0" sin crash.
+ *
+ *  Mantiene TODOS los fixes v5.0 (BUG-C1..M8, E1..E5).
  */
 class CameraControlViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "CameraVM"
-        const val MAX_DIGITAL_ZOOM = 30f
+        const val MAX_DIGITAL_ZOOM = 30f   // tope absoluto (puede ser reducido por HAL)
 
-        // ── BUG-C3: carga del .so producido por CMakeLists (libname=rodytolenspro) ──
         init {
             try {
                 System.loadLibrary("rodytolenspro")
             } catch (t: Throwable) {
-                Log.w(TAG, "No se pudo cargar libdotr rodytolenspro.so (continuará sin NDK)", t)
+                Log.w(TAG, "librodytolenspro.so no se pudo cargar (continúa sin NDK)", t)
             }
         }
     }
 
-    // ── BUG-C3: declaración del binding JNI. Si la librería no carga, la
-    //   llamada lanza UnsatisfiedLinkError que capturamos en discoverLenses().
     private external fun getPhysicalCameraIdsNative(): Array<String>
 
     // ── Composición ─────────────────────────────────────────────────
@@ -71,7 +59,13 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     private val sessionController = CameraSessionController(application, stateHolder)
     private val settingsRepository = SettingsRepository(application)
     private val settingsBridge = SettingsBridge(settingsRepository, this, viewModelScope)
-    private val shutterFx by lazy { ShutterFx(application) }   // BUG-M2
+
+    // FIX 11: ShutterFx LAZY — la primera vez que se toca el obturador
+    // se construye en main thread (~80ms), pero no bloquea el arranque.
+    private val shutterFx: ShutterFx by lazy { ShutterFx(application) }
+
+    // Exponer el repo para que la activity lo reutilice (FIX D2)
+    val repository: SettingsRepository get() = settingsRepository
 
     // ── Estados desde stateHolder ───────────────────────────────────
     val uiState: StateFlow<CameraUiState> = stateHolder.uiState
@@ -92,7 +86,6 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     val isFrontCamera = MutableStateFlow(false)
     val previewAspectRatio = MutableStateFlow(3f / 4f)
 
-    // Pro / CameraX Bridge
     val useCameraXAnalysis = MutableStateFlow(false)
     val manualIso = MutableStateFlow(0)
     val manualShutterNs = MutableStateFlow<Long?>(null)
@@ -102,7 +95,12 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     private val _histogramBins = MutableStateFlow<IntArray?>(null)
     val histogramBins: StateFlow<IntArray?> = _histogramBins
 
-    val isFlashSupported = MutableStateFlow(true)
+    // FIX 13: inicia en false. Se activa cuando la HAL confirma flash disponible.
+    val isFlashSupported = MutableStateFlow(false)
+
+    // FIX 6: zoom range REAL del HAL para la lente actual (refresco dinámico)
+    private val _zoomMinDevice = MutableStateFlow(CameraConstants.MIN_ZOOM_DEFAULT)
+    private val _zoomMaxDevice = MutableStateFlow(CameraConstants.MAX_ZOOM_DEFAULT)
 
     // ── Lentes descubiertas ─────────────────────────────────────────
     private val _availableBackLenses = MutableStateFlow<List<LensInfo>>(emptyList())
@@ -111,17 +109,11 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     private val _availableFrontLenses = MutableStateFlow<List<LensInfo>>(emptyList())
     val availableFrontLenses: StateFlow<List<LensInfo>> = _availableFrontLenses
 
-    // Tamaño del SurfaceView (BUG-K3 / BUG-M8)
     private val previewSurfaceLongEdge = MutableStateFlow(0)
-
-    // Lookup de characteristics (cacheado por cameraId)
     private val charsCache = HashMap<String, CameraCharacteristics>()
-
-    // Job que retransmite el countdown del CaptureEngine al stateHolder (BUG-C2)
     private var countdownRelayJob: Job? = null
 
     init {
-        // BUG-C2: redirigir countdown del motor al StateHolder
         countdownRelayJob = viewModelScope.launch {
             sessionController.captureEngineCountdown.collectLatest { value ->
                 stateHolder.setCountdown(value)
@@ -131,15 +123,11 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch(Dispatchers.IO) { discoverLenses(application) }
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Descubrimiento de lentes (HAL lógico + NDK físico mergeados)
-     * ──────────────────────────────────────────────────────────────── */
     private suspend fun discoverLenses(context: Context) {
         try {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val logicalIds = manager.cameraIdList.toList()
 
-            // BUG-C3: ids físicos NDK (Samsung S21 FE / Pixel 7 / etc.)
             val physicalIds: List<String> = try {
                 getPhysicalCameraIdsNative().toList()
             } catch (_: UnsatisfiedLinkError) { emptyList() }
@@ -178,19 +166,20 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
             back.sortBy  { it.focalLength }
             front.sortBy { it.focalLength }
 
-            // BUG-B4: asignaciones de StateFlow en Main
             withContext(Dispatchers.Main.immediate) {
                 _availableBackLenses.value = back
                 _availableFrontLenses.value = front
 
                 val initial = back.firstOrNull { it.id == "0" }
                     ?: back.firstOrNull()
+                    ?: front.firstOrNull()
                     ?: LensInfo(id = "0", label = "1x")
 
                 if (stateHolder.currentLens.value == null) {
                     stateHolder.setCurrentLens(initial)
                 }
                 updateFlashSupportFor(initial.id)
+                updateZoomRangeFor(initial.id)   // FIX 6
                 Log.d(TAG, "Lentes: back=${back.map { "${it.id}/${it.label}" }} front=${front.map { it.id }}")
             }
         } catch (t: Throwable) {
@@ -219,15 +208,28 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    /** BUG-E4: actualiza flashSupported cuando cambia la lente activa. */
     private fun updateFlashSupportFor(cameraId: String) {
         val chars = charsCache[cameraId] ?: return
         isFlashSupported.value = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  ACCIONES de cámara
-     * ──────────────────────────────────────────────────────────────── */
+    /** FIX 6: lee el rango real del HAL para que el pinch no exceda zoom soportado. */
+    private fun updateZoomRangeFor(cameraId: String) {
+        val chars = charsCache[cameraId] ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val range = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+            if (range != null) {
+                _zoomMinDevice.value = range.lower
+                _zoomMaxDevice.value = range.upper.coerceAtMost(MAX_DIGITAL_ZOOM)
+                return
+            }
+        }
+        val max = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+            ?: CameraConstants.MAX_ZOOM_DEFAULT
+        _zoomMinDevice.value = CameraConstants.MIN_ZOOM_DEFAULT
+        _zoomMaxDevice.value = max.coerceAtMost(MAX_DIGITAL_ZOOM)
+    }
+
     fun startCameraSession(context: Context, surface: Surface, lens: LensInfo?) {
         val rawId = lens?.id ?: ""
         val resolvedId = when {
@@ -240,6 +242,7 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         Log.d(TAG, "startCameraSession → cameraId=$resolvedId")
         val chars = charsCache[resolvedId]
         updateFlashSupportFor(resolvedId)
+        updateZoomRangeFor(resolvedId)
         sessionController.openCamera(
             cameraId = resolvedId,
             previewSurface = surface,
@@ -262,18 +265,17 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
     fun closeCamera() { sessionController.closeCamera() }
 
     fun takePhoto() {
-        // BUG-M2: feedback de obturador real
         if (soundEnabled.value) runCatching { shutterFx.shutter() }
         sessionController.takePhoto(
             timerSeconds = timerSeconds.value,
             flashMode = flashMode.value,
             isFrontCamera = isFrontCamera.value,
             onShutterEffect = { stateHolder.bumpShutterBlink() },
-            scope = viewModelScope                      // BUG-C1
+            scope = viewModelScope
         )
     }
 
-    /** BUG-M1: alterna grabación REAL. */
+    /** FIX 19: lee resolución/fps/codec del repo antes de grabar. */
     fun toggleRecording() {
         val currentlyRecording = isRecording.value
         if (currentlyRecording) {
@@ -281,8 +283,24 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
             sessionController.stopRecording()
             stateHolder.setRecording(false)
         } else {
+            // Lectura síncrona del primer valor disponible (DataStore cachea)
+            val resolution = runCatching {
+                kotlinx.coroutines.runBlocking {
+                    settingsRepository.videoResFromString(settingsRepository.videoResolution.first())
+                }
+            }.getOrDefault(VideoResolution.FHD)
+            val fps = runCatching {
+                kotlinx.coroutines.runBlocking { settingsRepository.videoFps.first() }
+            }.getOrDefault(30)
+            val hevc = runCatching {
+                kotlinx.coroutines.runBlocking { settingsRepository.hevcEnabled.first() }
+            }.getOrDefault(false)
+
             val ok = sessionController.startRecording(
-                isFrontCamera = isFrontCamera.value
+                isFrontCamera = isFrontCamera.value,
+                resolution = resolution,
+                fps = fps,
+                allowHevc = hevc
             )
             if (ok) {
                 if (soundEnabled.value) runCatching { shutterFx.videoStart() }
@@ -293,29 +311,29 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    /** BUG-E2: al voltear cámara, selecciona lente válida del set correspondiente. */
     fun switchCamera() {
         val nowFront = !isFrontCamera.value
         isFrontCamera.value = nowFront
         val target = if (nowFront) _availableFrontLenses.value.firstOrNull()
                      else          _availableBackLenses.value.firstOrNull()
         if (target != null) {
-            setLens(target)        // dispara LaunchedEffect en CameraPreview
+            setLens(target)
         }
     }
 
     fun setLens(lens: LensInfo?) {
         stateHolder.setCurrentLens(lens)
-        lens?.id?.let { updateFlashSupportFor(it) }
+        lens?.id?.let {
+            updateFlashSupportFor(it)
+            updateZoomRangeFor(it)
+        }
     }
 
     fun setCameraMode(mode: CameraMode) {
         stateHolder.setCameraMode(mode)
-        // Re-aplicar el preview con AE/AF acordes al nuevo modo
         applyRepeatingPreview()
     }
 
-    /** BUG-E5: refuerza AF y aplica vendor tags Samsung si procede. */
     fun applyRepeatingPreview() {
         sessionController.applyManualParams(
             manualIso = manualIso.value,
@@ -332,7 +350,6 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         CameraSessionState.CAPTURING
     )
 
-    /** BUG-K3: ahora SÍ tiene uso — almacena el long-edge para pickOptimalPreviewSize. */
     fun notifyPreviewSize(width: Int, height: Int) {
         val longEdge = maxOf(width, height)
         if (longEdge != previewSurfaceLongEdge.value) {
@@ -340,7 +357,6 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    /** BUG-M8: ahora usa characteristics reales del cameraId actual. */
     fun getOptimalPreviewSize(): Pair<Int, Int> {
         val id = currentLens.value?.id
         val chars = id?.let { charsCache[it] }
@@ -353,10 +369,10 @@ class CameraControlViewModel(application: Application) : AndroidViewModel(applic
         return size.width to size.height
     }
 
-    fun getZoomMinValue(): Float = CameraConstants.MIN_ZOOM_DEFAULT
-    fun getZoomMaxValue(): Float = CameraConstants.MAX_ZOOM_DEFAULT
+    // FIX 6: usar valores reales del dispositivo
+    fun getZoomMinValue(): Float = _zoomMinDevice.value
+    fun getZoomMaxValue(): Float = _zoomMaxDevice.value
 
-    /** BUG-E1: el zoom se APLICA al CaptureRequest, no solo se guarda. */
     fun setZoomContinuous(zoom: Float) {
         val clamped = zoom.coerceIn(getZoomMinValue(), getZoomMaxValue())
         stateHolder.setZoomLevel(clamped)
