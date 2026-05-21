@@ -1,15 +1,12 @@
 # ============================================================
-# LensPro — ProGuard / R8 Rules v2.2
+# LensPro — ProGuard / R8 Rules v3.0
 # ============================================================
 
-# ── Reglas generales ─────────────────────────────────────────
 -keepattributes SourceFile,LineNumberTable
 -keepattributes *Annotation*
 -keepattributes Signature
 -keepattributes Exceptions
 -keepattributes InnerClasses,EnclosingMethod
-
-# Mantener nombres de clases para debugging en crashlogs
 -keepattributes !LocalVariableTable,!LocalVariableTypeTable
 
 # ── Kotlin ───────────────────────────────────────────────────
@@ -18,13 +15,12 @@
 -dontwarn kotlin.**
 -dontwarn kotlinx.**
 
-# Kotlin coroutines — necesario para que el runtime no se rompa en release
+# Kotlin coroutines
 -keep class kotlinx.coroutines.** { *; }
 -keepclassmembernames class kotlinx.coroutines.** { volatile <fields>; }
 -dontwarn kotlinx.coroutines.**
 
 # ── Jetpack Compose ──────────────────────────────────────────
-# Compose no necesita reglas especiales en AGP 8+, pero sí los previews
 -keep class androidx.compose.** { *; }
 -dontwarn androidx.compose.**
 
@@ -38,19 +34,18 @@
 -dontwarn androidx.datastore.**
 
 # ── Camera2 API ──────────────────────────────────────────────
-# Las clases de Camera2 son del sistema, pero sus callbacks se
-# llaman por reflexión desde el HAL — nunca ofuscar.
 -keep class android.hardware.camera2.** { *; }
 -keep class android.media.Image { *; }
 -keep class android.media.ImageReader { *; }
 -keep class android.media.MediaRecorder { *; }
 -keep class android.media.DngCreator { *; }
 
-# ── NDK / JNI ────────────────────────────────────────────────
-# Mantener el método native que llama la librería rodytolenspro.so
+# ── NDK / JNI · BUG-C3 / BUG-E8 ──────────────────────────────
+# La librería se llama rodytolenspro (CMakeLists.add_library(rodytolenspro …))
+# El método nativo Java_com_rodyto_lenspro_CameraControlViewModel_getPhysicalCameraIdsNative
+# debe permanecer con su nombre.
 -keep class com.rodyto.lenspro.CameraControlViewModel {
     native <methods>;
-    private native java.lang.String[] getPhysicalCameraIdsNative();
 }
 
 # ── Coil ─────────────────────────────────────────────────────
@@ -67,26 +62,29 @@
 -dontwarn javax.**
 -dontwarn org.slf4j.**
 
-# ── Reglas de enumeraciones ──────────────────────────────────
-# R8 puede romper enums usadas en when() si no se conservan
+# ── Enumeraciones ────────────────────────────────────────────
 -keepclassmembers enum com.rodyto.lenspro.** {
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
 
-# ── Clases de datos (data class) ─────────────────────────────
+# ── Clases de datos ──────────────────────────────────────────
 -keepclassmembers class com.rodyto.lenspro.** {
     public <init>(...);
 }
 
-# ── SamsungVendorTags — reflexión específica al constructor (CI-2)
+# ── SamsungVendorTags — reflexión específica al constructor ──
 -keepclassmembers class android.hardware.camera2.CaptureRequest$Key {
     <init>(java.lang.String, java.lang.Class);
 }
 
-# Mantener cualquier @Keep que añadamos
+# ── ShutterFx / VideoRecordingController ─────────────────────
+-keep class com.rodyto.lenspro.ShutterFx { *; }
+-keep class com.rodyto.lenspro.camera.VideoRecordingController { *; }
+
+# Mantener @Keep
 -keep @androidx.annotation.Keep class * { *; }
 -keepclassmembers class * { @androidx.annotation.Keep <fields>; @androidx.annotation.Keep <methods>; }
 
-# Compose: configurar el atomicfu solo si se usa
+# Compose atomicfu
 -dontwarn kotlinx.atomicfu.**
