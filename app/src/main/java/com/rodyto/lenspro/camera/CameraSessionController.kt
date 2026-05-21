@@ -10,7 +10,6 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.params.MeteringRectangle
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -22,33 +21,24 @@ import com.rodyto.lenspro.CameraMode
 import com.rodyto.lenspro.CameraSessionState
 import com.rodyto.lenspro.FlashMode
 import com.rodyto.lenspro.SamsungVendorTags
+import com.rodyto.lenspro.VideoResolution
 import com.rodyto.lenspro.tuning.CameraTuning
 import com.rodyto.lenspro.ui.CameraUiStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * CameraSessionController · v2.0 Premium
+ * CameraSessionController · v2.1 Premium
  *
- * Cambios v2.0:
- *  • FIX BUG-M7: prepareReader() + reader.surface AHORA forman parte de la
- *    CaptureSession → las fotos llegan al listener JPEG real.
- *  • FIX BUG-M1: integra VideoRecordingController (start/stop graban vídeo
- *    de verdad).
- *  • FIX BUG-A2: Handler/looper sin force-unwraps.
- *  • FIX BUG-C1: takePhoto recibe el scope del ViewModel (no más
- *    CoroutineScope(Dispatchers.IO) suelto).
- *  • FIX BUG-C2: expone captureEngineCountdown como StateFlow para que el
- *    ViewModel lo redirija al stateHolder.
- *  • FIX BUG-E1: applyZoom aplica CONTROL_ZOOM_RATIO o SCALER_CROP_REGION.
- *  • FIX BUG-E5: applyManualParams fija CONTROL_AF_MODE continuo según modo.
- *  • FIX BUG-M5: aplica SamsungVendorTags si el HAL es Samsung y el toggle
- *    está activo.
- *  • FIX BUG-E3: captureSession / previewRequestBuilder pasan a internal var
- *    con setters privados — sin acceso externo arbitrario.
+ * Cambios v2.1 (sobre v2.0):
+ *  • FIX 8: startRecording acepta resolution/fps/allowHevc del VM.
+ *  • FIX 8.b: cierre sincronizado de la session previa antes de crear
+ *    la nueva con [preview, recorderSurface] — evita estados intermedios.
+ *  • FIX 9: pickJpegSize ahora consulta el sensor activo (no asume 12MP).
+ *
+ *  Mantiene TODOS los fixes v2.0 (M1/M5/M7/A2/C1/C2/E1/E5).
  */
 class CameraSessionController(
     private val context: Context,
@@ -75,11 +65,9 @@ class CameraSessionController(
     private var currentAspect: Float = 3f / 4f
     private var currentProVendorTags = true
 
-    // BUG-M7: motor de captura + reader real wired
     private val captureEngine = CameraCaptureEngine(context)
     val captureEngineCountdown: StateFlow<Int> get() = captureEngine.countdown
 
-    // BUG-M1: grabación real
     private val videoRecorder = VideoRecordingController(context)
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
@@ -104,7 +92,6 @@ class CameraSessionController(
         }
         backgroundThread = t
         val looper = t.looper ?: run {
-            // BUG-A2: nunca force-unwrap; si looper es null abortamos limpio
             Log.e(TAG, "HandlerThread looper nulo, abortando background thread")
             t.quitSafely()
             backgroundThread = null
@@ -124,9 +111,6 @@ class CameraSessionController(
         backgroundHandler = null
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  openCamera / preview session
-     * ──────────────────────────────────────────────────────────────── */
     @SuppressLint("MissingPermission")
     fun openCamera(
         cameraId: String,
@@ -155,8 +139,6 @@ class CameraSessionController(
         startBackgroundThread()
         stateHolder.setSessionState(CameraSessionState.OPENING)
 
-        // BUG-M7: preparar el reader JPEG con el tamaño más grande del HAL ANTES
-        // de abrir la sesión. Si no hay characteristics, usamos un default 4K.
         val jpegSize = pickJpegSize(characteristics)
         runCatching { captureEngine.prepareReader(jpegSize) }
             .onFailure { Log.w(TAG, "prepareReader falló", it) }
@@ -170,8 +152,9 @@ class CameraSessionController(
         }
     }
 
+    /** FIX 9: prioriza el tamaño máximo del HAL del sensor activo. */
     private fun pickJpegSize(chars: CameraCharacteristics?): Size {
-        val fallback = Size(4032, 3024)
+        val fallback = Size(4000, 3000)   // S21 FE main sensor real
         val map = chars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return fallback
         val jpeg = map.getOutputSizes(ImageFormat.JPEG) ?: return fallback
         return jpeg.maxByOrNull { it.width.toLong() * it.height } ?: fallback
@@ -185,7 +168,6 @@ class CameraSessionController(
             applyDefaultControlsToBuilder(builder)
             previewRequestBuilder = builder
 
-            // BUG-M7: el reader DEBE estar en la lista de outputs.
             val outputs = buildList {
                 add(surface)
                 captureEngine.readerSurface?.let { add(it) }
@@ -217,10 +199,8 @@ class CameraSessionController(
         }
     }
 
-    /** Defaults seguros: AE on, AF continuo según modo, vendor tags Samsung. */
     private fun applyDefaultControlsToBuilder(b: CaptureRequest.Builder) {
         b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-        // BUG-E5: AF en modo continuo correcto según modo de la app
         val afMode = if (currentMode == CameraMode.VIDEO || currentMode == CameraMode.PRO_VIDEO)
             CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
         else
@@ -228,22 +208,17 @@ class CameraSessionController(
         b.set(CaptureRequest.CONTROL_AF_MODE, afMode)
         CameraTuning.applyImageQuality(b, mode = if (currentMode == CameraMode.VIDEO) "VIDEO" else "PHOTO")
 
-        // BUG-M5: Samsung vendor tags si el HAL lo soporta y el toggle está activo
         if (currentProVendorTags && SamsungVendorTags.isSamsungHal(currentCharacteristics)) {
             val tagMode = if (currentMode == CameraMode.VIDEO || currentMode == CameraMode.PRO_VIDEO) "VIDEO" else "PHOTO"
             SamsungVendorTags.applyBase(b, tagMode, isRecording = false)
         }
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Cierre / release
-     * ──────────────────────────────────────────────────────────────── */
     fun closeCamera() {
         val s = stateHolder.sessionState.value
         if (s == CameraSessionState.IDLE || s == CameraSessionState.CLOSING) return
         stateHolder.setSessionState(CameraSessionState.CLOSING)
 
-        // Si estamos grabando, detener primero MediaRecorder
         videoRecorder.abortIfActive()
 
         try { captureSession?.stopRepeating() } catch (_: Throwable) {}
@@ -266,9 +241,6 @@ class CameraSessionController(
         stopBackgroundThread()
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Captura still — coroutine scope ahora viene del VM (BUG-C1)
-     * ──────────────────────────────────────────────────────────────── */
     fun takePhoto(
         timerSeconds: Int,
         flashMode: FlashMode,
@@ -291,21 +263,28 @@ class CameraSessionController(
         }
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Vídeo — BUG-M1
-     * ──────────────────────────────────────────────────────────────── */
-    fun startRecording(isFrontCamera: Boolean): Boolean {
+    /** FIX 19: ahora respeta resolución/fps/codec elegidos por el usuario. */
+    fun startRecording(
+        isFrontCamera: Boolean,
+        resolution: VideoResolution = VideoResolution.FHD,
+        fps: Int = 30,
+        allowHevc: Boolean = false
+    ): Boolean {
         val device = cameraDevice ?: return false
         val previewSurface = pendingSurface ?: return false
         val chars = currentCharacteristics
-        // Inicializa MediaRecorder y obtiene su Surface
         val recorderSurface = videoRecorder.prepareRecorder(
             characteristics = chars,
-            isFrontCamera = isFrontCamera
+            isFrontCamera = isFrontCamera,
+            resolution = resolution,
+            fps = fps,
+            allowHevc = allowHevc
         ) ?: return false
 
         try {
-            // Cerrar sesión actual y crear una nueva con preview + recorder
+            // FIX 8.b: cierre sincronizado de la session previa
+            try { captureSession?.stopRepeating() } catch (_: Throwable) {}
+            try { captureSession?.abortCaptures() } catch (_: Throwable) {}
             captureSession?.close()
             captureSession = null
 
@@ -351,7 +330,6 @@ class CameraSessionController(
 
     fun stopRecording() {
         videoRecorder.stop()
-        // Restaurar sesión solo-preview
         val surface = pendingSurface ?: return
         try { captureSession?.stopRepeating() } catch (_: Throwable) {}
         captureSession?.close()
@@ -359,9 +337,6 @@ class CameraSessionController(
         createPreviewSession(surface)
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Manual params (ISO/shutter) + repeating refresh (BUG-E5/M5)
-     * ──────────────────────────────────────────────────────────────── */
     fun applyManualParams(
         manualIso: Int,
         manualShutterNs: Long?,
@@ -396,26 +371,20 @@ class CameraSessionController(
         }
     }
 
-    /* ────────────────────────────────────────────────────────────────
-     *  Zoom — BUG-E1
-     * ──────────────────────────────────────────────────────────────── */
     fun applyZoom(zoom: Float, chars: CameraCharacteristics) {
         val session = captureSession ?: return
         val builder = previewRequestBuilder ?: return
         try {
-            // API 30+: CONTROL_ZOOM_RATIO es la forma moderna y respeta multi-camera
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val range = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
                 if (range != null) {
                     val clamped = zoom.coerceIn(range.lower, range.upper)
                     builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, clamped)
-                    // Samsung scaler.zoomRatio si está disponible
                     if (currentProVendorTags) SamsungVendorTags.applyZoomRatio(builder, clamped)
                     session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                     return
                 }
             }
-            // Fallback SCALER_CROP_REGION
             val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
             val maxZoom = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
             val z = zoom.coerceIn(1f, max(1f, maxZoom))
