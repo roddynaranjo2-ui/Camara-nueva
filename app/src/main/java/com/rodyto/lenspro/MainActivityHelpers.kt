@@ -82,6 +82,23 @@ import kotlinx.coroutines.launch
  *      - Acceso directo a Ajustes avanzados (icono Tune).
  *      - Cierre por gesto + backdrop.
  * ================================================================ */
+// ─── Helper local: detecta press sin depender de cross-file private ───────
+@Composable
+private fun MutableInteractionSource.collectPressedCompat(): androidx.compose.runtime.State<Boolean> {
+    val isPressed = remember { mutableStateOf(false) }
+    LaunchedEffect(this) {
+        val active = ArrayList<androidx.compose.foundation.interaction.PressInteraction.Press>()
+        interactions.collect { interaction ->
+            when (interaction) {
+                is androidx.compose.foundation.interaction.PressInteraction.Press   -> active.add(interaction)
+                is androidx.compose.foundation.interaction.PressInteraction.Release -> active.remove(interaction.press)
+                is androidx.compose.foundation.interaction.PressInteraction.Cancel  -> active.remove(interaction.press)
+            }
+            isPressed.value = active.isNotEmpty()
+        }
+    }
+    return isPressed
+}
 
 @Composable
 fun LiquidGlassUiLayer(
